@@ -1,0 +1,72 @@
+{
+  "name": "@heroine-graph/monorepo",
+  "version": "0.1.0",
+  "workspace": [
+    "./packages/core",
+    "./packages/react",
+    "./packages/vue",
+    "./packages/svelte"
+  ],
+  "tasks": {
+    "dev": "deno run --watch packages/core/mod.ts",
+    "serve": "deno run --allow-net --allow-read jsr:@std/http/file-server",
+    "build": "deno run -A scripts/build.ts",
+    "build:wasm": "cd packages/wasm && ./build.sh",
+    "bundle": "npx esbuild packages/core/mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@heroine-graph/wasm && cp packages/wasm/pkg/heroine_graph_wasm.js packages/wasm/pkg/heroine_graph_wasm_bg.wasm dist/",
+    "test": "deno test --allow-read --allow-net --allow-env",
+    "test:coverage": "deno test --allow-read --allow-net --allow-env --coverage=coverage",
+    "lint": "deno lint",
+    "fmt": "deno fmt",
+    "check": "deno check packages/core/mod.ts",
+    "bench": "deno bench --allow-read --allow-net tests/benchmarks/"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "lib": ["deno.window", "dom", "dom.iterable", "dom.asynciterable"]
+  },
+  "lint": {
+    "include": ["packages/", "tests/", "examples/"],
+    "exclude": ["**/node_modules/", "**/dist/", "**/pkg/"],
+    "rules": {
+      "tags": ["recommended"],
+      "include": [
+        "ban-untagged-todo",
+        "camelcase",
+        "default-param-last",
+        "eqeqeq",
+        "explicit-function-return-type",
+        "explicit-module-boundary-types",
+        "no-await-in-loop",
+        "no-const-assign",
+        "no-eval",
+        "no-external-import",
+        "no-throw-literal",
+        "prefer-ascii",
+        "prefer-primordials"
+      ],
+      "exclude": []
+    }
+  },
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "semiColons": true,
+    "singleQuote": false,
+    "proseWrap": "preserve",
+    "include": ["packages/", "tests/", "examples/"],
+    "exclude": ["**/node_modules/", "**/dist/", "**/pkg/", "**/*.wgsl"]
+  },
+  "imports": {
+    "@heroine-graph/core": "./packages/core/mod.ts",
+    "@heroine-graph/wasm": "./packages/wasm/pkg/heroine_graph_wasm.js"
+  },
+  "exclude": ["**/node_modules/", "**/dist/", "**/pkg/", "**/target/"]
+}

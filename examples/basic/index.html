@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HeroineGraph - Basic Example</title>
+  <!-- Import map for WASM module resolution -->
+  <script type="importmap">
+  {
+    "imports": {
+      "@heroine-graph/wasm": "../../dist/heroine_graph_wasm.js"
+    }
+  }
+  </script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 15px 20px;
+      background: #16213e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 500;
+    }
+
+    .stats {
+      display: flex;
+      gap: 20px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+
+    .stat {
+      display: flex;
+      gap: 8px;
+    }
+
+    .stat-label {
+      color: #888;
+    }
+
+    .stat-value {
+      color: #4285f4;
+      min-width: 60px;
+    }
+
+    main {
+      flex: 1;
+      position: relative;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 10px 20px;
+      background: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #3367d6;
+    }
+
+    button.secondary {
+      background: #444;
+    }
+
+    button.secondary:hover {
+      background: #555;
+    }
+
+    .error {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #ea4335;
+      padding: 30px;
+      border-radius: 10px;
+      text-align: center;
+      max-width: 500px;
+    }
+
+    .error h2 {
+      margin-bottom: 15px;
+    }
+
+    .loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+
+    .loading .spinner {
+      width: 50px;
+      height: 50px;
+      border: 3px solid #333;
+      border-top-color: #4285f4;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HeroineGraph - Basic Example</h1>
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-label">FPS:</span>
+        <span class="stat-value" id="fps">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Frame:</span>
+        <span class="stat-value" id="frameTime">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Nodes:</span>
+        <span class="stat-value" id="nodes">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Edges:</span>
+        <span class="stat-value" id="edges">--</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <canvas id="graph"></canvas>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div id="loadingText">Initializing HeroineGraph...</div>
+    </div>
+
+    <div class="controls" id="controls" style="display: none;">
+      <button id="add1k">Add 1K Nodes</button>
+      <button id="add10k">Add 10K Nodes</button>
+      <button id="add100k">Add 100K Nodes</button>
+      <button id="toggleSim" class="secondary">Pause Simulation</button>
+      <button id="fitView" class="secondary">Fit View</button>
+      <button id="reset" class="secondary">Reset</button>
+    </div>
+  </main>
+
+  <script type="module">
+    // Import the HeroineGraph library
+    import { createHeroineGraph, isSupported, getSupportInfo } from '../../dist/heroine-graph.esm.js';
+
+    // UI Elements
+    const canvas = document.getElementById('graph');
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loadingText');
+    const controls = document.getElementById('controls');
+    const fpsDisplay = document.getElementById('fps');
+    const frameTimeDisplay = document.getElementById('frameTime');
+    const nodesDisplay = document.getElementById('nodes');
+    const edgesDisplay = document.getElementById('edges');
+    const toggleSimBtn = document.getElementById('toggleSim');
+
+    let graph = null;
+    let currentNodeCount = 0;
+
+    // Generate a graph with the specified number of nodes
+    function generateGraphData(nodeCount) {
+      const edgesPerNode = 2;
+      const edgeCount = Math.floor(nodeCount * edgesPerNode);
+
+      const nodes = [];
+      const edges = [];
+
+      // Generate nodes
+      for (let i = 0; i < nodeCount; i++) {
+        const hue = (i / nodeCount) * 360;
+        nodes.push({
+          id: `n${i}`,
+          radius: 3 + Math.random() * 4,
+          color: `hsl(${hue}, 70%, 50%)`,
+        });
+      }
+
+      // Generate edges (random connections)
+      for (let i = 0; i < edgeCount; i++) {
+        const source = Math.floor(Math.random() * nodeCount);
+        const offset = Math.floor(Math.random() * Math.min(1000, nodeCount)) - 500;
+        const target = Math.max(0, Math.min(nodeCount - 1, source + offset));
+
+        if (source !== target) {
+          edges.push({
+            source: `n${source}`,
+            target: `n${target}`,
+            color: '#444',
+            width: 0.5,
+          });
+        }
+      }
+
+      return { nodes, edges };
+    }
+
+    // Update stats display
+    function updateStats() {
+      if (!graph) return;
+
+      const stats = graph.frameStats;
+      fpsDisplay.textContent = stats.fps.toFixed(0);
+      frameTimeDisplay.textContent = `${stats.avgFrameTime.toFixed(1)}ms`;
+      nodesDisplay.textContent = graph.nodeCount.toLocaleString();
+      edgesDisplay.textContent = graph.edgeCount.toLocaleString();
+    }
+
+    // Load graph with specified node count
+    async function loadGraph(nodeCount) {
+      if (!graph) return;
+
+      loadingText.textContent = `Generating ${nodeCount.toLocaleString()} nodes...`;
+      loading.style.display = 'block';
+
+      // Use setTimeout to allow UI update
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const data = generateGraphData(nodeCount);
+      await graph.load(data);
+      currentNodeCount = nodeCount;
+
+      loading.style.display = 'none';
+      controls.style.display = 'flex';
+
+      // Start updating stats
+      setInterval(updateStats, 100);
+    }
+
+    // Initialize the application
+    async function init() {
+      try {
+        // Check support
+        loadingText.textContent = 'Checking WebGPU support...';
+        const support = await getSupportInfo();
+
+        if (!support.supported) {
+          throw new Error(support.reason || 'WebGPU is not supported');
+        }
+
+        // Create graph instance
+        loadingText.textContent = 'Initializing WebGPU...';
+        graph = await createHeroineGraph({
+          canvas: '#graph',
+          debug: true,
+        });
+
+        // Set up resize handler
+        const resizeCanvas = () => {
+          canvas.width = canvas.clientWidth * window.devicePixelRatio;
+          canvas.height = canvas.clientHeight * window.devicePixelRatio;
+          graph.resize(canvas.width, canvas.height);
+        };
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Load initial graph
+        await loadGraph(1000);
+
+        // Set up button handlers
+        document.getElementById('add1k').addEventListener('click', () => {
+          loadGraph(currentNodeCount + 1000);
+        });
+
+        document.getElementById('add10k').addEventListener('click', () => {
+          loadGraph(currentNodeCount + 10000);
+        });
+
+        document.getElementById('add100k').addEventListener('click', () => {
+          loadGraph(currentNodeCount + 100000);
+        });
+
+        let simPaused = false;
+        toggleSimBtn.addEventListener('click', () => {
+          if (simPaused) {
+            graph.startSimulation();
+            toggleSimBtn.textContent = 'Pause Simulation';
+          } else {
+            graph.pauseSimulation();
+            toggleSimBtn.textContent = 'Resume Simulation';
+          }
+          simPaused = !simPaused;
+        });
+
+        document.getElementById('fitView').addEventListener('click', () => {
+          graph.fitToView();
+        });
+
+        document.getElementById('reset').addEventListener('click', () => {
+          loadGraph(1000);
+        });
+
+        // Pan/zoom handlers
+        let isDragging = false;
+        let lastMouse = { x: 0, y: 0 };
+
+        canvas.addEventListener('mousedown', (e) => {
+          isDragging = true;
+          lastMouse = { x: e.clientX, y: e.clientY };
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+          if (isDragging) {
+            const dx = e.clientX - lastMouse.x;
+            const dy = e.clientY - lastMouse.y;
+            graph.pan(dx, dy);
+            lastMouse = { x: e.clientX, y: e.clientY };
+          }
+        });
+
+        canvas.addEventListener('mouseup', () => { isDragging = false; });
+        canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+        canvas.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          const factor = e.deltaY > 0 ? 0.9 : 1.1;
+          graph.zoom(factor);
+        });
+
+        // Subscribe to events
+        graph.on('graph:load', (event) => {
+          console.log('Graph loaded:', event);
+        });
+
+        graph.on('viewport:change', (event) => {
+          // Viewport changed (pan/zoom)
+        });
+
+      } catch (err) {
+        loading.innerHTML = `
+          <div class="error">
+            <h2>Initialization Error</h2>
+            <p>${err.message}</p>
+            <p style="margin-top: 15px; font-size: 13px; opacity: 0.8;">
+              WebGPU requires Chrome 113+, Edge 113+, or Safari 18+.
+              Make sure you're using a supported browser with WebGPU enabled.
+            </p>
+          </div>
+        `;
+        console.error('HeroineGraph initialization failed:', err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
