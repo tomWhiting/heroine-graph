@@ -6,6 +6,7 @@
  */
 
 import { HeroineGraphError, ErrorCode } from "../../errors.ts";
+import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
  * Configuration for position buffers.
@@ -144,8 +145,8 @@ export class PositionBufferManager {
     this.ensureCapacity(posX.length);
     this.count = posX.length;
 
-    this.device.queue.writeBuffer(this.posXRead, 0, posX);
-    this.device.queue.writeBuffer(this.posYRead, 0, posY);
+    this.device.queue.writeBuffer(this.posXRead, 0, toArrayBuffer(posX));
+    this.device.queue.writeBuffer(this.posYRead, 0, toArrayBuffer(posY));
   }
 
   /**

@@ -7,16 +7,19 @@
  * @module
  */
 
-import type {
-  NodeInput,
-  EdgeInput,
-  GraphInput,
-  NodeId,
-  EdgeId,
-  Color,
-} from "../types.ts";
+import type { GraphInput } from "../types.ts";
 import { HeroineGraphError, ErrorCode } from "../errors.ts";
-import { createIdMap, type IdMap } from "./id_map.ts";
+import { createIdMap, type IdMap, type IdLike } from "./id_map.ts";
+
+/**
+ * Internal RGBA color representation for GPU upload
+ */
+interface RgbaColor {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly a: number;
+}
 
 /**
  * Parsed graph data ready for GPU upload
@@ -27,10 +30,10 @@ export interface ParsedGraph {
   /** Number of edges */
   edgeCount: number;
 
-  /** Node ID to index mapping */
-  nodeIdMap: IdMap<NodeId>;
-  /** Edge ID to index mapping */
-  edgeIdMap: IdMap<EdgeId>;
+  /** Node ID to index mapping (user IDs can be string or number) */
+  nodeIdMap: IdMap<IdLike>;
+  /** Edge ID to index mapping (user IDs can be string or number) */
+  edgeIdMap: IdMap<IdLike>;
 
   /** Node positions X (Float32Array) */
   positionsX: Float32Array;
@@ -60,12 +63,12 @@ export interface ParsedGraph {
 export interface ParserConfig {
   /** Default node radius */
   defaultNodeRadius?: number;
-  /** Default node color */
-  defaultNodeColor?: Color;
+  /** Default node color (RGBA with values 0-1) */
+  defaultNodeColor?: RgbaColor;
   /** Default edge width */
   defaultEdgeWidth?: number;
-  /** Default edge color */
-  defaultEdgeColor?: Color;
+  /** Default edge color (RGBA with values 0-1) */
+  defaultEdgeColor?: RgbaColor;
   /** Validate node/edge references */
   validateReferences?: boolean;
 }
@@ -82,11 +85,11 @@ export const DEFAULT_PARSER_CONFIG: Required<ParserConfig> = {
 };
 
 /**
- * Parse a Color to RGB values
+ * Parse a color string or object to RGB values (0-1 range)
  */
 function parseColor(
-  color: Color | string | undefined,
-  defaultColor: Color,
+  color: string | RgbaColor | undefined,
+  defaultColor: RgbaColor,
 ): [number, number, number] {
   if (!color) {
     return [defaultColor.r, defaultColor.g, defaultColor.b];
@@ -111,6 +114,7 @@ function parseColor(
     return [defaultColor.r, defaultColor.g, defaultColor.b];
   }
 
+  // Object with r, g, b properties
   return [color.r, color.g, color.b];
 }
 
@@ -131,9 +135,9 @@ export function parseGraphInput(
   const nodeCount = nodes.length;
   const edgeCount = edges.length;
 
-  // Create ID mappings
-  const nodeIdMap = createIdMap<NodeId>();
-  const edgeIdMap = createIdMap<EdgeId>();
+  // Create ID mappings (accepts string or number IDs)
+  const nodeIdMap = createIdMap<IdLike>();
+  const edgeIdMap = createIdMap<IdLike>();
 
   // Allocate arrays
   const positionsX = new Float32Array(nodeCount);
@@ -166,9 +170,10 @@ export function parseGraphInput(
     nodeAttributes[attrBase + 4] = 0; // selected
     nodeAttributes[attrBase + 5] = 0; // hovered
 
-    // Store metadata
-    if (node.metadata) {
-      nodeMetadata.set(idx, node.metadata);
+    // Store metadata (accessed via index signature)
+    const nodeMetadataValue = node["metadata"] as Record<string, unknown> | undefined;
+    if (nodeMetadataValue) {
+      nodeMetadata.set(idx, nodeMetadataValue);
     }
   }
 
@@ -176,8 +181,8 @@ export function parseGraphInput(
   for (let i = 0; i < edgeCount; i++) {
     const edge = edges[i];
 
-    // Get or generate edge ID
-    const edgeId = edge.id ?? `edge_${i}`;
+    // Get or generate edge ID (id comes from index signature on EdgeInput)
+    const edgeId = (edge["id"] as IdLike | undefined) ?? `edge_${i}`;
     const idx = edgeIdMap.add(edgeId);
 
     // Resolve source/target to indices
@@ -212,9 +217,10 @@ export function parseGraphInput(
     edgeAttributes[attrBase + 4] = 0; // selected
     edgeAttributes[attrBase + 5] = 0; // hovered
 
-    // Store metadata
-    if (edge.metadata) {
-      edgeMetadata.set(idx, edge.metadata);
+    // Store metadata (accessed via index signature)
+    const edgeMetadataValue = edge["metadata"] as Record<string, unknown> | undefined;
+    if (edgeMetadataValue) {
+      edgeMetadata.set(idx, edgeMetadataValue);
     }
   }
 
@@ -251,13 +257,15 @@ export function validateGraphInput(input: unknown): {
   }
 
   const obj = input as Record<string, unknown>;
+  const nodes = obj["nodes"];
+  const edges = obj["edges"];
 
   // Check nodes array
-  if (!Array.isArray(obj.nodes)) {
+  if (!Array.isArray(nodes)) {
     errors.push("Missing or invalid 'nodes' array");
   } else {
-    for (let i = 0; i < obj.nodes.length; i++) {
-      const node = obj.nodes[i];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
       if (!node || typeof node !== "object") {
         errors.push(`Node at index ${i} must be an object`);
         continue;
@@ -270,11 +278,11 @@ export function validateGraphInput(input: unknown): {
   }
 
   // Check edges array
-  if (!Array.isArray(obj.edges)) {
+  if (!Array.isArray(edges)) {
     errors.push("Missing or invalid 'edges' array");
   } else {
-    for (let i = 0; i < obj.edges.length; i++) {
-      const edge = obj.edges[i];
+    for (let i = 0; i < edges.length; i++) {
+      const edge = edges[i];
       if (!edge || typeof edge !== "object") {
         errors.push(`Edge at index ${i} must be an object`);
         continue;

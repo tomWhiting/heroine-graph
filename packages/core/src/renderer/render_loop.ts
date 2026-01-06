@@ -7,8 +7,6 @@
  * @module
  */
 
-import { HeroineGraphError, ErrorCode } from "../errors.ts";
-
 /**
  * Frame timing statistics
  */
@@ -51,13 +49,16 @@ export interface RenderLoopConfig {
 /**
  * Default render loop configuration
  */
-export const DEFAULT_RENDER_LOOP_CONFIG: Required<
-  Omit<RenderLoopConfig, "onStats">
-> & Pick<RenderLoopConfig, "onStats"> = {
+export const DEFAULT_RENDER_LOOP_CONFIG: {
+  targetFps: number;
+  fpsAverageFrames: number;
+  enableStats: boolean;
+  onStats?: ((stats: FrameStats) => void) | undefined;
+  statsInterval: number;
+} = {
   targetFps: 0, // Uncapped by default
   fpsAverageFrames: 60,
   enableStats: true,
-  onStats: undefined,
   statsInterval: 1000,
 };
 
@@ -293,14 +294,11 @@ export function createGPUTimer(device: GPUDevice): GPUTimer | null {
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
-  let queryIndex = 0;
-
   return {
     isSupported: true,
 
     begin(encoder: GPUCommandEncoder, _label?: string): void {
       encoder.writeTimestamp(querySet, 0);
-      queryIndex = 0;
     },
 
     async end(encoder: GPUCommandEncoder): Promise<number> {

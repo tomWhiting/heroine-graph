@@ -291,7 +291,7 @@ export class Viewport {
    * Get the scale factor for a given zoom level.
    */
   getScaleAtZoom(zoom: number): number {
-    return Math.pow(2, zoom);
+    return 2 ** zoom;
   }
 
   /**
@@ -358,7 +358,7 @@ export class Viewport {
       const progress = Math.min(elapsed / duration, 1);
 
       // Ease-out cubic
-      const t = 1 - Math.pow(1 - progress, 3);
+      const t = 1 - (1 - progress) ** 3;
 
       this.x = startX + (targetX - startX) * t;
       this.y = startY + (targetY - startY) * t;

@@ -7,9 +7,9 @@
  * @module
  */
 
-import type { GraphTypedInput, NodeId, EdgeId } from "../types.ts";
+import type { GraphTypedInput } from "../types.ts";
 import { HeroineGraphError, ErrorCode } from "../errors.ts";
-import { createIdMap, type IdMap } from "./id_map.ts";
+import { createIdMap, type IdLike } from "./id_map.ts";
 import type { ParsedGraph } from "./parser.ts";
 
 /**
@@ -67,9 +67,9 @@ export function parseGraphTypedInput(
   const nodeCount = input.nodeCount;
   const edgeCount = input.edgeCount ?? 0;
 
-  // Create ID maps
-  const nodeIdMap = createIdMap<NodeId>();
-  const edgeIdMap = createIdMap<EdgeId>();
+  // Create ID maps (accepts string or number IDs)
+  const nodeIdMap = createIdMap<IdLike>();
+  const edgeIdMap = createIdMap<IdLike>();
 
   // Generate or use provided node IDs
   if (input.nodeIds) {
@@ -228,44 +228,50 @@ export function validateGraphTypedInput(input: unknown): {
   }
 
   const obj = input as Record<string, unknown>;
+  const nodeCountVal = obj["nodeCount"];
+  const edgeCountVal = obj["edgeCount"];
+  const positionsVal = obj["positions"];
+  const nodeRadiiVal = obj["nodeRadii"];
+  const nodeColorsVal = obj["nodeColors"];
+  const edgePairsVal = obj["edgePairs"];
 
   // Check nodeCount
-  if (typeof obj.nodeCount !== "number" || obj.nodeCount < 0) {
+  if (typeof nodeCountVal !== "number" || nodeCountVal < 0) {
     errors.push("nodeCount must be a non-negative number");
   }
 
-  const nodeCount = (obj.nodeCount as number) || 0;
-  const edgeCount = (obj.edgeCount as number) || 0;
+  const nodeCount = (nodeCountVal as number) || 0;
+  const edgeCount = (edgeCountVal as number) || 0;
 
   // Validate array lengths
-  if (obj.positions instanceof Float32Array) {
-    if (obj.positions.length !== nodeCount * 2) {
+  if (positionsVal instanceof Float32Array) {
+    if (positionsVal.length !== nodeCount * 2) {
       errors.push(
-        `positions length (${obj.positions.length}) must be nodeCount * 2 (${nodeCount * 2})`,
+        `positions length (${positionsVal.length}) must be nodeCount * 2 (${nodeCount * 2})`,
       );
     }
   }
 
-  if (obj.nodeRadii instanceof Float32Array) {
-    if (obj.nodeRadii.length !== nodeCount) {
+  if (nodeRadiiVal instanceof Float32Array) {
+    if (nodeRadiiVal.length !== nodeCount) {
       errors.push(
-        `nodeRadii length (${obj.nodeRadii.length}) must equal nodeCount (${nodeCount})`,
+        `nodeRadii length (${nodeRadiiVal.length}) must equal nodeCount (${nodeCount})`,
       );
     }
   }
 
-  if (obj.nodeColors instanceof Float32Array) {
-    if (obj.nodeColors.length !== nodeCount * 3) {
+  if (nodeColorsVal instanceof Float32Array) {
+    if (nodeColorsVal.length !== nodeCount * 3) {
       errors.push(
-        `nodeColors length (${obj.nodeColors.length}) must be nodeCount * 3 (${nodeCount * 3})`,
+        `nodeColors length (${nodeColorsVal.length}) must be nodeCount * 3 (${nodeCount * 3})`,
       );
     }
   }
 
-  if (obj.edgePairs instanceof Uint32Array) {
-    if (obj.edgePairs.length !== edgeCount * 2) {
+  if (edgePairsVal instanceof Uint32Array) {
+    if (edgePairsVal.length !== edgeCount * 2) {
       errors.push(
-        `edgePairs length (${obj.edgePairs.length}) must be edgeCount * 2 (${edgeCount * 2})`,
+        `edgePairs length (${edgePairsVal.length}) must be edgeCount * 2 (${edgeCount * 2})`,
       );
     }
   }

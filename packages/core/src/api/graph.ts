@@ -10,19 +10,21 @@
 import type {
   GraphInput,
   GraphTypedInput,
+  GraphConfig,
   Vec2,
   BoundingBox,
   SimulationStatus,
   ViewportState,
   EventHandler,
-  HeroineGraphEvent,
+  EventMap,
   NodeId,
   EdgeId,
 } from "../types.ts";
 import type { GPUContext } from "../webgpu/context.ts";
+import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { HeroineGraphError, ErrorCode } from "../errors.ts";
-import { EventEmitter, createEventEmitter } from "../events/emitter.ts";
-import { Viewport, createViewport } from "../viewport/viewport.ts";
+import { type EventEmitter, createEventEmitter } from "../events/emitter.ts";
+import { type Viewport, createViewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
 import { parseGraphInput, type ParsedGraph } from "../graph/parser.ts";
 import { parseGraphTypedInput } from "../graph/typed_parser.ts";
@@ -57,6 +59,16 @@ import {
   createPointerManager,
   type PointerManager,
 } from "../interaction/pointer.ts";
+import {
+  type LayerManager,
+  createLayerManager,
+  type HeatmapLayer,
+  createHeatmapLayer,
+  type HeatmapConfig,
+  type LayerInfo,
+  type HeatmapRenderContext,
+  type ColorScaleName,
+} from "../layers/mod.ts";
 
 /**
  * WASM engine interface for spatial queries.
@@ -121,7 +133,7 @@ export class HeroineGraph {
   // Components
   private viewport: Viewport;
   private viewportUniformBuffer: ViewportUniformBuffer;
-  private events: EventEmitter<Record<string, HeroineGraphEvent>>;
+  private events: EventEmitter;
   private renderLoop: RenderLoop;
   private simulationController: SimulationController;
 
@@ -148,12 +160,16 @@ export class HeroineGraph {
   private hoveredNode: NodeId | null = null;
   private hoveredEdge: EdgeId | null = null;
   private draggedNode: NodeId | null = null;
+  private lastDragPosition: Vec2 | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
 
   // Position sync (GPU -> JS for hit testing)
   private syncFrameCounter: number = 0;
   private syncInProgress: boolean = false;
   private readonly SYNC_INTERVAL: number = 5; // Sync every N frames
+
+  // Layer system
+  private layerManager: LayerManager;
 
   constructor(config: HeroineGraphConfig) {
     this.gpuContext = config.gpuContext;
@@ -173,10 +189,10 @@ export class HeroineGraph {
     this.viewport = createViewport(this.canvas, {
       onViewportChange: (state) => {
         this.updateViewportUniforms();
-        this.events.emit("viewport:change", {
+        this.events.emit({
           type: "viewport:change",
           timestamp: Date.now(),
-          ...state,
+          viewport: state,
         });
       },
     });
@@ -224,8 +240,11 @@ export class HeroineGraph {
     });
     this.setupInteractionHandlers();
 
-    // Start render loop
-    this.renderLoop.start();
+    // Initialize layer manager
+    this.layerManager = createLayerManager();
+
+    // Note: render loop starts on first load() call, not here
+    // This prevents rendering before canvas has valid dimensions
 
     if (this.debug) {
       console.log("HeroineGraph instance created");
@@ -341,6 +360,9 @@ export class HeroineGraph {
   private renderFrame(_deltaTime: number, _stats: FrameStats): void {
     if (this.disposed || !this.state.loaded) return;
 
+    // Skip rendering if canvas has no valid dimensions
+    if (this.canvas.width === 0 || this.canvas.height === 0) return;
+
     const { device, context } = this.gpuContext;
 
     // Create command encoder
@@ -355,8 +377,8 @@ export class HeroineGraph {
     const texture = context.getCurrentTexture();
     const textureView = texture.createView();
 
-    // Begin render pass
-    const renderPass = encoder.beginRenderPass({
+    // Clear the canvas first
+    const clearPass = encoder.beginRenderPass({
       colorAttachments: [
         {
           view: textureView,
@@ -366,8 +388,26 @@ export class HeroineGraph {
         },
       ],
     });
+    clearPass.end();
 
-    // Render edges first (below nodes)
+    // Render visualization layers FIRST (heatmap renders behind nodes)
+    if (this.debug) {
+      console.log("[HeroineGraph] Rendering layers BEFORE nodes (v2)");
+    }
+    this.layerManager.render(encoder, textureView);
+
+    // Begin main render pass (loads existing content from layers)
+    const renderPass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: textureView,
+          loadOp: "load", // Preserve heatmap content
+          storeOp: "store",
+        },
+      ],
+    });
+
+    // Render edges (below nodes, above heatmap)
     if (
       this.edgePipeline &&
       this.viewportBindGroup &&
@@ -383,7 +423,7 @@ export class HeroineGraph {
       );
     }
 
-    // Render nodes
+    // Render nodes (on top)
     if (
       this.nodePipeline &&
       this.viewportBindGroup &&
@@ -494,6 +534,14 @@ export class HeroineGraph {
     // Create GPU simulation buffers and bind groups
     await this.createSimulationResources(parsed);
 
+    // Update layer render contexts with new position buffers
+    this.updateLayerRenderContext();
+
+    // Start render loop on first load (delayed from constructor to ensure canvas is sized)
+    if (!this.renderLoop.isRunning) {
+      this.renderLoop.start();
+    }
+
     // Fit view to content
     this.fitToView();
 
@@ -504,7 +552,7 @@ export class HeroineGraph {
     // Update hit tester with new graph data
     this.updateHitTester();
 
-    this.events.emit("graph:load", {
+    this.events.emit({
       type: "graph:load",
       timestamp: Date.now(),
       nodeCount: parsed.nodeCount,
@@ -603,14 +651,14 @@ export class HeroineGraph {
       size: parsed.positionsX.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(positionsX, 0, parsed.positionsX);
+    device.queue.writeBuffer(positionsX, 0, toArrayBuffer(parsed.positionsX));
 
     const positionsY = device.createBuffer({
       label: "Positions Y",
       size: parsed.positionsY.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(positionsY, 0, parsed.positionsY);
+    device.queue.writeBuffer(positionsY, 0, toArrayBuffer(parsed.positionsY));
 
     // Create node attributes buffer
     const nodeAttributes = device.createBuffer({
@@ -618,7 +666,7 @@ export class HeroineGraph {
       size: parsed.nodeAttributes.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(nodeAttributes, 0, parsed.nodeAttributes);
+    device.queue.writeBuffer(nodeAttributes, 0, toArrayBuffer(parsed.nodeAttributes));
 
     // Create edge buffers
     const edgeIndicesData = createEdgeIndicesBuffer(
@@ -631,7 +679,7 @@ export class HeroineGraph {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     if (edgeIndicesData.byteLength > 0) {
-      device.queue.writeBuffer(edgeIndices, 0, edgeIndicesData);
+      device.queue.writeBuffer(edgeIndices, 0, toArrayBuffer(edgeIndicesData));
     }
 
     const edgeAttributes = device.createBuffer({
@@ -640,7 +688,7 @@ export class HeroineGraph {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     if (parsed.edgeAttributes.byteLength > 0) {
-      device.queue.writeBuffer(edgeAttributes, 0, parsed.edgeAttributes);
+      device.queue.writeBuffer(edgeAttributes, 0, toArrayBuffer(parsed.edgeAttributes));
     }
 
     // Store buffers
@@ -717,7 +765,7 @@ export class HeroineGraph {
    * Zoom the viewport
    */
   zoom(factor: number, center?: Vec2): void {
-    this.viewport.zoom(factor, center);
+    this.viewport.zoom(factor, center?.x, center?.y);
   }
 
   /**
@@ -831,27 +879,144 @@ export class HeroineGraph {
   }
 
   // ==========================================================================
+  // Public API - Layers
+  // ==========================================================================
+
+  /**
+   * Enable the heatmap layer.
+   * Creates the layer if it doesn't exist.
+   */
+  enableHeatmap(config?: HeatmapConfig): void {
+    const layerId = "heatmap";
+
+    if (!this.layerManager.hasLayer(layerId)) {
+      // Create heatmap layer
+      const cssWidth = this.canvas.clientWidth || this.canvas.width;
+      const cssHeight = this.canvas.clientHeight || this.canvas.height;
+
+      const heatmapLayer = createHeatmapLayer(
+        layerId,
+        this.gpuContext,
+        cssWidth,
+        cssHeight,
+        { ...config, enabled: true }
+      );
+
+      this.layerManager.addLayer(heatmapLayer);
+
+      // Set render context if graph is loaded
+      this.updateLayerRenderContext();
+    } else {
+      // Enable existing layer
+      const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
+      if (layer) {
+        layer.enabled = true;
+        if (config) {
+          layer.setConfig(config);
+        }
+      }
+    }
+  }
+
+  /**
+   * Disable the heatmap layer.
+   */
+  disableHeatmap(): void {
+    this.layerManager.disableLayer("heatmap");
+  }
+
+  /**
+   * Check if heatmap is enabled.
+   */
+  isHeatmapEnabled(): boolean {
+    return this.layerManager.isLayerVisible("heatmap");
+  }
+
+  /**
+   * Configure the heatmap layer.
+   */
+  setHeatmapConfig(config: Partial<HeatmapConfig>): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (layer) {
+      layer.setConfig(config);
+    }
+  }
+
+  /**
+   * Get heatmap configuration.
+   */
+  getHeatmapConfig(): HeatmapConfig | null {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    return layer?.getConfig() ?? null;
+  }
+
+  /**
+   * Set heatmap color scale.
+   */
+  setHeatmapColorScale(name: ColorScaleName): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (layer) {
+      layer.setColorScale(name);
+    }
+  }
+
+  /**
+   * Get info about all layers.
+   */
+  getLayers(): LayerInfo[] {
+    return this.layerManager.getLayerInfo();
+  }
+
+  /**
+   * Toggle a layer's visibility.
+   */
+  toggleLayer(layerId: string): boolean {
+    return this.layerManager.toggleLayer(layerId);
+  }
+
+  /**
+   * Update render context for all layers.
+   * Called when graph data changes.
+   */
+  private updateLayerRenderContext(): void {
+    if (!this.simBuffers || !this.state.loaded) return;
+
+    const context: HeatmapRenderContext = {
+      viewportUniformBuffer: this.viewportUniformBuffer.buffer,
+      positionsX: this.simBuffers.positionsX,
+      positionsY: this.simBuffers.positionsY,
+      nodeCount: this.state.nodeCount,
+    };
+
+    // Update heatmap layer if it exists
+    const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (heatmapLayer) {
+      heatmapLayer.setRenderContext(context);
+    }
+  }
+
+  // ==========================================================================
   // Public API - Events
   // ==========================================================================
 
   /**
    * Subscribe to an event
    */
-  on<K extends string>(event: K, handler: EventHandler<HeroineGraphEvent>): void {
+  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
     this.events.on(event, handler);
   }
 
   /**
    * Unsubscribe from an event
    */
-  off<K extends string>(event: K, handler: EventHandler<HeroineGraphEvent>): void {
+  off<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
     this.events.off(event, handler);
   }
 
   /**
    * Subscribe to an event once
    */
-  once<K extends string>(event: K, handler: EventHandler<HeroineGraphEvent>): void {
+  once<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
     this.events.once(event, handler);
   }
 
@@ -1002,7 +1167,7 @@ export class HeroineGraph {
    */
   pinNode(nodeId: NodeId): void {
     this.pinnedNodes.add(nodeId);
-    this.events.emit("node:pin", {
+    this.events.emit({
       type: "node:pin",
       timestamp: Date.now(),
       nodeId,
@@ -1015,7 +1180,7 @@ export class HeroineGraph {
    */
   unpinNode(nodeId: NodeId): void {
     this.pinnedNodes.delete(nodeId);
-    this.events.emit("node:unpin", {
+    this.events.emit({
       type: "node:unpin",
       timestamp: Date.now(),
       nodeId,
@@ -1126,6 +1291,7 @@ export class HeroineGraph {
       if (nodeId !== null) {
         // Start drag on node
         this.draggedNode = nodeId;
+        this.lastDragPosition = { ...e.graphPosition };
         this.pinnedNodes.add(nodeId);
 
         // Select if not already selected (or add to selection with shift)
@@ -1135,7 +1301,7 @@ export class HeroineGraph {
           this.addToSelection([nodeId]);
         }
 
-        this.events.emit("node:dragstart", {
+        this.events.emit({
           type: "node:dragstart",
           timestamp: Date.now(),
           nodeId,
@@ -1159,14 +1325,26 @@ export class HeroineGraph {
     // Handle pointer move (drag or hover)
     this.pointerManager.on("pointermove", (e) => {
       if (this.draggedNode !== null) {
+        // Calculate delta from last position
+        const delta: Vec2 = this.lastDragPosition
+          ? {
+              x: e.graphPosition.x - this.lastDragPosition.x,
+              y: e.graphPosition.y - this.lastDragPosition.y,
+            }
+          : { x: 0, y: 0 };
+
+        // Update last position
+        this.lastDragPosition = { ...e.graphPosition };
+
         // Update dragged node position
         this.setNodePosition(this.draggedNode, e.graphPosition.x, e.graphPosition.y);
 
-        this.events.emit("node:dragmove", {
+        this.events.emit({
           type: "node:dragmove",
           timestamp: Date.now(),
           nodeId: this.draggedNode,
           position: e.graphPosition,
+          delta,
         });
       } else {
         // Hover detection
@@ -1179,11 +1357,12 @@ export class HeroineGraph {
       if (this.draggedNode !== null) {
         const nodeId = this.draggedNode;
         this.draggedNode = null;
+        this.lastDragPosition = null;
 
         // Optionally unpin after drag (could be configurable)
         // this.pinnedNodes.delete(nodeId);
 
-        this.events.emit("node:dragend", {
+        this.events.emit({
           type: "node:dragend",
           timestamp: Date.now(),
           nodeId,
@@ -1209,12 +1388,13 @@ export class HeroineGraph {
    */
   private updateHover(screenX: number, screenY: number): void {
     const nodeId = this.getNodeAtPosition(screenX, screenY);
+    const position = this.viewport.screenToGraph(screenX, screenY);
 
     if (nodeId !== this.hoveredNode) {
       // Update previous hovered node
       if (this.hoveredNode !== null) {
         this.syncNodeHoverToGPU(this.hoveredNode, false);
-        this.events.emit("node:hoverleave", {
+        this.events.emit({
           type: "node:hoverleave",
           timestamp: Date.now(),
           nodeId: this.hoveredNode,
@@ -1226,10 +1406,11 @@ export class HeroineGraph {
       // Update new hovered node
       if (nodeId !== null) {
         this.syncNodeHoverToGPU(nodeId, true);
-        this.events.emit("node:hoverenter", {
+        this.events.emit({
           type: "node:hoverenter",
           timestamp: Date.now(),
           nodeId,
+          position,
         });
       }
     }
@@ -1240,7 +1421,7 @@ export class HeroineGraph {
 
       if (edgeId !== this.hoveredEdge) {
         if (this.hoveredEdge !== null) {
-          this.events.emit("edge:hoverleave", {
+          this.events.emit({
             type: "edge:hoverleave",
             timestamp: Date.now(),
             edgeId: this.hoveredEdge,
@@ -1250,17 +1431,18 @@ export class HeroineGraph {
         this.hoveredEdge = edgeId;
 
         if (edgeId !== null) {
-          this.events.emit("edge:hoverenter", {
+          this.events.emit({
             type: "edge:hoverenter",
             timestamp: Date.now(),
             edgeId,
+            position,
           });
         }
       }
     } else {
       // Clear edge hover when hovering a node
       if (this.hoveredEdge !== null) {
-        this.events.emit("edge:hoverleave", {
+        this.events.emit({
           type: "edge:hoverleave",
           timestamp: Date.now(),
           edgeId: this.hoveredEdge,
@@ -1292,13 +1474,11 @@ export class HeroineGraph {
         }
       }
 
-      this.events.emit("selection:change", {
+      this.events.emit({
         type: "selection:change",
         timestamp: Date.now(),
-        itemType: type,
-        added,
-        removed,
-        selected: [...current],
+        selectedNodes: [...this.selectedNodes],
+        selectedEdges: [...this.selectedEdges],
       });
     }
   }
@@ -1437,6 +1617,9 @@ export class HeroineGraph {
     const cssHeight = this.canvas.clientHeight || this.canvas.height;
     this.viewport.resize(cssWidth, cssHeight);
     this.updateViewportUniforms();
+
+    // Resize layers
+    this.layerManager.resize(cssWidth, cssHeight);
   }
 
   /**
@@ -1464,6 +1647,9 @@ export class HeroineGraph {
 
     // Destroy simulation buffers
     this.destroySimulationBuffers();
+
+    // Destroy layer manager and all layers
+    this.layerManager.destroy();
 
     // Destroy viewport uniform buffer
     this.viewportUniformBuffer.destroy();

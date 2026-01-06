@@ -7,8 +7,7 @@
  * @module
  */
 
-import type { SimulationStatus, ForceConfig } from "../types.ts";
-import { EventEmitter, createEventEmitter } from "../events/emitter.ts";
+import type { SimulationStatus } from "../types.ts";
 
 /**
  * Simulation state
@@ -31,19 +30,35 @@ export interface SimulationState {
 }
 
 /**
- * Simulation events
+ * Simulation event types
  */
-export interface SimulationEvents {
-  /** Fired each simulation tick */
+export type SimulationEventType = "tick" | "end" | "pause" | "resume" | "restart";
+
+/**
+ * Simulation event data by type
+ */
+export interface SimulationEventData {
   tick: { alpha: number; tickCount: number };
-  /** Fired when simulation completes (alpha < alphaMin) */
   end: { tickCount: number };
-  /** Fired when simulation is paused */
   pause: { alpha: number };
-  /** Fired when simulation is resumed */
   resume: { alpha: number };
-  /** Fired when simulation is restarted */
   restart: { alpha: number };
+}
+
+/**
+ * Simulation event handler
+ */
+export type SimulationEventHandler<T extends SimulationEventType> = (
+  data: SimulationEventData[T]
+) => void;
+
+/**
+ * Simple event emitter for simulation events
+ */
+export interface SimulationEventEmitter {
+  on<T extends SimulationEventType>(type: T, handler: SimulationEventHandler<T>): () => void;
+  off<T extends SimulationEventType>(type: T, handler: SimulationEventHandler<T>): void;
+  emit<T extends SimulationEventType>(type: T, data: SimulationEventData[T]): void;
 }
 
 /**
@@ -88,7 +103,7 @@ export interface SimulationController {
   /** Whether simulation is currently running */
   readonly isRunning: boolean;
   /** Event emitter for simulation events */
-  readonly events: EventEmitter<SimulationEvents>;
+  readonly events: SimulationEventEmitter;
 
   /** Start the simulation */
   start: () => void;
@@ -124,8 +139,39 @@ export function createSimulationController(
     ...config,
   };
 
-  // Event emitter
-  const events = createEventEmitter<SimulationEvents>();
+  // Internal event handlers storage
+  const handlers = new Map<SimulationEventType, Set<SimulationEventHandler<SimulationEventType>>>();
+
+  // Create simulation event emitter
+  const events: SimulationEventEmitter = {
+    on<T extends SimulationEventType>(type: T, handler: SimulationEventHandler<T>): () => void {
+      let set = handlers.get(type);
+      if (!set) {
+        set = new Set();
+        handlers.set(type, set);
+      }
+      set.add(handler as SimulationEventHandler<SimulationEventType>);
+      return () => events.off(type, handler);
+    },
+    off<T extends SimulationEventType>(type: T, handler: SimulationEventHandler<T>): void {
+      const set = handlers.get(type);
+      if (set) {
+        set.delete(handler as SimulationEventHandler<SimulationEventType>);
+      }
+    },
+    emit<T extends SimulationEventType>(type: T, data: SimulationEventData[T]): void {
+      const set = handlers.get(type);
+      if (set) {
+        for (const handler of set) {
+          try {
+            (handler as SimulationEventHandler<T>)(data);
+          } catch (error) {
+            console.error(`[Simulation] Error in ${type} handler:`, error);
+          }
+        }
+      }
+    },
+  };
 
   // Internal state
   const state: SimulationState = {
@@ -287,5 +333,5 @@ export function calculateAlphaDecay(
 ): number {
   // Solve: alphaMin = 1 * (1 - decay)^iterations
   // decay = 1 - alphaMin^(1/iterations)
-  return 1 - Math.pow(alphaMin, 1 / iterations);
+  return 1 - alphaMin ** (1 / iterations);
 }

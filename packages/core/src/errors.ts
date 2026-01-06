@@ -54,15 +54,15 @@ export enum ErrorCode {
  */
 export interface ErrorContext {
   /** Original error if wrapping */
-  readonly originalError?: unknown;
+  readonly originalError?: unknown | undefined;
   /** Shader source line if shader error */
-  readonly shaderLine?: number;
+  readonly shaderLine?: number | undefined;
   /** Shader source snippet if shader error */
-  readonly shaderSnippet?: string;
+  readonly shaderSnippet?: string | undefined;
   /** Node ID if node-related error */
-  readonly nodeId?: number;
+  readonly nodeId?: number | undefined;
   /** Edge ID if edge-related error */
-  readonly edgeId?: number;
+  readonly edgeId?: number | undefined;
   /** Additional context data */
   readonly [key: string]: unknown;
 }
@@ -78,7 +78,7 @@ export class HeroineGraphError extends Error {
   /** Additional context for debugging */
   readonly context: ErrorContext;
   /** Suggested fix if available */
-  readonly suggestion?: string;
+  readonly suggestion?: string | undefined;
 
   constructor(
     code: ErrorCode,

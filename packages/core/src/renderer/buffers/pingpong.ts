@@ -5,6 +5,8 @@
  * Allows read from one buffer while writing to another, then swap.
  */
 
+import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
+
 /**
  * Configuration for ping-pong buffers.
  */
@@ -97,8 +99,9 @@ export class PingPongBuffer {
    *
    * Use this for initial data upload.
    */
-  writeToRead(data: ArrayBuffer | ArrayBufferView, offset: number = 0): void {
-    this.device.queue.writeBuffer(this.getReadBuffer(), offset, data);
+  writeToRead(data: ArrayBuffer | Float32Array | Uint32Array, offset: number = 0): void {
+    const bufferData = data instanceof ArrayBuffer ? data : toArrayBuffer(data);
+    this.device.queue.writeBuffer(this.getReadBuffer(), offset, bufferData);
   }
 
   /**

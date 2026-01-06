@@ -18,11 +18,11 @@ import EDGE_FRAG_WGSL from "../shaders/edge.frag.wgsl";
  */
 export interface EdgePipelineConfig {
   /** Maximum number of edges to render */
-  maxEdges: number;
+  maxEdges?: number | undefined;
   /** Sample count for MSAA (1, 4, or 8) */
-  sampleCount?: number;
+  sampleCount?: number | undefined;
   /** Texture format for color attachment */
-  format?: GPUTextureFormat;
+  format?: GPUTextureFormat | undefined;
 }
 
 /**
@@ -133,7 +133,7 @@ export function createEdgeRenderPipeline(
       entryPoint: "fs_main",
       targets: [
         {
-          format: finalConfig.format,
+          format: finalConfig.format ?? "bgra8unorm",
           blend: {
             color: {
               srcFactor: "src-alpha",
@@ -155,7 +155,7 @@ export function createEdgeRenderPipeline(
       cullMode: "none", // Edges can be viewed from either side
     },
     multisample: {
-      count: finalConfig.sampleCount,
+      count: finalConfig.sampleCount ?? 1,
     },
   });
 

@@ -276,7 +276,10 @@ export type {
   SimulationController,
   SimulationControllerConfig,
   SimulationState as SimulationControllerState,
-  SimulationEvents,
+  SimulationEventType,
+  SimulationEventData,
+  SimulationEventHandler,
+  SimulationEventEmitter,
 } from "./src/simulation/controller.ts";
 
 export {
@@ -408,3 +411,47 @@ export type {
   NormalizedPointerEvent,
   PointerEventCallback,
 } from "./src/interaction/pointer.ts";
+
+// =============================================================================
+// Layers
+// =============================================================================
+
+export {
+  LayerManager,
+  createLayerManager,
+  DEFAULT_LAYER_MANAGER_CONFIG,
+} from "./src/layers/manager.ts";
+export type { LayerManagerConfig, LayerInfo } from "./src/layers/manager.ts";
+
+export {
+  HeatmapLayer,
+  createHeatmapLayer,
+  DEFAULT_HEATMAP_CONFIG,
+  mergeHeatmapConfig,
+  validateHeatmapConfig,
+  COLOR_SCALES,
+  generateColorScaleData,
+  createColorScaleTexture,
+  createCustomColorScaleTexture,
+  getColorScaleNames,
+  DEFAULT_DENSITY_TEXTURE_CONFIG,
+  createDensityTexture,
+  clearDensityTexture,
+  createHeatmapPipeline,
+  DEFAULT_HEATMAP_UNIFORMS,
+  DEFAULT_COLORMAP_UNIFORMS,
+} from "./src/layers/mod.ts";
+export type {
+  Layer as VisualizationLayer,
+  HeatmapRenderContext,
+  HeatmapConfig as HeatmapLayerConfiguration,
+  ColorRGBA,
+  ColorStop,
+  ColorScaleName,
+  ColorScaleTexture,
+  DensityTextureConfig,
+  DensityTexture,
+  HeatmapUniforms,
+  ColormapUniforms,
+  HeatmapPipeline,
+} from "./src/layers/mod.ts";

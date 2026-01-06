@@ -131,7 +131,7 @@ export function calculateDecayRate(
   // (1 - decay)^iterations = alphaMin / alphaInitial
   // 1 - decay = (alphaMin / alphaInitial)^(1/iterations)
   // decay = 1 - (alphaMin / alphaInitial)^(1/iterations)
-  return 1 - Math.pow(alphaMin / alphaInitial, 1 / iterations);
+  return 1 - (alphaMin / alphaInitial) ** (1 / iterations);
 }
 
 /**

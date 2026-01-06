@@ -80,7 +80,7 @@ export interface InitResult {
 export async function createHeroineGraph(
   options: CreateHeroineGraphOptions,
 ): Promise<HeroineGraph> {
-  const { canvas, wasmUrl, gpu = {}, config = {}, debug = false } = options;
+  const { canvas, wasmUrl: _wasmUrl, gpu = {}, config = {}, debug = false } = options;
 
   // Resolve canvas element
   const canvasElement = resolveCanvas(canvas);
@@ -90,7 +90,7 @@ export async function createHeroineGraph(
   if (!webgpuStatus.supported) {
     throw new HeroineGraphError(
       ErrorCode.WEBGPU_NOT_SUPPORTED,
-      webgpuStatus.reason || "WebGPU is not supported in this browser",
+      webgpuStatus.error || "WebGPU is not supported in this browser",
     );
   }
 
@@ -185,7 +185,7 @@ export async function getSupportInfo(): Promise<{
   supported: boolean;
   webgpu: boolean;
   wasm: boolean;
-  reason?: string;
+  reason?: string | undefined;
 }> {
   const webgpuStatus = await checkWebGPU();
 
@@ -198,7 +198,7 @@ export async function getSupportInfo(): Promise<{
     supported: webgpuStatus.supported && wasmSupported,
     webgpu: webgpuStatus.supported,
     wasm: wasmSupported,
-    reason: webgpuStatus.reason,
+    reason: webgpuStatus.error,
   };
 }
 

@@ -6,6 +6,7 @@
  */
 
 import type { ForceConfig, ViewportState } from "../../types.ts";
+import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
  * Simulation uniform buffer layout.
@@ -38,6 +39,8 @@ export interface SimulationUniforms {
   edgeCount: number;
   /** Delta time for integration */
   dt: number;
+  /** Index signature for generic compatibility */
+  [key: string]: number;
 }
 
 /**
@@ -84,6 +87,8 @@ export interface ViewportUniforms {
   invScale: number;
   /** Padding for 16-byte alignment */
   _padding: number;
+  /** Index signature for generic compatibility */
+  [key: string]: number;
 }
 
 /**
@@ -137,7 +142,7 @@ export class UniformBuffer<T extends Record<string, number>> {
    */
   upload(): void {
     if (this.dirty) {
-      this.device.queue.writeBuffer(this.buffer, 0, this.data);
+      this.device.queue.writeBuffer(this.buffer, 0, toArrayBuffer(this.data));
       this.dirty = false;
     }
   }
@@ -146,7 +151,7 @@ export class UniformBuffer<T extends Record<string, number>> {
    * Force upload data to GPU.
    */
   forceUpload(): void {
-    this.device.queue.writeBuffer(this.buffer, 0, this.data);
+    this.device.queue.writeBuffer(this.buffer, 0, toArrayBuffer(this.data));
     this.dirty = false;
   }
 

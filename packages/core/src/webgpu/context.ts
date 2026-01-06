@@ -45,7 +45,7 @@ export interface GPUContext {
  *
  * These are the minimum limits we need for graph visualization.
  */
-const DEFAULT_REQUIRED_LIMITS: Partial<GPUSupportedLimits> = {
+const DEFAULT_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBufferBindingSize: 256 * 1024 * 1024, // 256 MB
   maxBufferSize: 256 * 1024 * 1024, // 256 MB
   maxComputeWorkgroupsPerDimension: 65535,
@@ -77,20 +77,19 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
     throw Errors.adapterFailed();
   }
 
-  // Determine required limits
-  const requiredLimits: Partial<GPUSupportedLimits> = {};
+  // Determine required limits - use Record for mutable limits object
+  const requiredLimits: Record<string, number> = {};
   const unsupportedLimits: string[] = [];
 
   for (const [key, value] of Object.entries(DEFAULT_REQUIRED_LIMITS)) {
-    const limitKey = key as keyof GPUSupportedLimits;
-    const adapterLimit = adapter.limits[limitKey];
+    const adapterLimit = (adapter.limits as unknown as Record<string, number>)[key];
 
-    if (typeof adapterLimit === "number" && typeof value === "number") {
+    if (typeof adapterLimit === "number") {
       if (adapterLimit >= value) {
-        requiredLimits[limitKey] = value as never;
+        requiredLimits[key] = value;
       } else {
         // Use adapter's maximum if our requirement is too high
-        requiredLimits[limitKey] = adapterLimit as never;
+        requiredLimits[key] = adapterLimit;
         if (adapterLimit < value * 0.5) {
           // Only warn if significantly lower
           unsupportedLimits.push(`${key}: ${adapterLimit} < ${value}`);
@@ -123,9 +122,10 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
 
   // Set up error handling
   device.addEventListener("uncapturederror", (event) => {
-    console.error("[HeroineGraph] Uncaptured WebGPU error:", event.error);
+    const gpuEvent = event as GPUUncapturedErrorEvent;
+    console.error("[HeroineGraph] Uncaptured WebGPU error:", gpuEvent.error);
     if (debug) {
-      console.error("Error details:", event.error.message);
+      console.error("Error details:", gpuEvent.error.message);
     }
   });
 
@@ -135,8 +135,8 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
     console.error("Reason:", info.reason);
   });
 
-  // Get canvas context
-  const context = canvas.getContext("webgpu");
+  // Get canvas context - cast to GPUCanvasContext since getContext returns generic type
+  const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
   if (!context) {
     device.destroy();
     throw new HeroineGraphError(

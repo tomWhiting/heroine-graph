@@ -140,7 +140,7 @@ export interface Edge {
 // =============================================================================
 
 /** Simulation running state */
-export type SimulationStatus = "stopped" | "running" | "paused" | "cooling";
+export type SimulationStatus = "idle" | "stopped" | "running" | "paused" | "cooling";
 
 /** Force configuration parameters */
 export interface ForceConfig {
@@ -355,15 +355,29 @@ export interface GraphTypedInput {
   /** Number of nodes */
   readonly nodeCount: number;
   /** Number of edges */
-  readonly edgeCount: number;
+  readonly edgeCount?: number | undefined;
   /** Positions as [x0, y0, x1, y1, ...] */
-  readonly positions?: Float32Array;
+  readonly positions?: Float32Array | undefined;
+  /** Edge pairs as [src0, tgt0, src1, tgt1, ...] - alias for edges */
+  readonly edgePairs?: Uint32Array | undefined;
   /** Edges as [src0, tgt0, src1, tgt1, ...] */
-  readonly edges: Uint32Array;
+  readonly edges?: Uint32Array | undefined;
+  /** Optional node IDs (string or number) */
+  readonly nodeIds?: readonly (string | number)[] | undefined;
+  /** Optional edge IDs (string or number) */
+  readonly edgeIds?: readonly (string | number)[] | undefined;
+  /** Optional node radii */
+  readonly nodeRadii?: Float32Array | undefined;
+  /** Optional node colors as [r0, g0, b0, r1, g1, b1, ...] */
+  readonly nodeColors?: Float32Array | undefined;
+  /** Optional edge widths */
+  readonly edgeWidths?: Float32Array | undefined;
+  /** Optional edge colors as [r0, g0, b0, r1, g1, b1, ...] */
+  readonly edgeColors?: Float32Array | undefined;
   /** Optional node metadata */
-  readonly nodeMetadata?: readonly NodeMetadata[];
+  readonly nodeMetadata?: readonly NodeMetadata[] | undefined;
   /** Optional edge metadata */
-  readonly edgeMetadata?: readonly EdgeMetadata[];
+  readonly edgeMetadata?: readonly EdgeMetadata[] | undefined;
 }
 
 // =============================================================================
@@ -483,6 +497,25 @@ export interface BackgroundClickEvent extends GraphEvent {
   readonly originalEvent: PointerEvent;
 }
 
+/** Graph load event */
+export interface GraphLoadEvent extends GraphEvent {
+  readonly type: "graph:load";
+  readonly nodeCount: number;
+  readonly edgeCount: number;
+}
+
+/** Node pin event */
+export interface NodePinEvent extends GraphEvent {
+  readonly type: "node:pin";
+  readonly nodeId: NodeId;
+}
+
+/** Node unpin event */
+export interface NodeUnpinEvent extends GraphEvent {
+  readonly type: "node:unpin";
+  readonly nodeId: NodeId;
+}
+
 /** Union of all events */
 export type HeroineGraphEvent =
   | NodeClickEvent
@@ -499,7 +532,10 @@ export type HeroineGraphEvent =
   | SimulationTickEvent
   | SimulationEndEvent
   | SelectionChangeEvent
-  | BackgroundClickEvent;
+  | BackgroundClickEvent
+  | GraphLoadEvent
+  | NodePinEvent
+  | NodeUnpinEvent;
 
 /** Event handler function */
 export type EventHandler<E extends GraphEvent> = (event: E) => void;
@@ -513,6 +549,8 @@ export interface EventMap {
   "node:dragstart": NodeDragStartEvent;
   "node:dragmove": NodeDragMoveEvent;
   "node:dragend": NodeDragEndEvent;
+  "node:pin": NodePinEvent;
+  "node:unpin": NodeUnpinEvent;
   "edge:click": EdgeClickEvent;
   "edge:hoverenter": EdgeHoverEnterEvent;
   "edge:hoverleave": EdgeHoverLeaveEvent;
@@ -521,4 +559,5 @@ export interface EventMap {
   "simulation:end": SimulationEndEvent;
   "selection:change": SelectionChangeEvent;
   "background:click": BackgroundClickEvent;
+  "graph:load": GraphLoadEvent;
 }

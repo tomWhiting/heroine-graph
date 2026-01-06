@@ -8,7 +8,6 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
-import { HeroineGraphError, ErrorCode } from "../../errors.ts";
 
 // Import shader source (bundled as text by esbuild)
 import NODE_VERT_WGSL from "../shaders/node.vert.wgsl";
@@ -19,11 +18,11 @@ import NODE_FRAG_WGSL from "../shaders/node.frag.wgsl";
  */
 export interface NodePipelineConfig {
   /** Maximum number of nodes to render */
-  maxNodes: number;
+  maxNodes?: number | undefined;
   /** Sample count for MSAA (1, 4, or 8) */
-  sampleCount?: number;
+  sampleCount?: number | undefined;
   /** Texture format for color attachment */
-  format?: GPUTextureFormat;
+  format?: GPUTextureFormat | undefined;
 }
 
 /**
@@ -128,7 +127,7 @@ export function createNodeRenderPipeline(
       entryPoint: "fs_main",
       targets: [
         {
-          format: finalConfig.format,
+          format: finalConfig.format ?? "bgra8unorm",
           blend: {
             color: {
               srcFactor: "src-alpha",
@@ -150,7 +149,7 @@ export function createNodeRenderPipeline(
       cullMode: "none", // Nodes are always visible
     },
     multisample: {
-      count: finalConfig.sampleCount,
+      count: finalConfig.sampleCount ?? 1,
     },
   });
 
@@ -242,7 +241,7 @@ export function renderNodes(
  *
  * @param pipeline - Node render pipeline to destroy
  */
-export function destroyNodeRenderPipeline(pipeline: NodeRenderPipeline): void {
+export function destroyNodeRenderPipeline(_pipeline: NodeRenderPipeline): void {
   // WebGPU resources are garbage collected, but we can help by
   // explicitly releasing references
   // Note: GPURenderPipeline doesn't have a destroy() method

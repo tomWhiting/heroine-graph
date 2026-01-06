@@ -63,21 +63,27 @@ export interface FullForceConfig extends ForceConfig {
  * Default force configuration values
  */
 export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
-  // Repulsion
+  // Base ForceConfig properties (required by interface)
+  repulsion: -30,
+  attraction: 0.1,
+  gravity: 0.01,
+  linkDistance: 30,
+  theta: 0.8,
+  centerX: 0,
+  centerY: 0,
+
+  // Extended repulsion settings
   repulsionStrength: -30,
   repulsionDistanceMax: 1000,
   repulsionDistanceMin: 1,
-  theta: 0.8,
 
-  // Attraction
+  // Extended attraction settings
   springStrength: 0.1,
   springLength: 30,
   springLengthByDegree: false,
 
   // Centering
   centerStrength: 0.01,
-  centerX: 0,
-  centerY: 0,
 
   // Collision
   collisionEnabled: false,

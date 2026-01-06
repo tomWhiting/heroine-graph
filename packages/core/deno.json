@@ -10,7 +10,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
-    "lib": ["deno.window", "dom", "dom.iterable", "dom.asynciterable", "webgpu"]
+    "lib": ["deno.window", "dom", "dom.iterable", "dom.asynciterable", "deno.webgpu"]
   },
   "imports": {
     "@heroine-graph/wasm": "../wasm/pkg/heroine_graph_wasm.js"

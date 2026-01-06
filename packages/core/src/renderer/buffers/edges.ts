@@ -6,6 +6,7 @@
  */
 
 import { HeroineGraphError, ErrorCode } from "../../errors.ts";
+import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
  * CSR format edge data.
@@ -21,7 +22,7 @@ export interface CSREdgeData {
   /** Edge target node IDs (E elements) */
   readonly targets: Uint32Array;
   /** Edge weights (E elements, optional) */
-  readonly weights?: Float32Array;
+  readonly weights?: Float32Array | undefined;
 }
 
 /**
@@ -174,18 +175,18 @@ export class EdgeBufferManager {
     this.edgeCount = edgeCount;
 
     // Upload offsets
-    this.device.queue.writeBuffer(this.offsetsBuffer, 0, data.offsets);
+    this.device.queue.writeBuffer(this.offsetsBuffer, 0, toArrayBuffer(data.offsets));
 
     // Upload targets (convert to f32 for uniform buffer access)
     const targetsF32 = new Float32Array(data.targets);
-    this.device.queue.writeBuffer(this.targetsBuffer, 0, targetsF32);
+    this.device.queue.writeBuffer(this.targetsBuffer, 0, toArrayBuffer(targetsF32));
 
     // Upload weights (default to 1.0 if not provided)
     if (data.weights) {
-      this.device.queue.writeBuffer(this.weightsBuffer, 0, data.weights);
+      this.device.queue.writeBuffer(this.weightsBuffer, 0, toArrayBuffer(data.weights));
     } else {
       const defaultWeights = new Float32Array(edgeCount).fill(1.0);
-      this.device.queue.writeBuffer(this.weightsBuffer, 0, defaultWeights);
+      this.device.queue.writeBuffer(this.weightsBuffer, 0, toArrayBuffer(defaultWeights));
     }
   }
 

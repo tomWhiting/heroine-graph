@@ -6,7 +6,8 @@
  */
 
 import type { ViewportState } from "../types.ts";
-import { graphToClipMatrix, Matrix3 } from "./transforms.ts";
+import { graphToClipMatrix } from "./transforms.ts";
+import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 
 /**
  * Viewport uniform data for shaders.
@@ -112,7 +113,7 @@ export class ViewportUniformBuffer {
     // padding (already zero)
 
     // Write to GPU immediately
-    this._device.queue.writeBuffer(this._buffer, 0, this.data);
+    this._device.queue.writeBuffer(this._buffer, 0, toArrayBuffer(this.data));
     this.dirty = false;
   }
 
@@ -121,7 +122,7 @@ export class ViewportUniformBuffer {
    */
   upload(): void {
     if (this.dirty) {
-      this._device.queue.writeBuffer(this._buffer, 0, this.data);
+      this._device.queue.writeBuffer(this._buffer, 0, toArrayBuffer(this.data));
       this.dirty = false;
     }
   }
@@ -130,7 +131,7 @@ export class ViewportUniformBuffer {
    * Force upload to GPU.
    */
   forceUpload(): void {
-    this._device.queue.writeBuffer(this._buffer, 0, this.data);
+    this._device.queue.writeBuffer(this._buffer, 0, toArrayBuffer(this.data));
     this.dirty = false;
   }
 

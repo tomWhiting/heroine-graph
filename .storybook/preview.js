@@ -1,6 +1,9 @@
+import './preview.css';
+
 /** @type { import('@storybook/html-vite').Preview } */
 const preview = {
   parameters: {
+    layout: 'fullscreen',
     controls: {
       matchers: {
        color: /(background|color)$/i,

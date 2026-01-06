@@ -102,7 +102,6 @@ export function initializeGrid(
 
   // Calculate grid dimensions
   const cols = Math.ceil(Math.sqrt(count));
-  const rows = Math.ceil(count / cols);
   const spacing = (radius * 2) / Math.max(cols - 1, 1);
 
   const startX = centerX - radius;

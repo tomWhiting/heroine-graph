@@ -198,31 +198,31 @@ Based on plan.md monorepo structure:
 
 ### Heatmap Infrastructure for US3
 
-- [ ] T082 [P] [US3] Create density texture (RGBA32F) in packages/core/src/layers/heatmap/texture.ts
-- [ ] T083 [P] [US3] Write Gaussian splat vertex shader in packages/core/src/layers/heatmap/shaders/splat.vert.wgsl
-- [ ] T084 [P] [US3] Write Gaussian splat fragment shader in packages/core/src/layers/heatmap/shaders/splat.frag.wgsl
-- [ ] T085 [US3] Write color mapping fragment shader in packages/core/src/layers/heatmap/shaders/colormap.frag.wgsl
+- [x] T082 [P] [US3] Create density texture (RGBA16Float) in packages/core/src/layers/heatmap/texture.ts
+- [x] T083 [P] [US3] Write Gaussian splat vertex shader in packages/core/src/layers/heatmap/shaders/splat.vert.wgsl
+- [x] T084 [P] [US3] Write Gaussian splat fragment shader in packages/core/src/layers/heatmap/shaders/splat.frag.wgsl
+- [x] T085 [US3] Write color mapping shaders in packages/core/src/layers/heatmap/shaders/colormap.*.wgsl
 
 ### Heatmap Pipeline for US3
 
-- [ ] T086 [US3] Implement heatmap render pipeline (additive blend) in packages/core/src/layers/heatmap/pipeline.ts
-- [ ] T087 [US3] Implement color scale textures (viridis, plasma, etc.) in packages/core/src/layers/heatmap/colorscales.ts
-- [ ] T088 [US3] Implement HeatmapLayer class in packages/core/src/layers/heatmap/layer.ts
-- [ ] T089 [US3] Implement heatmap config (radius, intensity, opacity) in packages/core/src/layers/heatmap/config.ts
+- [x] T086 [US3] Implement heatmap render pipeline (additive blend) in packages/core/src/layers/heatmap/pipeline.ts
+- [x] T087 [US3] Implement color scale textures (viridis, plasma, etc.) in packages/core/src/layers/heatmap/colorscale.ts
+- [x] T088 [US3] Implement HeatmapLayer class in packages/core/src/layers/heatmap/layer.ts
+- [x] T089 [US3] Implement heatmap config (radius, intensity, opacity) in packages/core/src/layers/heatmap/config.ts
 
 ### Layer Management for US3
 
-- [ ] T090 [US3] Implement LayerManager class in packages/core/src/layers/manager.ts
-- [ ] T091 [US3] Implement layer visibility toggle in packages/core/src/layers/manager.ts
-- [ ] T092 [US3] Implement layer compositing (multi-pass render) in packages/core/src/renderer/compositor.ts
+- [x] T090 [US3] Implement LayerManager class in packages/core/src/layers/manager.ts
+- [x] T091 [US3] Implement layer visibility toggle in packages/core/src/layers/manager.ts
+- [x] T092 [US3] Implement layer compositing in packages/core/src/layers/manager.ts (render method)
 
 ### API Methods for US3
 
-- [ ] T093 [US3] Implement showLayer/hideLayer/toggleLayer in packages/core/src/api/graph.ts
-- [ ] T094 [US3] Implement setLayerConfig API method in packages/core/src/api/graph.ts
-- [ ] T095 [US3] Implement getLayers/getLayer API methods in packages/core/src/api/graph.ts
+- [x] T093 [US3] Implement enableHeatmap/disableHeatmap/toggleLayer in packages/core/src/api/graph.ts
+- [x] T094 [US3] Implement setHeatmapConfig API method in packages/core/src/api/graph.ts
+- [x] T095 [US3] Implement getLayers/getHeatmapConfig API methods in packages/core/src/api/graph.ts
 
-**Checkpoint**: US3 complete - heatmap layer shows density, updates in real-time
+**Checkpoint**: US3 complete - heatmap layer shows density, updates in real-time ✓
 
 ---
 

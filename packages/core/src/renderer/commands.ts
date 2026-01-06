@@ -10,7 +10,7 @@
 import type { GPUContext } from "../webgpu/context.ts";
 import type { NodeRenderPipeline } from "./pipelines/nodes.ts";
 import type { EdgeRenderPipeline } from "./pipelines/edges.ts";
-import type { FrameStats } from "./render_loop.ts";
+import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 
 /**
  * Clear color configuration
@@ -137,7 +137,7 @@ export function createCommandOrchestrator(
   gpuContext: GPUContext,
   config: CommandOrchestratorConfig,
 ): CommandOrchestrator {
-  const { device, context, format } = gpuContext;
+  const { device, context } = gpuContext;
   const { nodePipeline, edgePipeline } = config;
 
   let clearColor = config.clearColor ?? DEFAULT_CLEAR_COLOR;
@@ -304,9 +304,7 @@ export function createRenderPassDescriptor(
 export function createComputePassDescriptor(
   label?: string,
 ): GPUComputePassDescriptor {
-  return {
-    label,
-  };
+  return label !== undefined ? { label } : {};
 }
 
 /**
@@ -377,7 +375,9 @@ export function createBufferUpdater(device: GPUDevice): BufferUpdater {
 
     flush(): void {
       for (const { buffer, data, offset } of pendingUpdates) {
-        device.queue.writeBuffer(buffer, offset, data);
+        // Convert to ArrayBuffer to satisfy BufferSource type
+        const arrayBuffer = toArrayBuffer(data as Float32Array | Uint32Array | Uint8Array | Int32Array | Uint16Array | Int16Array);
+        device.queue.writeBuffer(buffer, offset, arrayBuffer);
       }
       pendingUpdates.length = 0;
     },

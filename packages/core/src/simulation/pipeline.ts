@@ -12,6 +12,7 @@
 
 import type { GPUContext } from "../webgpu/context.ts";
 import { calculateWorkgroups } from "../renderer/commands.ts";
+import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 
 // Import shader sources (bundled as text by esbuild)
 import CLEAR_FORCES_WGSL from "./shaders/clear_forces.comp.wgsl";
@@ -24,11 +25,11 @@ import INTEGRATE_SIMPLE_WGSL from "./shaders/integrate_simple.comp.wgsl";
  */
 export interface SimulationPipelineConfig {
   /** Maximum number of nodes */
-  maxNodes: number;
+  maxNodes?: number | undefined;
   /** Maximum number of edges */
-  maxEdges: number;
+  maxEdges?: number | undefined;
   /** Workgroup size for compute shaders */
-  workgroupSize?: number;
+  workgroupSize?: number | undefined;
 }
 
 /**
@@ -503,19 +504,19 @@ export function copyPositionsToSimulation(
   positionsX: Float32Array,
   positionsY: Float32Array,
 ): void {
-  device.queue.writeBuffer(buffers.positionsX, 0, positionsX);
-  device.queue.writeBuffer(buffers.positionsY, 0, positionsY);
-  device.queue.writeBuffer(buffers.positionsXOut, 0, positionsX);
-  device.queue.writeBuffer(buffers.positionsYOut, 0, positionsY);
+  device.queue.writeBuffer(buffers.positionsX, 0, toArrayBuffer(positionsX));
+  device.queue.writeBuffer(buffers.positionsY, 0, toArrayBuffer(positionsY));
+  device.queue.writeBuffer(buffers.positionsXOut, 0, toArrayBuffer(positionsX));
+  device.queue.writeBuffer(buffers.positionsYOut, 0, toArrayBuffer(positionsY));
 
   // Zero out velocities
   const zeros = new Float32Array(positionsX.length);
-  device.queue.writeBuffer(buffers.velocitiesX, 0, zeros);
-  device.queue.writeBuffer(buffers.velocitiesY, 0, zeros);
-  device.queue.writeBuffer(buffers.velocitiesXOut, 0, zeros);
-  device.queue.writeBuffer(buffers.velocitiesYOut, 0, zeros);
-  device.queue.writeBuffer(buffers.forcesX, 0, zeros);
-  device.queue.writeBuffer(buffers.forcesY, 0, zeros);
+  device.queue.writeBuffer(buffers.velocitiesX, 0, toArrayBuffer(zeros));
+  device.queue.writeBuffer(buffers.velocitiesY, 0, toArrayBuffer(zeros));
+  device.queue.writeBuffer(buffers.velocitiesXOut, 0, toArrayBuffer(zeros));
+  device.queue.writeBuffer(buffers.velocitiesYOut, 0, toArrayBuffer(zeros));
+  device.queue.writeBuffer(buffers.forcesX, 0, toArrayBuffer(zeros));
+  device.queue.writeBuffer(buffers.forcesY, 0, toArrayBuffer(zeros));
 }
 
 /**
@@ -527,8 +528,8 @@ export function copyEdgesToSimulation(
   edgeSources: Uint32Array,
   edgeTargets: Uint32Array,
 ): void {
-  device.queue.writeBuffer(buffers.edgeSources, 0, edgeSources);
-  device.queue.writeBuffer(buffers.edgeTargets, 0, edgeTargets);
+  device.queue.writeBuffer(buffers.edgeSources, 0, toArrayBuffer(edgeSources));
+  device.queue.writeBuffer(buffers.edgeTargets, 0, toArrayBuffer(edgeTargets));
 }
 
 /**
