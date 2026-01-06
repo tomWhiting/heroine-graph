@@ -72,6 +72,7 @@ import {
   type ContourLayer,
   createContourLayer,
   type ContourConfig,
+  type ContourRenderContext,
   // Metaball layer
   type MetaballLayer,
   createMetaballLayer,
@@ -361,6 +362,11 @@ export class HeroineGraph {
         this.buffers.edgeAttributes
       );
     }
+
+    // Update layer render contexts to use the new position buffers
+    // This is critical: layers must point to the current read buffer,
+    // not the output buffer being written to by the simulation
+    this.updateLayerRenderContext();
   }
 
   /**
@@ -399,10 +405,10 @@ export class HeroineGraph {
     });
     clearPass.end();
 
+    // Update layer render contexts before rendering (ensures fresh texture references)
+    this.updateLayerRenderContext();
+
     // Render visualization layers FIRST (heatmap renders behind nodes)
-    if (this.debug) {
-      console.log("[HeroineGraph] Rendering layers BEFORE nodes (v2)");
-    }
     this.layerManager.render(encoder, textureView);
 
     // Begin main render pass (loads existing content from layers)
@@ -1004,11 +1010,16 @@ export class HeroineGraph {
     }
 
     // Update contour layer if it exists
-    // Note: Contour layer needs the density texture from heatmap
+    // Contour layer uses the density texture from heatmap
     const contourLayer = this.layerManager.getLayer<ContourLayer>("contour");
     if (contourLayer && heatmapLayer) {
-      // TODO: Wire up density texture from heatmap when available
-      // For now, contour layer needs separate density texture support
+      const densityTexture = heatmapLayer.getDensityTexture();
+      const heatmapConfig = heatmapLayer.getConfig();
+      const contourContext: ContourRenderContext = {
+        densityTextureView: densityTexture.sampleView,
+        maxDensity: heatmapConfig.maxDensity,
+      };
+      contourLayer.setRenderContext(contourContext);
     }
 
     // Update metaball layer if it exists
@@ -1778,6 +1789,9 @@ export class HeroineGraph {
 
     // Resize layers
     this.layerManager.resize(cssWidth, cssHeight);
+
+    // Update layer render contexts after resize (texture views may have changed)
+    this.updateLayerRenderContext();
   }
 
   /**

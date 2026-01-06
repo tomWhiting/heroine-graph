@@ -27,12 +27,15 @@ export interface ContourRenderContext {
   width: number;
   /** Height of density texture */
   height: number;
+  /** Maximum density value for normalization (from heatmap config) */
+  maxDensity: number;
 }
 
 /**
- * Maximum segments per threshold (for buffer allocation)
+ * Maximum segments to render per threshold (performance limit)
+ * Typical contour coverage is 1-3% of cells
  */
-const MAX_SEGMENTS_PER_THRESHOLD = 100000;
+const MAX_CONTOUR_SEGMENTS = 5000;
 
 /**
  * Contour layer implementation
@@ -56,10 +59,18 @@ export class ContourLayer implements Layer {
   // Cached bind groups
   private bindGroupsDirty = true;
   private identifyBindGroup: GPUBindGroup | null = null;
+  private generateBindGroup: GPUBindGroup | null = null;
+  private lineBindGroup: GPUBindGroup | null = null;
 
   // Screen dimensions for line rendering
   private screenWidth = 800;
   private screenHeight = 600;
+
+  // Debug flag
+  private _debugLogged = false;
+
+  // Debug test mode: render test segments instead of computed contours
+  private _debugTestSegments = false;
 
   constructor(
     id: string,
@@ -85,6 +96,37 @@ export class ContourLayer implements Layer {
 
   get order(): number {
     return 1; // Contours render above heatmap but below nodes
+  }
+
+  /**
+   * Enable debug test segments (bypasses compute shaders)
+   */
+  enableTestSegments(): void {
+    this._debugTestSegments = true;
+    console.log("[ContourLayer] Test segment mode enabled");
+  }
+
+  /**
+   * Write test segments directly to the vertex buffer
+   */
+  private writeTestSegments(): void {
+    if (!this.vertexBuffer) return;
+
+    // Create 4 test segments forming a visible pattern
+    // Each segment: [x1, y1, x2, y2] in UV coordinates (0-1)
+    const segments = new Float32Array([
+      // Diagonal from top-left to center
+      0.1, 0.1, 0.5, 0.5,
+      // Horizontal line at center
+      0.2, 0.5, 0.8, 0.5,
+      // Vertical line at center
+      0.5, 0.2, 0.5, 0.8,
+      // Diagonal from center to bottom-right
+      0.5, 0.5, 0.9, 0.9,
+    ]);
+
+    this.context.device.queue.writeBuffer(this.vertexBuffer, 0, segments);
+    console.log("[ContourLayer] Wrote 4 test segments to vertex buffer");
   }
 
   set order(_value: number) {
@@ -165,9 +207,11 @@ export class ContourLayer implements Layer {
     });
 
     // Vertex buffer (4 floats per segment: x1, y1, x2, y2)
+    // Allocate for typical contour density (~2%), capped at max
+    const maxSegments = Math.min(Math.ceil(cellCount * 0.02), MAX_CONTOUR_SEGMENTS);
     this.vertexBuffer = device.createBuffer({
       label: "Contour Vertex Buffer",
-      size: MAX_SEGMENTS_PER_THRESHOLD * 4 * 4, // 4 floats * 4 bytes
+      size: Math.max(maxSegments * 4 * 4, 1024), // At least 1KB
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -214,6 +258,25 @@ export class ContourLayer implements Layer {
       return;
     }
 
+    // Debug: log render context on first frame
+    if (!this._debugLogged) {
+      const cellCount = (this.renderContext.width - 1) * (this.renderContext.height - 1);
+      const segmentEstimate = Math.min(Math.ceil(cellCount * 0.02), MAX_CONTOUR_SEGMENTS);
+      console.log("[ContourLayer] Rendering with context:", {
+        width: this.renderContext.width,
+        height: this.renderContext.height,
+        maxDensity: this.renderContext.maxDensity,
+        thresholds: this.config.thresholds,
+        cellCount,
+        segmentEstimate,
+        screenWidth: this.screenWidth,
+        screenHeight: this.screenHeight,
+        strokeWidth: this.config.strokeWidth,
+        strokeColor: this.config.strokeColor,
+      });
+      this._debugLogged = true;
+    }
+
     if (
       !this.cellCasesBuffer ||
       !this.activeCountBuffer ||
@@ -232,10 +295,46 @@ export class ContourLayer implements Layer {
       screenHeight: this.screenHeight,
     });
 
+    // Debug test mode: render test segments directly
+    if (this._debugTestSegments) {
+      this.renderTestSegments(encoder, targetView);
+      return;
+    }
+
     // Render contours for each threshold
     for (const threshold of this.config.thresholds) {
       this.renderThreshold(encoder, targetView, threshold, width, height);
     }
+  }
+
+  /**
+   * Render test segments (debug mode)
+   */
+  private renderTestSegments(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+    // Write test segments
+    this.writeTestSegments();
+
+    // Ensure bind groups exist
+    this.ensureBindGroups();
+
+    // Render the test segments
+    const renderPass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: targetView,
+          loadOp: "load",
+          storeOp: "store",
+        },
+      ],
+    });
+
+    renderPass.setPipeline(this.pipeline.linePipeline);
+    renderPass.setBindGroup(0, this.lineBindGroup!);
+    // Draw 4 test segments (6 vertices each for quad expansion)
+    renderPass.draw(6, 4, 0, 0);
+    renderPass.end();
+
+    console.log("[ContourLayer] Rendered 4 test segments");
   }
 
   /**
@@ -257,11 +356,12 @@ export class ContourLayer implements Layer {
       width,
       height,
       threshold,
+      maxDensity: this.renderContext.maxDensity,
     });
 
-    // Clear active count
-    const zeroData = new Uint32Array([0]);
-    this.context.device.queue.writeBuffer(this.activeCountBuffer!, 0, zeroData);
+    // Clear counters and vertex buffer to prevent stale data
+    encoder.clearBuffer(this.activeCountBuffer!);
+    encoder.clearBuffer(this.vertexBuffer!);
 
     // Ensure bind groups exist
     this.ensureBindGroups();
@@ -278,56 +378,42 @@ export class ContourLayer implements Layer {
     identifyPass.dispatchWorkgroups(workgroupsX, workgroupsY, 1);
     identifyPass.end();
 
-    // Note: For simplicity, we skip the full prefix sum and generate
-    // a fixed number of segments based on estimated density.
-    // A production implementation would read back active_count
-    // and perform a proper prefix sum.
-
-    // Pass 2: Generate vertices (simplified - process all cells)
-    const generateBindGroup = this.pipeline.createGenerateBindGroup(
-      this.renderContext.densityTextureView,
-      this.cellCasesBuffer!,
-      this.prefixSumBuffer!, // In simplified mode, we don't use this properly
-      this.vertexBuffer!
-    );
-
+    // Pass 2: Generate vertices with atomic allocation
+    // Using activeCountBuffer as segment counter (it gets cleared above)
     const generatePass = encoder.beginComputePass({
       label: `Contour Generate (threshold=${threshold})`,
     });
     generatePass.setPipeline(this.pipeline.generatePipeline);
-    generatePass.setBindGroup(0, generateBindGroup);
+    generatePass.setBindGroup(0, this.generateBindGroup!);
 
     const generateWorkgroups = Math.ceil(cellCount / 256);
     generatePass.dispatchWorkgroups(generateWorkgroups, 1, 1);
     generatePass.end();
 
     // Pass 3: Render lines
-    // Estimate segment count (conservative estimate)
-    const estimatedSegments = Math.min(cellCount / 4, MAX_SEGMENTS_PER_THRESHOLD);
+    // Use conservative estimate: ~2% of cells typically have contour edges
+    // This avoids reading back the counter which would stall the pipeline
+    const segmentsToDraw = Math.min(Math.ceil(cellCount * 0.02), MAX_CONTOUR_SEGMENTS);
 
-    if (estimatedSegments > 0) {
-      const lineBindGroup = this.pipeline.createLineBindGroup(this.vertexBuffer!);
+    const renderPass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: targetView,
+          loadOp: "load",
+          storeOp: "store",
+        },
+      ],
+    });
 
-      const renderPass = encoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: targetView,
-            loadOp: "load",
-            storeOp: "store",
-          },
-        ],
-      });
-
-      renderPass.setPipeline(this.pipeline.linePipeline);
-      renderPass.setBindGroup(0, lineBindGroup);
-      // 6 vertices per line segment (2 triangles = quad)
-      renderPass.draw(6, Math.floor(estimatedSegments), 0, 0);
-      renderPass.end();
-    }
+    renderPass.setPipeline(this.pipeline.linePipeline);
+    renderPass.setBindGroup(0, this.lineBindGroup!);
+    // 6 vertices per line segment (2 triangles = quad)
+    renderPass.draw(6, segmentsToDraw, 0, 0);
+    renderPass.end();
   }
 
   /**
-   * Ensure bind groups are created
+   * Ensure bind groups are created (cached for performance)
    */
   private ensureBindGroups(): void {
     if (!this.bindGroupsDirty || !this.renderContext) return;
@@ -337,6 +423,15 @@ export class ContourLayer implements Layer {
       this.cellCasesBuffer!,
       this.activeCountBuffer!
     );
+
+    this.generateBindGroup = this.pipeline.createGenerateBindGroup(
+      this.renderContext.densityTextureView,
+      this.cellCasesBuffer!,
+      this.activeCountBuffer!,
+      this.vertexBuffer!
+    );
+
+    this.lineBindGroup = this.pipeline.createLineBindGroup(this.vertexBuffer!);
 
     this.bindGroupsDirty = false;
   }

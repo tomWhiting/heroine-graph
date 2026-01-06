@@ -27,8 +27,10 @@ export interface ContourUniforms {
   width: number;
   /** Texture height */
   height: number;
-  /** Density threshold */
+  /** Density threshold (normalized 0-1) */
   threshold: number;
+  /** Maximum density for normalization */
+  maxDensity: number;
 }
 
 /**
@@ -102,7 +104,7 @@ export interface ContourPipeline {
  * Creates the contour pipelines
  */
 export function createContourPipeline(context: GPUContext): ContourPipeline {
-  const { device } = context;
+  const { device, format: canvasFormat } = context;
 
   // Create shader modules
   const identifyModule = device.createShaderModule({
@@ -204,11 +206,11 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: "read-only-storage" },
       },
-      // Prefix sums
+      // Segment counter (atomic)
       {
         binding: 3,
         visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "read-only-storage" },
+        buffer: { type: "storage" },
       },
       // Vertices output
       {
@@ -306,7 +308,7 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
       entryPoint: "fs_main",
       targets: [
         {
-          format: "bgra8unorm",
+          format: canvasFormat,
           blend: {
             color: {
               srcFactor: "src-alpha",
@@ -359,7 +361,7 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
     view.setUint32(0, uniforms.width, true);
     view.setUint32(4, uniforms.height, true);
     view.setFloat32(8, uniforms.threshold, true);
-    view.setUint32(12, 0, true); // padding
+    view.setFloat32(12, uniforms.maxDensity, true);
     device.queue.writeBuffer(contourUniformBuffer, 0, data);
   }
 

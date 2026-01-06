@@ -7,24 +7,27 @@ struct GenerateUniforms {
     // Texture dimensions
     width: u32,
     height: u32,
-    // Density threshold
+    // Density threshold (normalized 0-1)
     threshold: f32,
-    // Padding
-    _padding: u32,
+    // Maximum density value for normalization
+    max_density: f32,
 }
 
 @group(0) @binding(0) var density_texture: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> uniforms: GenerateUniforms;
 @group(0) @binding(2) var<storage, read> cell_cases: array<u32>;
-@group(0) @binding(3) var<storage, read> prefix_sums: array<u32>;
+// Atomic counter for allocating output slots
+@group(0) @binding(3) var<storage, read_write> segment_counter: atomic<u32>;
 // Output vertices: each line segment is 4 floats (x1, y1, x2, y2)
 @group(0) @binding(4) var<storage, read_write> vertices: array<f32>;
 
-// Sample density at integer coordinates
+// Sample density at integer coordinates (normalized 0-1)
 fn sample_density(x: i32, y: i32) -> f32 {
     let clamped_x = clamp(x, 0, i32(uniforms.width) - 1);
     let clamped_y = clamp(y, 0, i32(uniforms.height) - 1);
-    return textureLoad(density_texture, vec2<i32>(clamped_x, clamped_y), 0).r;
+    let raw_density = textureLoad(density_texture, vec2<i32>(clamped_x, clamped_y), 0).r;
+    // Normalize to 0-1 range using max_density
+    return clamp(raw_density / max(uniforms.max_density, 0.001), 0.0, 1.0);
 }
 
 // Linear interpolation factor between two values crossing threshold
@@ -125,11 +128,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Get edge connections for this case
     let edges = get_edges(case_index);
 
-    // Get output offset from prefix sum
-    let output_offset = prefix_sums[cell_index];
-
     // Generate first segment (always present for active cells)
     if (edges.x != 255u) {
+        // Atomically allocate output slot
+        let slot = atomicAdd(&segment_counter, 1u);
+
         let p0 = edge_point(edges.x, v0, v1, v2, v3, uniforms.threshold);
         let p1 = edge_point(edges.y, v0, v1, v2, v3, uniforms.threshold);
 
@@ -140,7 +143,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let tex_y1 = (f32(cell_y) + p1.y) / f32(grid_height);
 
         // Write to output buffer (4 floats per segment)
-        let base = output_offset * 4u;
+        let base = slot * 4u;
         vertices[base + 0u] = tex_x0;
         vertices[base + 1u] = tex_y0;
         vertices[base + 2u] = tex_x1;
@@ -149,6 +152,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Generate second segment (for saddle point cases 5 and 10)
     if (edges.z != 255u) {
+        // Atomically allocate output slot
+        let slot = atomicAdd(&segment_counter, 1u);
+
         let p0 = edge_point(edges.z, v0, v1, v2, v3, uniforms.threshold);
         let p1 = edge_point(edges.w, v0, v1, v2, v3, uniforms.threshold);
 
@@ -157,8 +163,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let tex_x1 = (f32(cell_x) + p1.x) / f32(grid_width);
         let tex_y1 = (f32(cell_y) + p1.y) / f32(grid_height);
 
-        // Write to output buffer (next segment)
-        let base = (output_offset + 1u) * 4u;
+        // Write to output buffer
+        let base = slot * 4u;
         vertices[base + 0u] = tex_x0;
         vertices[base + 1u] = tex_y0;
         vertices[base + 2u] = tex_x1;

@@ -105,7 +105,9 @@ export class MetaballLayer implements Layer {
     }
 
     const { nodeCount, viewportOffset, viewportScale } = this.renderContext;
-    if (nodeCount === 0) return;
+    if (nodeCount === 0) {
+      return;
+    }
 
     // Ensure bind group exists
     this.ensureBindGroup();

@@ -278,6 +278,13 @@ export class HeatmapLayer implements Layer {
   }
 
   /**
+   * Get the density texture for use by other layers (e.g., contour layer)
+   */
+  getDensityTexture(): DensityTexture {
+    return this.densityTexture;
+  }
+
+  /**
    * Resize layer resources
    */
   resize(width: number, height: number): void {

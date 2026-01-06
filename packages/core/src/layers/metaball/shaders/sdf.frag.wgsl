@@ -63,6 +63,7 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     // Early exit if no nodes
     if (uniforms.node_count == 0u) {
         discard;
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0); // Unreachable
     }
 
     // Convert UV to graph coordinates
@@ -89,32 +90,38 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
                 uniforms.fill_color.rgb,
                 uniforms.fill_color.a * edge_alpha
             );
-        } else {
-            discard;
         }
-    } else {
-        // Filled mode
-        if (d < 0.0) {
-            // Inside the metaball
-            // Smooth edge falloff
-            let edge_dist = 5.0 / uniforms.viewport_scale; // 5 pixel falloff
-            let alpha = clamp(-d / edge_dist, 0.0, 1.0);
-
-            return vec4<f32>(
-                uniforms.fill_color.rgb,
-                uniforms.fill_color.a * alpha
-            );
-        } else {
-            // Outside - apply soft edge
-            let soft_edge = 2.0 / uniforms.viewport_scale;
-            if (d < soft_edge) {
-                let alpha = 1.0 - d / soft_edge;
-                return vec4<f32>(
-                    uniforms.fill_color.rgb,
-                    uniforms.fill_color.a * alpha * 0.3
-                );
-            }
-            discard;
-        }
+        // Outside outline band - discard
+        discard;
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0); // Unreachable
     }
+
+    // Filled mode
+    if (d < 0.0) {
+        // Inside the metaball
+        // Smooth edge falloff
+        let edge_dist = 5.0 / uniforms.viewport_scale; // 5 pixel falloff
+        let alpha = clamp(-d / edge_dist, 0.0, 1.0);
+
+        return vec4<f32>(
+            uniforms.fill_color.rgb,
+            uniforms.fill_color.a * alpha
+        );
+    }
+
+    // Outside - apply soft edge
+    let soft_edge = 2.0 / uniforms.viewport_scale;
+    if (d < soft_edge) {
+        let alpha = 1.0 - d / soft_edge;
+        return vec4<f32>(
+            uniforms.fill_color.rgb,
+            uniforms.fill_color.a * alpha * 0.3
+        );
+    }
+
+    // Discard fragment (outside all regions)
+    discard;
+
+    // Unreachable - required by WGSL to have a return
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
 }

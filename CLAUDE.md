@@ -1,29 +1,65 @@
 # heroine-graph Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-01-06
+## Runtime
 
-## Active Technologies
+**CRITICAL: NEVER use npm, npx, or pnpm. ALWAYS use Deno.**
 
-- TypeScript 5.x (Deno 2.x), Rust 1.75+ (WASM target), WGSL shaders + WebGPU API, wasm-bindgen, petgraph (Rust), d3-scale/d3-color (TS) (001-webgpu-graph-library)
+- Use `deno task <name>` for running tasks
+- Use `dx` (Deno equivalent of npx) if you need to run a package binary
+- This is a Deno-first project - no exceptions
+
+## Common Commands
+
+```bash
+# Development
+deno task storybook       # Start Storybook dev server
+deno task storybook:clean # Clear Storybook cache
+deno task dev             # Watch mode for core package
+deno task check           # Type check
+
+# Testing
+deno task test            # Run tests
+deno task test:coverage   # Run tests with coverage
+deno task bench           # Run benchmarks
+
+# Building
+deno task build           # Build project
+deno task build:wasm      # Build WASM package
+deno task bundle          # Bundle for browser
+
+# Code Quality
+deno task lint            # Lint code
+deno task fmt             # Format code
+```
+
+## Technologies
+
+- TypeScript 5.x (Deno 2.x)
+- Rust 1.75+ (WASM target)
+- WGSL shaders + WebGPU API
+- wasm-bindgen
+- petgraph (Rust)
+- d3-scale/d3-color (TS)
 
 ## Project Structure
 
 ```text
-src/
-tests/
+packages/
+  core/         # Main TypeScript library
+  wasm/         # Rust WASM bindings
+  react/        # React wrapper (planned)
+  vue/          # Vue wrapper (planned)
+  svelte/       # Svelte wrapper (planned)
+stories/        # Storybook stories
+tests/          # Test files
 ```
-
-## Commands
-
-cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] cargo clippy
 
 ## Code Style
 
-TypeScript 5.x (Deno 2.x), Rust 1.75+ (WASM target), WGSL shaders: Follow standard conventions
-
-## Recent Changes
-
-- 001-webgpu-graph-library: Added TypeScript 5.x (Deno 2.x), Rust 1.75+ (WASM target), WGSL shaders + WebGPU API, wasm-bindgen, petgraph (Rust), d3-scale/d3-color (TS)
+- Follow Deno standard conventions
+- Use `deno fmt` for formatting
+- Use `deno lint` for linting
+- WGSL shaders: Follow WebGPU best practices
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

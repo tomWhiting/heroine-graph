@@ -7,10 +7,10 @@ struct ContourUniforms {
     // Texture dimensions
     width: u32,
     height: u32,
-    // Density threshold for this contour level
+    // Density threshold for this contour level (normalized 0-1)
     threshold: f32,
-    // Padding
-    _padding: u32,
+    // Maximum density value for normalization
+    max_density: f32,
 }
 
 @group(0) @binding(0) var density_texture: texture_2d<f32>;
@@ -20,11 +20,13 @@ struct ContourUniforms {
 // Output: count of active cells (for prefix sum)
 @group(0) @binding(3) var<storage, read_write> active_count: atomic<u32>;
 
-// Sample density at integer coordinates
+// Sample density at integer coordinates (normalized 0-1)
 fn sample_density(x: i32, y: i32) -> f32 {
     let clamped_x = clamp(x, 0, i32(uniforms.width) - 1);
     let clamped_y = clamp(y, 0, i32(uniforms.height) - 1);
-    return textureLoad(density_texture, vec2<i32>(clamped_x, clamped_y), 0).r;
+    let raw_density = textureLoad(density_texture, vec2<i32>(clamped_x, clamped_y), 0).r;
+    // Normalize to 0-1 range using max_density
+    return clamp(raw_density / max(uniforms.max_density, 0.001), 0.0, 1.0);
 }
 
 // Compute marching squares case index from 4 corner values

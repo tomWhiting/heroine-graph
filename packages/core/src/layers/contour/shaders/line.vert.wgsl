@@ -27,17 +27,29 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32
 ) -> VertexOutput {
-    // Read segment endpoints
+    // Read segment endpoints (UV coordinates 0-1)
     let base = instance_index * 4u;
     let p1 = vec2<f32>(segments[base + 0u], segments[base + 1u]);
     let p2 = vec2<f32>(segments[base + 2u], segments[base + 3u]);
 
     // Convert UV to clip space (-1 to 1)
-    let clip_p1 = p1 * 2.0 - 1.0;
-    let clip_p2 = p2 * 2.0 - 1.0;
+    // Note: Flip Y because texture UV has Y=0 at top, but clip space has Y=-1 at bottom
+    let clip_p1 = vec2<f32>(p1.x * 2.0 - 1.0, 1.0 - p1.y * 2.0);
+    let clip_p2 = vec2<f32>(p2.x * 2.0 - 1.0, 1.0 - p2.y * 2.0);
+
+    // Check for zero-length segment (degenerate - discard by putting off-screen)
+    let diff = clip_p2 - clip_p1;
+    let len_sq = dot(diff, diff);
+    if (len_sq < 0.0000001) {
+        // Zero-length segment - output off-screen position
+        var output: VertexOutput;
+        output.position = vec4<f32>(-10.0, -10.0, 0.0, 1.0);
+        output.alpha = 0.0;
+        return output;
+    }
 
     // Line direction and perpendicular
-    let dir = normalize(clip_p2 - clip_p1);
+    let dir = diff / sqrt(len_sq);
 
     // Perpendicular for line thickness (in screen space)
     let perp = vec2<f32>(-dir.y, dir.x);

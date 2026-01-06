@@ -233,6 +233,91 @@ export function generateSocialNetwork(userCount = 100): GraphData {
 }
 
 /**
+ * Generate a graph optimized for contour visualization
+ * Creates very dense, tight clusters ideal for iso-line rendering
+ */
+export function generateContourGraph(clusterCount = 3, nodesPerCluster = 200): GraphData {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  let nodeId = 0;
+
+  // Cluster centers - spread apart for clear separation
+  const clusterCenters: { x: number; y: number; spread: number }[] = [];
+  for (let c = 0; c < clusterCount; c++) {
+    const angle = (c / clusterCount) * Math.PI * 2;
+    const radius = 150;
+    clusterCenters.push({
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      spread: 20 + Math.random() * 20, // Tight clusters with varying density
+    });
+  }
+
+  // Generate tightly packed nodes in each cluster
+  for (let c = 0; c < clusterCount; c++) {
+    const center = clusterCenters[c];
+    const hue = (c / clusterCount) * 360;
+
+    for (let i = 0; i < nodesPerCluster; i++) {
+      // Very tight Gaussian distribution
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.abs(randomGaussian() * center.spread);
+
+      const x = center.x + Math.cos(angle) * r;
+      const y = center.y + Math.sin(angle) * r;
+
+      nodes.push({
+        id: `node_${nodeId}`,
+        x,
+        y,
+        radius: 2 + Math.random() * 2,
+        color: `hsl(${hue}, 70%, 50%)`,
+        group: `cluster_${c}`,
+      });
+
+      nodeId++;
+    }
+  }
+
+  // Minimal edges - just enough to form a connected graph
+  for (let c = 0; c < clusterCount; c++) {
+    const startIdx = c * nodesPerCluster;
+
+    // Connect each node to 1-2 nearby nodes
+    for (let i = 0; i < nodesPerCluster; i++) {
+      const connections = 1 + Math.floor(Math.random() * 2);
+      for (let j = 0; j < connections; j++) {
+        const target = startIdx + Math.floor(Math.random() * nodesPerCluster);
+        if (startIdx + i !== target) {
+          edges.push({
+            source: `node_${startIdx + i}`,
+            target: `node_${target}`,
+            color: '#333',
+            width: 0.3,
+          });
+        }
+      }
+    }
+  }
+
+  // Connect clusters with just a few edges
+  for (let i = 0; i < clusterCount; i++) {
+    const nextCluster = (i + 1) % clusterCount;
+    const sourceNode = i * nodesPerCluster + Math.floor(Math.random() * nodesPerCluster);
+    const targetNode = nextCluster * nodesPerCluster + Math.floor(Math.random() * nodesPerCluster);
+
+    edges.push({
+      source: `node_${sourceNode}`,
+      target: `node_${targetNode}`,
+      color: '#666',
+      width: 0.5,
+    });
+  }
+
+  return { nodes, edges };
+}
+
+/**
  * Generate a tree structure
  */
 export function generateTree(depth = 5, branching = 3): GraphData {
