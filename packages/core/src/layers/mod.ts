@@ -15,5 +15,14 @@ export {
   DEFAULT_LAYER_MANAGER_CONFIG,
 } from "./manager.ts";
 
+// Layer Interface
+export type { Layer } from "./heatmap/layer.ts";
+
 // Heatmap Layer
 export * from "./heatmap/mod.ts";
+
+// Contour Layer
+export * from "./contour/mod.ts";
+
+// Metaball Layer
+export * from "./metaball/mod.ts";

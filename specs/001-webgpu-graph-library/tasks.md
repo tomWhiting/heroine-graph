@@ -234,26 +234,26 @@ Based on plan.md monorepo structure:
 
 ### Contour Pipeline for US4
 
-- [ ] T096 [P] [US4] Write active cell identification compute shader in packages/core/src/layers/contour/shaders/identify.comp.wgsl
-- [ ] T097 [P] [US4] Write parallel prefix sum compute shader in packages/core/src/layers/contour/shaders/prefix_sum.comp.wgsl
-- [ ] T098 [US4] Write vertex generation compute shader in packages/core/src/layers/contour/shaders/generate.comp.wgsl
-- [ ] T099 [US4] Write contour line render shaders in packages/core/src/layers/contour/shaders/line.wgsl
-- [ ] T100 [US4] Implement ContourLayer class in packages/core/src/layers/contour/layer.ts
-- [ ] T101 [US4] Implement contour config (thresholds, stroke) in packages/core/src/layers/contour/config.ts
+- [x] T096 [P] [US4] Write active cell identification compute shader in packages/core/src/layers/contour/shaders/identify.comp.wgsl
+- [x] T097 [P] [US4] Write parallel prefix sum compute shader in packages/core/src/layers/contour/shaders/prefix_sum.comp.wgsl
+- [x] T098 [US4] Write vertex generation compute shader in packages/core/src/layers/contour/shaders/generate.comp.wgsl
+- [x] T099 [US4] Write contour line render shaders in packages/core/src/layers/contour/shaders/line.wgsl
+- [x] T100 [US4] Implement ContourLayer class in packages/core/src/layers/contour/layer.ts
+- [x] T101 [US4] Implement contour config (thresholds, stroke) in packages/core/src/layers/contour/config.ts
 
 ### Metaball Pipeline for US4
 
-- [ ] T102 [P] [US4] Write metaball SDF fragment shader with smin in packages/core/src/layers/metaball/shaders/sdf.frag.wgsl
-- [ ] T103 [US4] Implement MetaballLayer class in packages/core/src/layers/metaball/layer.ts
-- [ ] T104 [US4] Implement metaball config (threshold, blendRadius) in packages/core/src/layers/metaball/config.ts
+- [x] T102 [P] [US4] Write metaball SDF fragment shader with smin in packages/core/src/layers/metaball/shaders/sdf.frag.wgsl
+- [x] T103 [US4] Implement MetaballLayer class in packages/core/src/layers/metaball/layer.ts
+- [x] T104 [US4] Implement metaball config (threshold, blendRadius) in packages/core/src/layers/metaball/config.ts
 
 ### Integration for US4
 
-- [ ] T105 [US4] Register ContourLayer with LayerManager in packages/core/src/layers/manager.ts
-- [ ] T106 [US4] Register MetaballLayer with LayerManager in packages/core/src/layers/manager.ts
-- [ ] T107 [US4] Update layer compositing order in packages/core/src/renderer/compositor.ts
+- [x] T105 [US4] Register ContourLayer with LayerManager in packages/core/src/layers/manager.ts
+- [x] T106 [US4] Register MetaballLayer with LayerManager in packages/core/src/layers/manager.ts
+- [x] T107 [US4] Update layer compositing order in packages/core/src/renderer/compositor.ts
 
-**Checkpoint**: US4 complete - contours and metaballs visualize cluster boundaries
+**Checkpoint**: US4 complete - contours and metaballs visualize cluster boundaries ✓
 
 ---
 

@@ -68,6 +68,15 @@ import {
   type LayerInfo,
   type HeatmapRenderContext,
   type ColorScaleName,
+  // Contour layer
+  type ContourLayer,
+  createContourLayer,
+  type ContourConfig,
+  // Metaball layer
+  type MetaballLayer,
+  createMetaballLayer,
+  type MetaballConfig,
+  type MetaballRenderContext,
 } from "../layers/mod.ts";
 
 /**
@@ -981,7 +990,7 @@ export class HeroineGraph {
   private updateLayerRenderContext(): void {
     if (!this.simBuffers || !this.state.loaded) return;
 
-    const context: HeatmapRenderContext = {
+    const heatmapContext: HeatmapRenderContext = {
       viewportUniformBuffer: this.viewportUniformBuffer.buffer,
       positionsX: this.simBuffers.positionsX,
       positionsY: this.simBuffers.positionsY,
@@ -991,8 +1000,157 @@ export class HeroineGraph {
     // Update heatmap layer if it exists
     const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
     if (heatmapLayer) {
-      heatmapLayer.setRenderContext(context);
+      heatmapLayer.setRenderContext(heatmapContext);
     }
+
+    // Update contour layer if it exists
+    // Note: Contour layer needs the density texture from heatmap
+    const contourLayer = this.layerManager.getLayer<ContourLayer>("contour");
+    if (contourLayer && heatmapLayer) {
+      // TODO: Wire up density texture from heatmap when available
+      // For now, contour layer needs separate density texture support
+    }
+
+    // Update metaball layer if it exists
+    const metaballLayer = this.layerManager.getLayer<MetaballLayer>("metaball");
+    if (metaballLayer) {
+      const viewportState = this.viewport.state;
+      const metaballContext: MetaballRenderContext = {
+        viewportUniformBuffer: this.viewportUniformBuffer.buffer,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        nodeCount: this.state.nodeCount,
+        viewportOffset: [viewportState.x, viewportState.y],
+        viewportScale: viewportState.scale,
+      };
+      metaballLayer.setRenderContext(metaballContext);
+    }
+  }
+
+  // ==========================================================================
+  // Public API - Contour Layer
+  // ==========================================================================
+
+  /**
+   * Enable the contour layer.
+   * Creates the layer if it doesn't exist.
+   */
+  enableContour(config?: ContourConfig): void {
+    const layerId = "contour";
+
+    if (!this.layerManager.hasLayer(layerId)) {
+      const contourLayer = createContourLayer(
+        layerId,
+        this.gpuContext,
+        { ...config, enabled: true }
+      );
+
+      this.layerManager.addLayer(contourLayer);
+      this.updateLayerRenderContext();
+    } else {
+      const layer = this.layerManager.getLayer<ContourLayer>(layerId);
+      if (layer) {
+        layer.enabled = true;
+        if (config) {
+          layer.setConfig(config);
+        }
+      }
+    }
+  }
+
+  /**
+   * Disable the contour layer.
+   */
+  disableContour(): void {
+    this.layerManager.disableLayer("contour");
+  }
+
+  /**
+   * Check if contour is enabled.
+   */
+  isContourEnabled(): boolean {
+    return this.layerManager.isLayerVisible("contour");
+  }
+
+  /**
+   * Configure the contour layer.
+   */
+  setContourConfig(config: Partial<ContourConfig>): void {
+    const layer = this.layerManager.getLayer<ContourLayer>("contour");
+    if (layer) {
+      layer.setConfig(config);
+    }
+  }
+
+  /**
+   * Get contour configuration.
+   */
+  getContourConfig(): ContourConfig | null {
+    const layer = this.layerManager.getLayer<ContourLayer>("contour");
+    return layer?.getConfig() ?? null;
+  }
+
+  // ==========================================================================
+  // Public API - Metaball Layer
+  // ==========================================================================
+
+  /**
+   * Enable the metaball layer.
+   * Creates the layer if it doesn't exist.
+   */
+  enableMetaball(config?: MetaballConfig): void {
+    const layerId = "metaball";
+
+    if (!this.layerManager.hasLayer(layerId)) {
+      const metaballLayer = createMetaballLayer(
+        layerId,
+        this.gpuContext,
+        { ...config, enabled: true }
+      );
+
+      this.layerManager.addLayer(metaballLayer);
+      this.updateLayerRenderContext();
+    } else {
+      const layer = this.layerManager.getLayer<MetaballLayer>(layerId);
+      if (layer) {
+        layer.enabled = true;
+        if (config) {
+          layer.setConfig(config);
+        }
+      }
+    }
+  }
+
+  /**
+   * Disable the metaball layer.
+   */
+  disableMetaball(): void {
+    this.layerManager.disableLayer("metaball");
+  }
+
+  /**
+   * Check if metaball is enabled.
+   */
+  isMetaballEnabled(): boolean {
+    return this.layerManager.isLayerVisible("metaball");
+  }
+
+  /**
+   * Configure the metaball layer.
+   */
+  setMetaballConfig(config: Partial<MetaballConfig>): void {
+    const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
+    if (layer) {
+      layer.setConfig(config);
+    }
+  }
+
+  /**
+   * Get metaball configuration.
+   */
+  getMetaballConfig(): MetaballConfig | null {
+    const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
+    return layer?.getConfig() ?? null;
   }
 
   // ==========================================================================
