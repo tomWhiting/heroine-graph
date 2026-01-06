@@ -163,12 +163,10 @@ export function createSimulationController(
       tickCount: state.tickCount,
     });
 
-    // Check for convergence
-    if (state.alpha < state.alphaMin) {
-      state.status = "stopped";
-      events.emit("end", { tickCount: state.tickCount });
-      return false;
-    }
+    // Note: We do NOT stop the simulation when alpha < alphaMin.
+    // The simulation should always run - alpha just controls movement intensity.
+    // At low alpha, forces are computed but movements are negligible (equilibrium).
+    // This ensures dragging a node immediately affects the simulation.
 
     return true;
   }

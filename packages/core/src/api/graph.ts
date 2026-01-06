@@ -1058,6 +1058,13 @@ export class HeroineGraph {
 
     // Update GPU buffer
     this.syncPositionToGPU(nodeId, x, y);
+
+    // Disturb the simulation - boost alpha so neighbors react to the moved node.
+    // This ensures the simulation is responsive when nodes are dragged.
+    const currentAlpha = this.simulationController.state.alpha;
+    if (currentAlpha < 0.3) {
+      this.simulationController.setAlpha(0.3);
+    }
   }
 
   /**
