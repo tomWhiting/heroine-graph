@@ -111,7 +111,7 @@ export async function createHeroineGraph(
   );
 
   // Create WASM engine
-  const wasmEngine = createWasmEngine();
+  const wasmEngine = await createWasmEngine();
 
   // Get device capabilities
   const { device } = gpuContext;

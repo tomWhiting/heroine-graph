@@ -81,6 +81,11 @@ export interface SimulationBuffers {
   repulsionUniforms: GPUBuffer;
   springUniforms: GPUBuffer;
   integrationUniforms: GPUBuffer;
+  // Readback buffers for syncing positions to CPU
+  readbackX: GPUBuffer;
+  readbackY: GPUBuffer;
+  // Node count for readback sizing
+  nodeCount: number;
 }
 
 /**
@@ -410,6 +415,18 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // Readback buffers for syncing positions to CPU
+  const readbackX = device.createBuffer({
+    label: "Position Readback X",
+    size: nodeBytes,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const readbackY = device.createBuffer({
+    label: "Position Readback Y",
+    size: nodeBytes,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
   return {
     positionsX,
     positionsY,
@@ -427,6 +444,9 @@ export function createSimulationBuffers(
     repulsionUniforms,
     springUniforms,
     integrationUniforms,
+    readbackX,
+    readbackY,
+    nodeCount,
   };
 }
 
@@ -530,4 +550,42 @@ export function swapSimulationBuffers(buffers: SimulationBuffers): void {
   buffers.velocitiesY = buffers.velocitiesYOut;
   buffers.velocitiesXOut = tempVelX;
   buffers.velocitiesYOut = tempVelY;
+}
+
+/**
+ * Schedule a copy of positions to readback buffers.
+ * Call this during command encoding, then call readbackPositions later.
+ */
+export function copyPositionsToReadback(
+  encoder: GPUCommandEncoder,
+  buffers: SimulationBuffers,
+): void {
+  const byteSize = buffers.nodeCount * 4;
+  encoder.copyBufferToBuffer(buffers.positionsX, 0, buffers.readbackX, 0, byteSize);
+  encoder.copyBufferToBuffer(buffers.positionsY, 0, buffers.readbackY, 0, byteSize);
+}
+
+/**
+ * Read positions from GPU to CPU arrays.
+ * This is async and causes a GPU pipeline stall - use sparingly.
+ */
+export async function readbackPositions(
+  buffers: SimulationBuffers,
+  targetX: Float32Array,
+  targetY: Float32Array,
+): Promise<void> {
+  const nodeCount = buffers.nodeCount;
+  const byteSize = nodeCount * 4;
+
+  // Map and read X positions
+  await buffers.readbackX.mapAsync(GPUMapMode.READ);
+  const dataX = new Float32Array(buffers.readbackX.getMappedRange(0, byteSize));
+  targetX.set(dataX);
+  buffers.readbackX.unmap();
+
+  // Map and read Y positions
+  await buffers.readbackY.mapAsync(GPUMapMode.READ);
+  const dataY = new Float32Array(buffers.readbackY.getMappedRange(0, byteSize));
+  targetY.set(dataY);
+  buffers.readbackY.unmap();
 }

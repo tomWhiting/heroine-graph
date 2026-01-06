@@ -283,6 +283,8 @@ export {
   createSimulationPipeline,
   recordSimulationStep,
   createSimulationBindGroups,
+  copyPositionsToReadback,
+  readbackPositions,
   DEFAULT_SIMULATION_PIPELINE_CONFIG,
 } from "./src/simulation/pipeline.ts";
 export type {
@@ -376,3 +378,33 @@ export type { CreateHeroineGraphOptions, InitResult } from "./src/api/factory.ts
 
 export { HeroineGraph } from "./src/api/graph.ts";
 export type { HeroineGraphConfig } from "./src/api/graph.ts";
+
+// =============================================================================
+// Interaction
+// =============================================================================
+
+export {
+  createHitTester,
+  DEFAULT_HIT_TESTER_CONFIG,
+} from "./src/interaction/hit_test.ts";
+export type {
+  HitTester,
+  HitTesterConfig,
+  NodeHitResult,
+  EdgeHitResult,
+  HitResult,
+  SpatialQueryEngine,
+  PositionProvider,
+  EdgeProvider,
+} from "./src/interaction/hit_test.ts";
+
+export {
+  createPointerManager,
+} from "./src/interaction/pointer.ts";
+export type {
+  PointerManager,
+  PointerManagerConfig,
+  PointerEventType,
+  NormalizedPointerEvent,
+  PointerEventCallback,
+} from "./src/interaction/pointer.ts";

@@ -407,8 +407,11 @@ export function createViewport(
   // New signature: (canvas, options)
   const canvas = canvasOrWidth;
   const options = optionsOrHeight as CreateViewportOptions | undefined;
-  const width = canvas.width || canvas.clientWidth || 800;
-  const height = canvas.height || canvas.clientHeight || 600;
+  // Use CSS dimensions (clientWidth/clientHeight) to match pointer event coordinates
+  // from getBoundingClientRect(). canvas.width/height may include devicePixelRatio
+  // which causes coordinate mismatch on high-DPI displays.
+  const width = canvas.clientWidth || canvas.width || 800;
+  const height = canvas.clientHeight || canvas.height || 600;
 
   // Create emitter if onViewportChange callback is provided
   let viewportEmitter: EventEmitter | undefined;

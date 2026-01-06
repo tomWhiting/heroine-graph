@@ -155,36 +155,36 @@ Based on plan.md monorepo structure:
 
 ### Hit Testing for US2
 
-- [ ] T064 [P] [US2] Implement pointer event handling in packages/core/src/interaction/pointer.ts
-- [ ] T065 [US2] Implement hit test via WASM R-tree query in packages/core/src/interaction/hit_test.ts
-- [ ] T066 [US2] Implement getNodeAtPosition API method in packages/core/src/api/graph.ts
-- [ ] T067 [US2] Implement getEdgeAtPosition API method in packages/core/src/api/graph.ts
+- [x] T064 [P] [US2] Implement pointer event handling in packages/core/src/interaction/pointer.ts
+- [x] T065 [US2] Implement hit test via WASM R-tree query in packages/core/src/interaction/hit_test.ts
+- [x] T066 [US2] Implement getNodeAtPosition API method in packages/core/src/api/graph.ts
+- [x] T067 [US2] Implement getEdgeAtPosition API method in packages/core/src/api/graph.ts
 
 ### Selection for US2
 
-- [ ] T068 [US2] Implement selection state management in packages/core/src/interaction/selection.ts
-- [ ] T069 [US2] Implement visual feedback for selected nodes (shader uniform) in packages/core/src/renderer/shaders/node.frag.wgsl
-- [ ] T070 [US2] Implement selectNodes/selectEdges API methods in packages/core/src/api/graph.ts
-- [ ] T071 [US2] Emit selection:change events in packages/core/src/interaction/selection.ts
+- [x] T068 [US2] Implement selection state management in packages/core/src/api/graph.ts (integrated into HeroineGraph class)
+- [x] T069 [US2] Implement visual feedback for selected nodes (shader uniform) in packages/core/src/renderer/shaders/node.frag.wgsl
+- [x] T070 [US2] Implement selectNodes/selectEdges API methods in packages/core/src/api/graph.ts
+- [x] T071 [US2] Emit selection:change events in packages/core/src/api/graph.ts
 
 ### Dragging for US2
 
-- [ ] T072 [US2] Implement drag state machine in packages/core/src/interaction/drag.ts
-- [ ] T073 [US2] Implement node pinning via WASM in packages/core/src/interaction/drag.ts
-- [ ] T074 [US2] Implement real-time position update during drag in packages/core/src/interaction/drag.ts
-- [ ] T075 [US2] Emit node:dragstart, node:dragmove, node:dragend events in packages/core/src/interaction/drag.ts
+- [x] T072 [US2] Implement drag state machine in packages/core/src/api/graph.ts (integrated into HeroineGraph class)
+- [x] T073 [US2] Implement node pinning in packages/core/src/api/graph.ts
+- [x] T074 [US2] Implement real-time position update during drag in packages/core/src/api/graph.ts
+- [x] T075 [US2] Emit node:dragstart, node:dragmove, node:dragend events in packages/core/src/api/graph.ts
 
 ### Hover for US2
 
-- [ ] T076 [US2] Implement hover detection with debouncing in packages/core/src/interaction/hover.ts
-- [ ] T077 [US2] Implement visual feedback for hovered nodes in packages/core/src/renderer/shaders/node.frag.wgsl
-- [ ] T078 [US2] Emit node:hoverenter, node:hoverleave events in packages/core/src/interaction/hover.ts
+- [x] T076 [US2] Implement hover detection in packages/core/src/api/graph.ts
+- [x] T077 [US2] Implement visual feedback for hovered nodes in packages/core/src/renderer/shaders/node.frag.wgsl
+- [x] T078 [US2] Emit node:hoverenter, node:hoverleave events in packages/core/src/api/graph.ts
 
 ### API Methods for US2
 
-- [ ] T079 [US2] Implement on/off/once event subscription in packages/core/src/api/graph.ts
-- [ ] T080 [US2] Implement pinNode/unpinNode API methods in packages/core/src/api/graph.ts
-- [ ] T081 [US2] Implement setNodePosition API method in packages/core/src/api/graph.ts
+- [x] T079 [US2] Implement on/off/once event subscription in packages/core/src/api/graph.ts
+- [x] T080 [US2] Implement pinNode/unpinNode API methods in packages/core/src/api/graph.ts
+- [x] T081 [US2] Implement setNodePosition API method in packages/core/src/api/graph.ts
 
 **Checkpoint**: US2 complete - nodes clickable, draggable, selection works
 

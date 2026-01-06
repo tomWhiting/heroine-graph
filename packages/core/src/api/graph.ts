@@ -10,13 +10,14 @@
 import type {
   GraphInput,
   GraphTypedInput,
-  GraphConfig,
   Vec2,
   BoundingBox,
   SimulationStatus,
   ViewportState,
   EventHandler,
   HeroineGraphEvent,
+  NodeId,
+  EdgeId,
 } from "../types.ts";
 import type { GPUContext } from "../webgpu/context.ts";
 import { HeroineGraphError, ErrorCode } from "../errors.ts";
@@ -41,10 +42,29 @@ import {
   updateSimulationUniforms,
   recordSimulationStep,
   swapSimulationBuffers,
+  copyPositionsToReadback,
+  readbackPositions,
   type SimulationPipeline,
   type SimulationBuffers,
   type SimulationBindGroups,
 } from "../simulation/pipeline.ts";
+import {
+  createHitTester,
+  type HitTester,
+  type SpatialQueryEngine,
+} from "../interaction/hit_test.ts";
+import {
+  createPointerManager,
+  type PointerManager,
+} from "../interaction/pointer.ts";
+
+/**
+ * WASM engine interface for spatial queries.
+ * This matches the HeroineGraphWasm API exposed by the WASM module.
+ */
+interface WasmEngine extends SpatialQueryEngine {
+  findNearestNode(x: number, y: number): number | undefined;
+}
 
 /**
  * HeroineGraph configuration
@@ -90,6 +110,7 @@ interface GPUBuffers {
 export class HeroineGraph {
   // Configuration
   private readonly gpuContext: GPUContext;
+  private readonly wasmEngine: WasmEngine | null;
   private readonly canvas: HTMLCanvasElement;
   private readonly debug: boolean;
 
@@ -119,8 +140,24 @@ export class HeroineGraph {
   private simBuffers: SimulationBuffers | null = null;
   private simBindGroups: SimulationBindGroups | null = null;
 
+  // Interaction
+  private hitTester: HitTester;
+  private pointerManager: PointerManager | null = null;
+  private selectedNodes: Set<NodeId> = new Set();
+  private selectedEdges: Set<EdgeId> = new Set();
+  private hoveredNode: NodeId | null = null;
+  private hoveredEdge: EdgeId | null = null;
+  private draggedNode: NodeId | null = null;
+  private pinnedNodes: Set<NodeId> = new Set();
+
+  // Position sync (GPU -> JS for hit testing)
+  private syncFrameCounter: number = 0;
+  private syncInProgress: boolean = false;
+  private readonly SYNC_INTERVAL: number = 5; // Sync every N frames
+
   constructor(config: HeroineGraphConfig) {
     this.gpuContext = config.gpuContext;
+    this.wasmEngine = config.wasmEngine as WasmEngine | null;
     this.canvas = config.canvas;
     this.debug = config.debug ?? false;
 
@@ -163,6 +200,30 @@ export class HeroineGraph {
     // Initialize pipelines
     this.initializePipelines();
 
+    // Initialize hit tester
+    // Hit testing uses per-node radius from nodeAttributes (+ 2 unit tolerance for easier clicking).
+    // nodeHitRadius is a fallback maximum if per-node radius isn't available.
+    this.hitTester = createHitTester({
+      nodeHitRadius: 20,
+      edgeHitRadius: 5,
+      prioritizeNodes: true,
+    });
+
+    // Note: WASM spatial engine is not wired up yet - it needs to be populated
+    // with node positions first. Using brute-force fallback for now.
+    // TODO: Populate WASM engine with nodes and wire up for O(log n) hit testing
+    if (this.debug) {
+      console.log("Hit tester using brute-force fallback");
+    }
+
+    // Initialize pointer manager for interaction
+    this.pointerManager = createPointerManager({
+      canvas: this.canvas,
+      viewport: this.viewport,
+      preventDefault: true,
+    });
+    this.setupInteractionHandlers();
+
     // Start render loop
     this.renderLoop.start();
 
@@ -189,13 +250,16 @@ export class HeroineGraph {
     if (!this.viewportUniformBuffer) return;
 
     const state = this.viewport.state;
-    const { width, height } = this.canvas;
+    // Use CSS dimensions for uniforms to match hit testing coordinate system.
+    // WebGPU's canvas context handles devicePixelRatio internally.
+    const cssWidth = this.canvas.clientWidth || this.canvas.width;
+    const cssHeight = this.canvas.clientHeight || this.canvas.height;
 
     this.viewportUniformBuffer.update(
       this.gpuContext.device,
       state,
-      width,
-      height,
+      cssWidth,
+      cssHeight,
     );
   }
 
@@ -337,12 +401,52 @@ export class HeroineGraph {
 
     renderPass.end();
 
-    // Submit commands
+    // Schedule position sync if simulation is running
+    let syncEncoder: GPUCommandEncoder | null = null;
+    if (this.simulationController.isRunning && this.simBuffers && !this.syncInProgress) {
+      this.syncFrameCounter++;
+      if (this.syncFrameCounter >= this.SYNC_INTERVAL) {
+        this.syncFrameCounter = 0;
+        syncEncoder = device.createCommandEncoder();
+        copyPositionsToReadback(syncEncoder, this.simBuffers);
+      }
+    }
+
+    // Submit render commands
     device.queue.submit([encoder.finish()]);
+
+    // Submit sync commands separately (if scheduled)
+    if (syncEncoder) {
+      device.queue.submit([syncEncoder.finish()]);
+      this.performPositionReadback();
+    }
 
     // Swap buffers after GPU execution for next frame
     if (this.simulationController.isRunning) {
       this.swapAndRebuildBindGroups();
+    }
+  }
+
+  /**
+   * Async readback of positions from GPU to JS arrays for hit testing
+   */
+  private async performPositionReadback(): Promise<void> {
+    if (!this.simBuffers || !this.state.parsedGraph || this.syncInProgress) return;
+
+    this.syncInProgress = true;
+    try {
+      await readbackPositions(
+        this.simBuffers,
+        this.state.parsedGraph.positionsX,
+        this.state.parsedGraph.positionsY,
+      );
+    } catch (e) {
+      // Readback failed - might happen if buffers are destroyed
+      if (this.debug) {
+        console.warn("Position readback failed:", e);
+      }
+    } finally {
+      this.syncInProgress = false;
     }
   }
 
@@ -397,6 +501,9 @@ export class HeroineGraph {
     this.simulationController.restart();
 
     // Emit load event
+    // Update hit tester with new graph data
+    this.updateHitTester();
+
     this.events.emit("graph:load", {
       type: "graph:load",
       timestamp: Date.now(),
@@ -659,8 +766,11 @@ export class HeroineGraph {
       maxY: maxY + padding,
     };
 
-    const { width, height } = this.canvas;
-    const scale = fitBoundsScale(bounds, width, height);
+    // Use CSS dimensions for scale calculation to match viewport coordinate system
+    // (hit testing uses CSS coordinates from getBoundingClientRect)
+    const cssWidth = this.canvas.clientWidth || this.canvas.width;
+    const cssHeight = this.canvas.clientHeight || this.canvas.height;
+    const scale = fitBoundsScale(bounds, cssWidth, cssHeight);
     const center = boundsCenter(bounds);
 
     this.viewport.setScale(scale);
@@ -746,6 +856,564 @@ export class HeroineGraph {
   }
 
   // ==========================================================================
+  // Public API - Interaction
+  // ==========================================================================
+
+  /**
+   * Get node at screen position.
+   * @param screenX X position in screen/canvas coordinates
+   * @param screenY Y position in screen/canvas coordinates
+   * @returns Node ID or null if no node at position
+   */
+  getNodeAtPosition(screenX: number, screenY: number): NodeId | null {
+    const graphPos = this.viewport.screenToGraph(screenX, screenY);
+    const hitRadius = 20 / this.viewport.state.scale; // Adjust for zoom
+
+    if (this.debug) {
+      console.log("[Hit Test] Checking at graph coords:", graphPos, "hitRadius:", hitRadius);
+      // Show a sample node position to compare
+      if (this.state.parsedGraph && this.state.parsedGraph.nodeCount > 0) {
+        console.log("[Hit Test] Node 0 position:", {
+          x: this.state.parsedGraph.positionsX[0],
+          y: this.state.parsedGraph.positionsY[0],
+        });
+      }
+    }
+
+    const result = this.hitTester.hitTestNode(graphPos.x, graphPos.y, hitRadius);
+
+    if (this.debug) {
+      console.log("[Hit Test] Result:", result ? `Node ${result.nodeId} at dist ${result.distance}` : "null");
+    }
+
+    return result?.nodeId ?? null;
+  }
+
+  /**
+   * Get edge at screen position.
+   * @param screenX X position in screen/canvas coordinates
+   * @param screenY Y position in screen/canvas coordinates
+   * @returns Edge ID or null if no edge at position
+   */
+  getEdgeAtPosition(screenX: number, screenY: number): EdgeId | null {
+    const graphPos = this.viewport.screenToGraph(screenX, screenY);
+    const hitRadius = 5 / this.viewport.state.scale; // Adjust for zoom
+    const result = this.hitTester.hitTestEdge(graphPos.x, graphPos.y, hitRadius);
+    return result?.edgeId ?? null;
+  }
+
+  /**
+   * Select nodes by ID.
+   * @param nodeIds Node IDs to select (replaces current selection)
+   */
+  selectNodes(nodeIds: NodeId[]): void {
+    const previousSelection = new Set(this.selectedNodes);
+    this.selectedNodes.clear();
+    for (const id of nodeIds) {
+      this.selectedNodes.add(id);
+    }
+    this.emitSelectionChange("node", previousSelection, this.selectedNodes);
+  }
+
+  /**
+   * Select edges by ID.
+   * @param edgeIds Edge IDs to select (replaces current selection)
+   */
+  selectEdges(edgeIds: EdgeId[]): void {
+    const previousSelection = new Set(this.selectedEdges);
+    this.selectedEdges.clear();
+    for (const id of edgeIds) {
+      this.selectedEdges.add(id);
+    }
+    this.emitSelectionChange("edge", previousSelection, this.selectedEdges);
+  }
+
+  /**
+   * Add nodes to selection.
+   * @param nodeIds Node IDs to add
+   */
+  addToSelection(nodeIds: NodeId[]): void {
+    const previousSelection = new Set(this.selectedNodes);
+    for (const id of nodeIds) {
+      this.selectedNodes.add(id);
+    }
+    this.emitSelectionChange("node", previousSelection, this.selectedNodes);
+  }
+
+  /**
+   * Remove nodes from selection.
+   * @param nodeIds Node IDs to remove
+   */
+  removeFromSelection(nodeIds: NodeId[]): void {
+    const previousSelection = new Set(this.selectedNodes);
+    for (const id of nodeIds) {
+      this.selectedNodes.delete(id);
+    }
+    this.emitSelectionChange("node", previousSelection, this.selectedNodes);
+  }
+
+  /**
+   * Clear all selection.
+   */
+  clearSelection(): void {
+    const previousNodeSelection = new Set(this.selectedNodes);
+    const previousEdgeSelection = new Set(this.selectedEdges);
+    this.selectedNodes.clear();
+    this.selectedEdges.clear();
+    if (previousNodeSelection.size > 0) {
+      this.emitSelectionChange("node", previousNodeSelection, this.selectedNodes);
+    }
+    if (previousEdgeSelection.size > 0) {
+      this.emitSelectionChange("edge", previousEdgeSelection, this.selectedEdges);
+    }
+  }
+
+  /**
+   * Get selected node IDs.
+   */
+  getSelectedNodes(): NodeId[] {
+    return Array.from(this.selectedNodes);
+  }
+
+  /**
+   * Get selected edge IDs.
+   */
+  getSelectedEdges(): EdgeId[] {
+    return Array.from(this.selectedEdges);
+  }
+
+  /**
+   * Check if a node is selected.
+   */
+  isNodeSelected(nodeId: NodeId): boolean {
+    return this.selectedNodes.has(nodeId);
+  }
+
+  /**
+   * Check if an edge is selected.
+   */
+  isEdgeSelected(edgeId: EdgeId): boolean {
+    return this.selectedEdges.has(edgeId);
+  }
+
+  /**
+   * Pin a node (exclude from simulation, fixed position).
+   * @param nodeId Node ID to pin
+   */
+  pinNode(nodeId: NodeId): void {
+    this.pinnedNodes.add(nodeId);
+    this.events.emit("node:pin", {
+      type: "node:pin",
+      timestamp: Date.now(),
+      nodeId,
+    });
+  }
+
+  /**
+   * Unpin a node (include in simulation).
+   * @param nodeId Node ID to unpin
+   */
+  unpinNode(nodeId: NodeId): void {
+    this.pinnedNodes.delete(nodeId);
+    this.events.emit("node:unpin", {
+      type: "node:unpin",
+      timestamp: Date.now(),
+      nodeId,
+    });
+  }
+
+  /**
+   * Check if a node is pinned.
+   */
+  isNodePinned(nodeId: NodeId): boolean {
+    return this.pinnedNodes.has(nodeId);
+  }
+
+  /**
+   * Get all pinned node IDs.
+   */
+  getPinnedNodes(): NodeId[] {
+    return Array.from(this.pinnedNodes);
+  }
+
+  /**
+   * Set node position (also pins the node).
+   * @param nodeId Node ID
+   * @param x X position in graph coordinates
+   * @param y Y position in graph coordinates
+   */
+  setNodePosition(nodeId: NodeId, x: number, y: number): void {
+    if (!this.state.parsedGraph) return;
+
+    // nodeId is the array index in our system
+    const idx = nodeId;
+    if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
+
+    // Update local position data
+    this.state.parsedGraph.positionsX[idx] = x;
+    this.state.parsedGraph.positionsY[idx] = y;
+
+    // Pin the node
+    this.pinnedNodes.add(nodeId);
+
+    // Update GPU buffer
+    this.syncPositionToGPU(nodeId, x, y);
+  }
+
+  /**
+   * Get node position.
+   * @param nodeId Node ID
+   * @returns Position or undefined if node not found
+   */
+  getNodePosition(nodeId: NodeId): Vec2 | undefined {
+    if (!this.state.parsedGraph) return undefined;
+
+    // nodeId is the array index in our system
+    const idx = nodeId;
+    if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return undefined;
+
+    return {
+      x: this.state.parsedGraph.positionsX[idx],
+      y: this.state.parsedGraph.positionsY[idx],
+    };
+  }
+
+  /**
+   * Get currently hovered node.
+   */
+  getHoveredNode(): NodeId | null {
+    return this.hoveredNode;
+  }
+
+  /**
+   * Get currently hovered edge.
+   */
+  getHoveredEdge(): EdgeId | null {
+    return this.hoveredEdge;
+  }
+
+  // ==========================================================================
+  // Private - Interaction Helpers
+  // ==========================================================================
+
+  /**
+   * Setup interaction event handlers
+   */
+  private setupInteractionHandlers(): void {
+    if (!this.pointerManager) return;
+
+    // Handle pointer down (start drag or select)
+    this.pointerManager.on("pointerdown", (e) => {
+      if (e.button !== 0) return; // Only left click
+
+      if (this.debug) {
+        console.log("[Interaction] pointerdown at screen:", e.screenPosition, "graph:", e.graphPosition);
+      }
+
+      const nodeId = this.getNodeAtPosition(e.screenPosition.x, e.screenPosition.y);
+
+      if (this.debug) {
+        console.log("[Interaction] hit test result:", nodeId);
+      }
+
+      if (nodeId !== null) {
+        // Start drag on node
+        this.draggedNode = nodeId;
+        this.pinnedNodes.add(nodeId);
+
+        // Select if not already selected (or add to selection with shift)
+        if (!e.modifiers.shift && !this.selectedNodes.has(nodeId)) {
+          this.selectNodes([nodeId]);
+        } else if (e.modifiers.shift) {
+          this.addToSelection([nodeId]);
+        }
+
+        this.events.emit("node:dragstart", {
+          type: "node:dragstart",
+          timestamp: Date.now(),
+          nodeId,
+          position: e.graphPosition,
+        });
+      } else {
+        // Check for edge click
+        const edgeId = this.getEdgeAtPosition(e.screenPosition.x, e.screenPosition.y);
+        if (edgeId !== null) {
+          if (!e.modifiers.shift) {
+            this.clearSelection();
+          }
+          this.selectEdges([edgeId]);
+        } else if (!e.modifiers.shift) {
+          // Click on empty space - clear selection
+          this.clearSelection();
+        }
+      }
+    });
+
+    // Handle pointer move (drag or hover)
+    this.pointerManager.on("pointermove", (e) => {
+      if (this.draggedNode !== null) {
+        // Update dragged node position
+        this.setNodePosition(this.draggedNode, e.graphPosition.x, e.graphPosition.y);
+
+        this.events.emit("node:dragmove", {
+          type: "node:dragmove",
+          timestamp: Date.now(),
+          nodeId: this.draggedNode,
+          position: e.graphPosition,
+        });
+      } else {
+        // Hover detection
+        this.updateHover(e.screenPosition.x, e.screenPosition.y);
+      }
+    });
+
+    // Handle pointer up (end drag)
+    this.pointerManager.on("pointerup", (e) => {
+      if (this.draggedNode !== null) {
+        const nodeId = this.draggedNode;
+        this.draggedNode = null;
+
+        // Optionally unpin after drag (could be configurable)
+        // this.pinnedNodes.delete(nodeId);
+
+        this.events.emit("node:dragend", {
+          type: "node:dragend",
+          timestamp: Date.now(),
+          nodeId,
+          position: e.graphPosition,
+        });
+      }
+    });
+
+    // Handle wheel (zoom) - use gradual zoom based on delta magnitude
+    this.pointerManager.on("wheel", (e) => {
+      if (e.wheelDelta) {
+        // Normalize wheel delta and apply gradual zoom
+        // deltaY is typically ~100 for one scroll tick
+        const normalizedDelta = Math.sign(e.wheelDelta.y) * Math.min(Math.abs(e.wheelDelta.y), 100) / 100;
+        const zoomFactor = 1 - normalizedDelta * 0.05; // 5% per scroll tick
+        this.viewport.zoom(zoomFactor, e.screenPosition.x, e.screenPosition.y);
+      }
+    });
+  }
+
+  /**
+   * Update hover state and sync to GPU
+   */
+  private updateHover(screenX: number, screenY: number): void {
+    const nodeId = this.getNodeAtPosition(screenX, screenY);
+
+    if (nodeId !== this.hoveredNode) {
+      // Update previous hovered node
+      if (this.hoveredNode !== null) {
+        this.syncNodeHoverToGPU(this.hoveredNode, false);
+        this.events.emit("node:hoverleave", {
+          type: "node:hoverleave",
+          timestamp: Date.now(),
+          nodeId: this.hoveredNode,
+        });
+      }
+
+      this.hoveredNode = nodeId;
+
+      // Update new hovered node
+      if (nodeId !== null) {
+        this.syncNodeHoverToGPU(nodeId, true);
+        this.events.emit("node:hoverenter", {
+          type: "node:hoverenter",
+          timestamp: Date.now(),
+          nodeId,
+        });
+      }
+    }
+
+    // Only check edge hover if not hovering a node
+    if (nodeId === null) {
+      const edgeId = this.getEdgeAtPosition(screenX, screenY);
+
+      if (edgeId !== this.hoveredEdge) {
+        if (this.hoveredEdge !== null) {
+          this.events.emit("edge:hoverleave", {
+            type: "edge:hoverleave",
+            timestamp: Date.now(),
+            edgeId: this.hoveredEdge,
+          });
+        }
+
+        this.hoveredEdge = edgeId;
+
+        if (edgeId !== null) {
+          this.events.emit("edge:hoverenter", {
+            type: "edge:hoverenter",
+            timestamp: Date.now(),
+            edgeId,
+          });
+        }
+      }
+    } else {
+      // Clear edge hover when hovering a node
+      if (this.hoveredEdge !== null) {
+        this.events.emit("edge:hoverleave", {
+          type: "edge:hoverleave",
+          timestamp: Date.now(),
+          edgeId: this.hoveredEdge,
+        });
+        this.hoveredEdge = null;
+      }
+    }
+  }
+
+  /**
+   * Emit selection change event and update GPU buffer
+   */
+  private emitSelectionChange(
+    type: "node" | "edge",
+    previous: Set<number>,
+    current: Set<number>
+  ): void {
+    const added = [...current].filter((id) => !previous.has(id));
+    const removed = [...previous].filter((id) => !current.has(id));
+
+    if (added.length > 0 || removed.length > 0) {
+      // Update GPU selection state for nodes
+      if (type === "node") {
+        for (const nodeId of added) {
+          this.syncNodeSelectionToGPU(nodeId, true);
+        }
+        for (const nodeId of removed) {
+          this.syncNodeSelectionToGPU(nodeId, false);
+        }
+      }
+
+      this.events.emit("selection:change", {
+        type: "selection:change",
+        timestamp: Date.now(),
+        itemType: type,
+        added,
+        removed,
+        selected: [...current],
+      });
+    }
+  }
+
+  /**
+   * Sync a node's position to GPU buffer
+   */
+  private syncPositionToGPU(nodeId: NodeId, x: number, y: number): void {
+    if (!this.buffers || !this.state.parsedGraph) return;
+
+    // nodeId is the array index in our system
+    const idx = nodeId;
+    if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
+
+    const { device } = this.gpuContext;
+    const posX = new Float32Array([x]);
+    const posY = new Float32Array([y]);
+
+    device.queue.writeBuffer(this.buffers.positionsX, idx * 4, posX);
+    device.queue.writeBuffer(this.buffers.positionsY, idx * 4, posY);
+
+    // Also update simulation buffers if they exist
+    if (this.simBuffers) {
+      device.queue.writeBuffer(this.simBuffers.positionsX, idx * 4, posX);
+      device.queue.writeBuffer(this.simBuffers.positionsY, idx * 4, posY);
+      device.queue.writeBuffer(this.simBuffers.positionsXOut, idx * 4, posX);
+      device.queue.writeBuffer(this.simBuffers.positionsYOut, idx * 4, posY);
+    }
+  }
+
+  /**
+   * Update node selection state in GPU buffer
+   * Node attributes: [radius, r, g, b, selected, hovered] (6 floats per node)
+   */
+  private syncNodeSelectionToGPU(nodeId: NodeId, selected: boolean): void {
+    if (!this.buffers || !this.state.parsedGraph) return;
+
+    // nodeId is the array index in our system
+    const idx = nodeId;
+    if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
+
+    const { device } = this.gpuContext;
+    // Node attributes are 6 floats per node, selection is at offset 4
+    const attrOffset = idx * 6 * 4 + 4 * 4; // 6 floats * 4 bytes, offset 4
+    const selectionValue = new Float32Array([selected ? 1.0 : 0.0]);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, attrOffset, selectionValue);
+
+    // Also update local parsed graph data
+    this.state.parsedGraph.nodeAttributes[idx * 6 + 4] = selected ? 1.0 : 0.0;
+  }
+
+  /**
+   * Update node hover state in GPU buffer
+   * Node attributes: [radius, r, g, b, selected, hovered] (6 floats per node)
+   */
+  private syncNodeHoverToGPU(nodeId: NodeId, hovered: boolean): void {
+    if (!this.buffers || !this.state.parsedGraph) return;
+
+    // nodeId is the array index in our system
+    const idx = nodeId;
+    if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
+
+    const { device } = this.gpuContext;
+    // Node attributes are 6 floats per node, hover is at offset 5
+    const attrOffset = idx * 6 * 4 + 5 * 4; // 6 floats * 4 bytes, offset 5
+    const hoverValue = new Float32Array([hovered ? 1.0 : 0.0]);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, attrOffset, hoverValue);
+
+    // Also update local parsed graph data
+    this.state.parsedGraph.nodeAttributes[idx * 6 + 5] = hovered ? 1.0 : 0.0;
+  }
+
+  /**
+   * Update hit tester with current position data
+   */
+  private updateHitTester(): void {
+    if (!this.state.parsedGraph) return;
+
+    const parsedGraph = this.state.parsedGraph;
+
+    // Set position provider (uses node indices directly - WASM and edges use indices)
+    this.hitTester.setPositionProvider({
+      getNodePosition: (nodeId: NodeId): Vec2 | undefined => {
+        // nodeId is the array index in our system
+        if (nodeId < 0 || nodeId >= parsedGraph.nodeCount) return undefined;
+        return {
+          x: parsedGraph.positionsX[nodeId],
+          y: parsedGraph.positionsY[nodeId],
+        };
+      },
+      getNodeRadius: (nodeId: NodeId): number | undefined => {
+        // nodeId is the array index in our system
+        // nodeAttributes layout: [radius, r, g, b, selected, hovered] per node
+        if (nodeId < 0 || nodeId >= parsedGraph.nodeCount) return undefined;
+        return parsedGraph.nodeAttributes[nodeId * 6]; // radius is at offset 0
+      },
+      getNodeIds: function* () {
+        for (let i = 0; i < parsedGraph.nodeCount; i++) {
+          yield i;
+        }
+      },
+      getNodeCount: () => parsedGraph.nodeCount,
+    });
+
+    // Set edge provider
+    this.hitTester.setEdgeProvider({
+      getEdges: function* () {
+        let edgeId = 0;
+        for (let i = 0; i < parsedGraph.edgeSources.length; i++) {
+          yield [edgeId++, parsedGraph.edgeSources[i], parsedGraph.edgeTargets[i]];
+        }
+      },
+      getEdgeCount: () => parsedGraph.edgeSources.length,
+    });
+
+    // Rebuild WASM spatial index with new graph data
+    if (this.wasmEngine) {
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+  }
+
+  // ==========================================================================
   // Public API - Lifecycle
   // ==========================================================================
 
@@ -757,6 +1425,10 @@ export class HeroineGraph {
       this.canvas.width = width;
       this.canvas.height = height;
     }
+    // Update viewport with CSS dimensions for coordinate transforms
+    const cssWidth = this.canvas.clientWidth || this.canvas.width;
+    const cssHeight = this.canvas.clientHeight || this.canvas.height;
+    this.viewport.resize(cssWidth, cssHeight);
     this.updateViewportUniforms();
   }
 
@@ -773,6 +1445,9 @@ export class HeroineGraph {
 
     // Stop simulation
     this.simulationController.stop();
+
+    // Dispose pointer manager
+    this.pointerManager?.dispose();
 
     // Dispose viewport
     this.viewport.dispose();
