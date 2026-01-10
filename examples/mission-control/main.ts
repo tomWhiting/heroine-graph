@@ -19,6 +19,7 @@ import {
 
 interface AppState {
   graph: HeroineGraph | null;
+  graphData: GraphInput | null;
   nodeCount: number;
   edgeCount: number;
   drawerOpen: boolean;
@@ -182,6 +183,7 @@ function formatNumber(n: number): string {
 async function main(): Promise<void> {
   const state: AppState = {
     graph: null,
+    graphData: null,
     nodeCount: 0,
     edgeCount: 0,
     drawerOpen: false,
@@ -253,11 +255,32 @@ async function main(): Promise<void> {
     const data = generateRandomGraph(count);
     await state.graph.load(data);
 
+    state.graphData = data;
     state.nodeCount = data.nodes.length;
     state.edgeCount = data.edges.length;
 
     $("stat-nodes").textContent = formatNumber(state.nodeCount);
     $("stat-edges").textContent = formatNumber(state.edgeCount);
+
+    // Update labels if enabled
+    if ($input("labels-enabled").checked) {
+      updateLabels();
+    }
+  }
+
+  // Helper to update labels from current graph data
+  function updateLabels(): void {
+    if (!state.graph || !state.graphData) return;
+
+    const labels = state.graphData.nodes.map((node, index) => ({
+      nodeId: index,
+      text: String((node.metadata as Record<string, unknown>)?.label ?? node.id),
+      x: node.x ?? 0,
+      y: node.y ?? 0,
+      priority: 1 - index / state.graphData!.nodes.length, // Higher priority for earlier nodes
+    }));
+
+    state.graph.setLabels(labels);
   }
 
   // Add node button handlers
@@ -368,10 +391,21 @@ async function main(): Promise<void> {
     (v) => v.toFixed(2),
   );
 
-  // Contours
+  // Contours (requires heatmap for density texture)
   $input("contour-enabled").addEventListener("change", (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
     if (enabled) {
+      // Contours need heatmap's density texture - enable heatmap if not already
+      if (!$input("heatmap-enabled").checked) {
+        // Enable heatmap with minimal opacity so contours work
+        state.graph?.enableHeatmap({
+          colorScale: $select("heatmap-colorscale").value as "viridis",
+          radius: parseFloat($input("heatmap-radius").value),
+          intensity: parseFloat($input("heatmap-intensity").value),
+          opacity: 0.0, // Invisible but generates density texture
+        });
+      }
+
       const thresholdCount = parseInt($input("contour-thresholds").value, 10);
       const thresholds = Array.from(
         { length: thresholdCount },
@@ -444,14 +478,16 @@ async function main(): Promise<void> {
   );
 
   // Labels
-  $input("labels-enabled").addEventListener("change", (e) => {
+  $input("labels-enabled").addEventListener("change", async (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
     if (enabled) {
-      state.graph?.enableLabels({
+      await state.graph?.enableLabels({
         fontSize: parseInt($input("labels-fontsize").value, 10),
         fontColor: $input("labels-color").value,
         maxLabels: parseInt($input("labels-max").value, 10),
       });
+      // Set label data after enabling the layer
+      updateLabels();
     } else {
       state.graph?.disableLabels();
     }
@@ -477,15 +513,6 @@ async function main(): Promise<void> {
   // ========================================================================
   // Simulation Controls
   // ========================================================================
-
-  // Note: Force configuration sliders are displayed but the simulation
-  // uses internal defaults. A future API update could expose setForceConfig().
-
-  // For now, just update the display values
-  setupSlider("sim-charge", "sim-charge-val", () => {});
-  setupSlider("sim-linkdist", "sim-linkdist-val", () => {});
-  setupSlider("sim-linkstr", "sim-linkstr-val", () => {}, (v) => v.toFixed(1));
-  setupSlider("sim-center", "sim-center-val", () => {}, (v) => v.toFixed(2));
 
   $("sim-stop").addEventListener("click", () => state.graph?.stopSimulation());
   $("sim-start").addEventListener("click", () => state.graph?.startSimulation());

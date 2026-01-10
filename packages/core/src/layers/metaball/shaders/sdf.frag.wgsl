@@ -44,13 +44,25 @@ fn sd_circle(p: vec2<f32>, center: vec2<f32>, radius: f32) -> f32 {
     return length(p - center) - radius;
 }
 
-// Evaluate metaball field at a point
+// Evaluate metaball field at a point with spatial culling
 fn evaluate_field(p: vec2<f32>) -> f32 {
     var d = 1e10;
 
-    // Blend all node circles together
+    // Maximum influence radius: node_radius + blend_radius + small margin
+    // Nodes further than this cannot affect this pixel
+    let max_influence = uniforms.node_radius + uniforms.blend_radius * 2.0 + 50.0;
+
+    // Blend nearby node circles together (spatial culling for performance)
     for (var i = 0u; i < uniforms.node_count; i++) {
         let center = vec2<f32>(positions_x[i], positions_y[i]);
+
+        // Quick distance check to skip far nodes (avoids expensive smin)
+        let dx = abs(p.x - center.x);
+        let dy = abs(p.y - center.y);
+        if (dx > max_influence || dy > max_influence) {
+            continue;
+        }
+
         let circle_d = sd_circle(p, center, uniforms.node_radius);
         d = smin(d, circle_d, uniforms.blend_radius);
     }

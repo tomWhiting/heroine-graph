@@ -138,11 +138,15 @@ export class Viewport {
     this.scale = newScale;
 
     // Adjust pan so the point under the cursor stays fixed
+    // After changing scale, the graph point would appear at newScreen position.
+    // We need to adjust pan to bring it back to the original cursor position.
     const newScreenX = this.graphToScreenX(graphX);
     const newScreenY = this.graphToScreenY(graphY);
 
-    this.x += (cx - newScreenX) / this.scale;
-    this.y += (cy - newScreenY) / this.scale;
+    // The adjustment should move the viewport so the point returns to cursor position
+    // Subtracting because we need to compensate for where the point moved to
+    this.x -= (cx - newScreenX) / this.scale;
+    this.y -= (cy - newScreenY) / this.scale;
 
     this.emitChange();
   }
