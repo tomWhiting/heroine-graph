@@ -8,47 +8,34 @@
 
 // Configuration
 export type { HeatmapConfig } from "./config.ts";
-export {
-  DEFAULT_HEATMAP_CONFIG,
-  mergeHeatmapConfig,
-  validateHeatmapConfig,
-} from "./config.ts";
+export { DEFAULT_HEATMAP_CONFIG, mergeHeatmapConfig, validateHeatmapConfig } from "./config.ts";
 
 // Color scales
-export type {
-  ColorRGBA,
-  ColorStop,
-  ColorScaleName,
-  ColorScaleTexture,
-} from "./colorscale.ts";
+export type { ColorRGBA, ColorScaleName, ColorScaleTexture, ColorStop } from "./colorscale.ts";
 export {
   COLOR_SCALES,
-  generateColorScaleData,
   createColorScaleTexture,
   createCustomColorScaleTexture,
+  generateColorScaleData,
   getColorScaleNames,
 } from "./colorscale.ts";
 
 // Density texture
-export type { DensityTextureConfig, DensityTexture } from "./texture.ts";
+export type { DensityTexture, DensityTextureConfig } from "./texture.ts";
 export {
-  DEFAULT_DENSITY_TEXTURE_CONFIG,
-  createDensityTexture,
   clearDensityTexture,
+  createDensityTexture,
+  DEFAULT_DENSITY_TEXTURE_CONFIG,
 } from "./texture.ts";
 
 // Render pipeline
-export type {
-  HeatmapUniforms,
-  ColormapUniforms,
-  HeatmapPipeline,
-} from "./pipeline.ts";
+export type { ColormapUniforms, HeatmapPipeline, HeatmapUniforms } from "./pipeline.ts";
 export {
-  DEFAULT_HEATMAP_UNIFORMS,
-  DEFAULT_COLORMAP_UNIFORMS,
   createHeatmapPipeline,
+  DEFAULT_COLORMAP_UNIFORMS,
+  DEFAULT_HEATMAP_UNIFORMS,
 } from "./pipeline.ts";
 
 // Layer
-export type { Layer, HeatmapRenderContext } from "./layer.ts";
-export { HeatmapLayer, createHeatmapLayer } from "./layer.ts";
+export type { HeatmapRenderContext, Layer } from "./layer.ts";
+export { createHeatmapLayer, HeatmapLayer } from "./layer.ts";

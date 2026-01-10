@@ -48,7 +48,7 @@ export const DEFAULT_HEATMAP_CONFIG: Required<HeatmapConfig> = {
  * Merge user config with defaults
  */
 export function mergeHeatmapConfig(
-  config: HeatmapConfig = {}
+  config: HeatmapConfig = {},
 ): Required<HeatmapConfig> {
   return { ...DEFAULT_HEATMAP_CONFIG, ...config };
 }

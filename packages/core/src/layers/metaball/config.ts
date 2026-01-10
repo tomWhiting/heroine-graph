@@ -47,7 +47,7 @@ export const DEFAULT_METABALL_CONFIG: Required<MetaballConfig> = {
  * Merge user config with defaults
  */
 export function mergeMetaballConfig(
-  config: MetaballConfig = {}
+  config: MetaballConfig = {},
 ): Required<MetaballConfig> {
   return { ...DEFAULT_METABALL_CONFIG, ...config };
 }
@@ -91,7 +91,7 @@ export function validateMetaballConfig(config: MetaballConfig): string[] {
  * Parse CSS color to RGBA values (0-1 range)
  */
 export function parseMetaballColor(
-  color: string
+  color: string,
 ): [number, number, number, number] {
   // Handle hex colors
   if (color.startsWith("#")) {

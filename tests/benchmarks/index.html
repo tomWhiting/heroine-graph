@@ -1,255 +1,258 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HeroineGraph - Large Graph Benchmark</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeroineGraph - Large Graph Benchmark</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #eee;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
 
-    header {
-      padding: 20px;
-      background: #16213e;
-      border-bottom: 1px solid #0f3460;
-    }
+      header {
+        padding: 20px;
+        background: #16213e;
+        border-bottom: 1px solid #0f3460;
+      }
 
-    h1 {
-      font-size: 24px;
-      margin-bottom: 10px;
-    }
+      h1 {
+        font-size: 24px;
+        margin-bottom: 10px;
+      }
 
-    .controls {
-      display: flex;
-      gap: 20px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
+      .controls {
+        display: flex;
+        gap: 20px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
 
-    .control-group {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
 
-    label {
-      font-size: 12px;
-      color: #aaa;
-      text-transform: uppercase;
-    }
+      label {
+        font-size: 12px;
+        color: #aaa;
+        text-transform: uppercase;
+      }
 
-    input, select {
-      padding: 8px 12px;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      background: #1a1a2e;
-      color: #eee;
-      font-size: 14px;
-    }
+      input, select {
+        padding: 8px 12px;
+        border: 1px solid #0f3460;
+        border-radius: 4px;
+        background: #1a1a2e;
+        color: #eee;
+        font-size: 14px;
+      }
 
-    input:focus, select:focus {
-      outline: none;
-      border-color: #4285f4;
-    }
+      input:focus, select:focus {
+        outline: none;
+        border-color: #4285f4;
+      }
 
-    button {
-      padding: 10px 24px;
-      background: #4285f4;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      font-size: 14px;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
+      button {
+        padding: 10px 24px;
+        background: #4285f4;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
 
-    button:hover {
-      background: #3367d6;
-    }
+      button:hover {
+        background: #3367d6;
+      }
 
-    button:disabled {
-      background: #555;
-      cursor: not-allowed;
-    }
+      button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
 
-    main {
-      flex: 1;
-      display: flex;
-    }
+      main {
+        flex: 1;
+        display: flex;
+      }
 
-    #canvas-container {
-      flex: 1;
-      position: relative;
-    }
+      #canvas-container {
+        flex: 1;
+        position: relative;
+      }
 
-    canvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
 
-    #stats {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      padding: 15px;
-      background: rgba(0, 0, 0, 0.8);
-      border-radius: 8px;
-      font-family: 'Monaco', 'Consolas', monospace;
-      font-size: 13px;
-      line-height: 1.5;
-    }
+      #stats {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        padding: 15px;
+        background: rgba(0, 0, 0, 0.8);
+        border-radius: 8px;
+        font-family: "Monaco", "Consolas", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
 
-    .stat-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 20px;
-    }
+      .stat-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+      }
 
-    .stat-label {
-      color: #888;
-    }
+      .stat-label {
+        color: #888;
+      }
 
-    .stat-value {
-      color: #4285f4;
-      font-weight: bold;
-    }
+      .stat-value {
+        color: #4285f4;
+        font-weight: bold;
+      }
 
-    .stat-value.good {
-      color: #34a853;
-    }
+      .stat-value.good {
+        color: #34a853;
+      }
 
-    .stat-value.bad {
-      color: #ea4335;
-    }
+      .stat-value.bad {
+        color: #ea4335;
+      }
 
-    #results {
-      width: 350px;
-      padding: 20px;
-      background: #16213e;
-      border-left: 1px solid #0f3460;
-      overflow-y: auto;
-    }
+      #results {
+        width: 350px;
+        padding: 20px;
+        background: #16213e;
+        border-left: 1px solid #0f3460;
+        overflow-y: auto;
+      }
 
-    #results h2 {
-      font-size: 18px;
-      margin-bottom: 15px;
-    }
+      #results h2 {
+        font-size: 18px;
+        margin-bottom: 15px;
+      }
 
-    #results pre {
-      font-family: 'Monaco', 'Consolas', monospace;
-      font-size: 12px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-    }
+      #results pre {
+        font-family: "Monaco", "Consolas", monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
 
-    .progress {
-      margin-top: 20px;
-      padding: 15px;
-      background: #1a1a2e;
-      border-radius: 8px;
-    }
+      .progress {
+        margin-top: 20px;
+        padding: 15px;
+        background: #1a1a2e;
+        border-radius: 8px;
+      }
 
-    .progress-bar {
-      height: 8px;
-      background: #0f3460;
-      border-radius: 4px;
-      overflow: hidden;
-    }
+      .progress-bar {
+        height: 8px;
+        background: #0f3460;
+        border-radius: 4px;
+        overflow: hidden;
+      }
 
-    .progress-fill {
-      height: 100%;
-      background: #4285f4;
-      width: 0%;
-      transition: width 0.3s;
-    }
+      .progress-fill {
+        height: 100%;
+        background: #4285f4;
+        width: 0%;
+        transition: width 0.3s;
+      }
 
-    .progress-text {
-      margin-top: 10px;
-      font-size: 13px;
-      color: #888;
-    }
+      .progress-text {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #888;
+      }
 
-    .error {
-      background: #ea4335;
-      color: white;
-      padding: 15px;
-      border-radius: 8px;
-      margin: 20px;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>HeroineGraph Large Graph Benchmark</h1>
-    <div class="controls">
-      <div class="control-group">
-        <label>Node Count</label>
-        <select id="nodeCount">
-          <option value="10000">10,000</option>
-          <option value="50000">50,000</option>
-          <option value="100000">100,000</option>
-          <option value="250000">250,000</option>
-          <option value="500000" selected>500,000</option>
-          <option value="1000000">1,000,000</option>
-        </select>
-      </div>
-      <div class="control-group">
-        <label>Edges/Node</label>
-        <input type="number" id="edgesPerNode" value="2" min="0" max="10" step="1">
-      </div>
-      <div class="control-group">
-        <label>Duration (s)</label>
-        <input type="number" id="duration" value="10" min="5" max="60" step="5">
-      </div>
-      <button id="runBtn">Run Benchmark</button>
-    </div>
-  </header>
-
-  <main>
-    <div id="canvas-container">
-      <canvas id="graphCanvas"></canvas>
-      <div id="stats">
-        <div class="stat-row">
-          <span class="stat-label">FPS:</span>
-          <span class="stat-value" id="fpsValue">--</span>
+      .error {
+        background: #ea4335;
+        color: white;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>HeroineGraph Large Graph Benchmark</h1>
+      <div class="controls">
+        <div class="control-group">
+          <label>Node Count</label>
+          <select id="nodeCount">
+            <option value="10000">10,000</option>
+            <option value="50000">50,000</option>
+            <option value="100000">100,000</option>
+            <option value="250000">250,000</option>
+            <option value="500000" selected>500,000</option>
+            <option value="1000000">1,000,000</option>
+          </select>
         </div>
-        <div class="stat-row">
-          <span class="stat-label">Frame Time:</span>
-          <span class="stat-value" id="frameTimeValue">--</span>
+        <div class="control-group">
+          <label>Edges/Node</label>
+          <input type="number" id="edgesPerNode" value="2" min="0" max="10" step="1">
         </div>
-        <div class="stat-row">
-          <span class="stat-label">Nodes:</span>
-          <span class="stat-value" id="nodeCountValue">--</span>
+        <div class="control-group">
+          <label>Duration (s)</label>
+          <input type="number" id="duration" value="10" min="5" max="60" step="5">
         </div>
-        <div class="stat-row">
-          <span class="stat-label">Edges:</span>
-          <span class="stat-value" id="edgeCountValue">--</span>
-        </div>
+        <button id="runBtn">Run Benchmark</button>
       </div>
-    </div>
+    </header>
 
-    <div id="results">
-      <h2>Benchmark Results</h2>
-      <div class="progress" id="progressContainer" style="display: none;">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progressFill"></div>
+    <main>
+      <div id="canvas-container">
+        <canvas id="graphCanvas"></canvas>
+        <div id="stats">
+          <div class="stat-row">
+            <span class="stat-label">FPS:</span>
+            <span class="stat-value" id="fpsValue">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Frame Time:</span>
+            <span class="stat-value" id="frameTimeValue">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Nodes:</span>
+            <span class="stat-value" id="nodeCountValue">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Edges:</span>
+            <span class="stat-value" id="edgeCountValue">--</span>
+          </div>
         </div>
-        <div class="progress-text" id="progressText">Preparing...</div>
       </div>
-      <pre id="resultsOutput">Click "Run Benchmark" to start.
+
+      <div id="results">
+        <h2>Benchmark Results</h2>
+        <div class="progress" id="progressContainer" style="display: none">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-text" id="progressText">Preparing...</div>
+        </div>
+        <pre
+          id="resultsOutput"
+        >
+Click "Run Benchmark" to start.
 
 This benchmark tests HeroineGraph's rendering
 performance with large graphs.
@@ -259,249 +262,258 @@ Target: 30 FPS with 500K nodes
 Requirements:
 - WebGPU-enabled browser (Chrome 113+)
 - Dedicated GPU recommended</pre>
-    </div>
-  </main>
+      </div>
+    </main>
 
-  <script type="module">
-    // Benchmark implementation for browser
+    <script type="module">
+      // Benchmark implementation for browser
 
-    // Check WebGPU support
-    if (!navigator.gpu) {
-      document.getElementById('resultsOutput').innerHTML =
-        'ERROR: WebGPU is not supported in this browser.\n\n' +
-        'Please use Chrome 113+ or another WebGPU-enabled browser.';
-      document.getElementById('runBtn').disabled = true;
-    }
-
-    // Frame time tracking
-    class FrameTimeTracker {
-      constructor() {
-        this.frameTimes = [];
-        this.lastTime = 0;
+      // Check WebGPU support
+      if (!navigator.gpu) {
+        document.getElementById("resultsOutput").innerHTML =
+          "ERROR: WebGPU is not supported in this browser.\n\n" +
+          "Please use Chrome 113+ or another WebGPU-enabled browser.";
+        document.getElementById("runBtn").disabled = true;
       }
 
-      recordFrame() {
-        const now = performance.now();
-        if (this.lastTime > 0) {
-          this.frameTimes.push(now - this.lastTime);
-        }
-        this.lastTime = now;
-      }
-
-      getStats(targetFps) {
-        const frameTimes = [...this.frameTimes].sort((a, b) => a - b);
-        const count = frameTimes.length;
-
-        if (count === 0) {
-          return { averageFps: 0, minFps: 0, maxFps: 0, percentile1Fps: 0, avgFrameTime: 0, maxFrameTime: 0, targetMet: false };
+      // Frame time tracking
+      class FrameTimeTracker {
+        constructor() {
+          this.frameTimes = [];
+          this.lastTime = 0;
         }
 
-        const totalTime = frameTimes.reduce((a, b) => a + b, 0);
-        const avgFrameTime = totalTime / count;
-        const maxFrameTime = frameTimes[count - 1];
-        const minFrameTime = frameTimes[0];
-        const p1Index = Math.floor(count * 0.99);
-        const p1FrameTime = frameTimes[p1Index];
-
-        return {
-          frameCount: count,
-          totalTime,
-          averageFps: 1000 / avgFrameTime,
-          minFps: 1000 / maxFrameTime,
-          maxFps: 1000 / minFrameTime,
-          percentile1Fps: 1000 / p1FrameTime,
-          avgFrameTime,
-          maxFrameTime,
-          targetMet: (1000 / p1FrameTime) >= targetFps
-        };
-      }
-
-      reset() {
-        this.frameTimes = [];
-        this.lastTime = 0;
-      }
-    }
-
-    // Generate graph data
-    function generateGraph(nodeCount, edgesPerNode) {
-      const edgeCount = Math.floor(nodeCount * edgesPerNode);
-      const positions = new Float32Array(nodeCount * 2);
-      const radius = Math.sqrt(nodeCount) * 10;
-      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-
-      for (let i = 0; i < nodeCount; i++) {
-        const angle = i * goldenAngle;
-        const r = Math.sqrt(i / nodeCount) * radius;
-        positions[i * 2] = r * Math.cos(angle);
-        positions[i * 2 + 1] = r * Math.sin(angle);
-      }
-
-      const edgePairs = new Uint32Array(edgeCount * 2);
-      for (let i = 0; i < edgeCount; i++) {
-        const source = Math.floor(Math.random() * nodeCount);
-        const offset = Math.floor(Math.random() * 2000) - 1000;
-        const target = Math.max(0, Math.min(nodeCount - 1, source + offset));
-        edgePairs[i * 2] = source;
-        edgePairs[i * 2 + 1] = target;
-      }
-
-      return { nodeCount, edgeCount, positions, edgePairs };
-    }
-
-    // UI elements
-    const canvas = document.getElementById('graphCanvas');
-    const runBtn = document.getElementById('runBtn');
-    const nodeCountSelect = document.getElementById('nodeCount');
-    const edgesPerNodeInput = document.getElementById('edgesPerNode');
-    const durationInput = document.getElementById('duration');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressFill = document.getElementById('progressFill');
-    const progressText = document.getElementById('progressText');
-    const resultsOutput = document.getElementById('resultsOutput');
-
-    // Stats display
-    const fpsValue = document.getElementById('fpsValue');
-    const frameTimeValue = document.getElementById('frameTimeValue');
-    const nodeCountValue = document.getElementById('nodeCountValue');
-    const edgeCountValue = document.getElementById('edgeCountValue');
-
-    // Resize canvas
-    function resizeCanvas() {
-      const container = canvas.parentElement;
-      canvas.width = container.clientWidth * window.devicePixelRatio;
-      canvas.height = container.clientHeight * window.devicePixelRatio;
-    }
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
-
-    // Run benchmark
-    runBtn.addEventListener('click', async () => {
-      const nodeCount = parseInt(nodeCountSelect.value);
-      const edgesPerNode = parseFloat(edgesPerNodeInput.value);
-      const duration = parseInt(durationInput.value);
-      const targetFps = 30;
-      const warmUpFrames = 60;
-
-      runBtn.disabled = true;
-      progressContainer.style.display = 'block';
-      progressFill.style.width = '0%';
-      progressText.textContent = 'Generating graph...';
-
-      try {
-        // Generate graph
-        await new Promise(r => setTimeout(r, 100)); // Allow UI update
-        const graphData = generateGraph(nodeCount, edgesPerNode);
-
-        nodeCountValue.textContent = nodeCount.toLocaleString();
-        edgeCountValue.textContent = graphData.edgeCount.toLocaleString();
-
-        // Initialize WebGPU (placeholder - full implementation would use HeroineGraph)
-        progressText.textContent = 'Initializing WebGPU...';
-        await new Promise(r => setTimeout(r, 500));
-
-        // Note: Full implementation would load the actual library
-        // For now, simulate with requestAnimationFrame timing
-
-        const tracker = new FrameTimeTracker();
-        let frameCount = 0;
-        let running = true;
-
-        // Warm-up phase
-        progressText.textContent = `Warming up (${warmUpFrames} frames)...`;
-        await new Promise(resolve => {
-          function warmUp() {
-            if (frameCount >= warmUpFrames) {
-              tracker.reset();
-              resolve();
-              return;
-            }
-            tracker.recordFrame();
-            frameCount++;
-            requestAnimationFrame(warmUp);
+        recordFrame() {
+          const now = performance.now();
+          if (this.lastTime > 0) {
+            this.frameTimes.push(now - this.lastTime);
           }
-          requestAnimationFrame(warmUp);
-        });
+          this.lastTime = now;
+        }
 
-        // Benchmark phase
-        const startTime = performance.now();
-        frameCount = 0;
+        getStats(targetFps) {
+          const frameTimes = [...this.frameTimes].sort((a, b) => a - b);
+          const count = frameTimes.length;
 
-        await new Promise(resolve => {
-          function benchmark() {
-            const elapsed = performance.now() - startTime;
-            const progress = Math.min(100, (elapsed / (duration * 1000)) * 100);
+          if (count === 0) {
+            return {
+              averageFps: 0,
+              minFps: 0,
+              maxFps: 0,
+              percentile1Fps: 0,
+              avgFrameTime: 0,
+              maxFrameTime: 0,
+              targetMet: false,
+            };
+          }
 
-            progressFill.style.width = `${progress}%`;
-            progressText.textContent = `Benchmarking... ${(duration - elapsed / 1000).toFixed(1)}s remaining`;
+          const totalTime = frameTimes.reduce((a, b) => a + b, 0);
+          const avgFrameTime = totalTime / count;
+          const maxFrameTime = frameTimes[count - 1];
+          const minFrameTime = frameTimes[0];
+          const p1Index = Math.floor(count * 0.99);
+          const p1FrameTime = frameTimes[p1Index];
 
-            tracker.recordFrame();
-            frameCount++;
+          return {
+            frameCount: count,
+            totalTime,
+            averageFps: 1000 / avgFrameTime,
+            minFps: 1000 / maxFrameTime,
+            maxFps: 1000 / minFrameTime,
+            percentile1Fps: 1000 / p1FrameTime,
+            avgFrameTime,
+            maxFrameTime,
+            targetMet: (1000 / p1FrameTime) >= targetFps,
+          };
+        }
 
-            // Update live stats
-            const instantFps = tracker.frameTimes.length > 0
-              ? 1000 / tracker.frameTimes[tracker.frameTimes.length - 1]
-              : 0;
-            fpsValue.textContent = instantFps.toFixed(0);
-            fpsValue.className = `stat-value ${instantFps >= 30 ? 'good' : 'bad'}`;
+        reset() {
+          this.frameTimes = [];
+          this.lastTime = 0;
+        }
+      }
 
-            const frameTime = tracker.frameTimes.length > 0
-              ? tracker.frameTimes[tracker.frameTimes.length - 1]
-              : 0;
-            frameTimeValue.textContent = `${frameTime.toFixed(1)}ms`;
+      // Generate graph data
+      function generateGraph(nodeCount, edgesPerNode) {
+        const edgeCount = Math.floor(nodeCount * edgesPerNode);
+        const positions = new Float32Array(nodeCount * 2);
+        const radius = Math.sqrt(nodeCount) * 10;
+        const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
-            if (elapsed >= duration * 1000) {
-              resolve();
-              return;
+        for (let i = 0; i < nodeCount; i++) {
+          const angle = i * goldenAngle;
+          const r = Math.sqrt(i / nodeCount) * radius;
+          positions[i * 2] = r * Math.cos(angle);
+          positions[i * 2 + 1] = r * Math.sin(angle);
+        }
+
+        const edgePairs = new Uint32Array(edgeCount * 2);
+        for (let i = 0; i < edgeCount; i++) {
+          const source = Math.floor(Math.random() * nodeCount);
+          const offset = Math.floor(Math.random() * 2000) - 1000;
+          const target = Math.max(0, Math.min(nodeCount - 1, source + offset));
+          edgePairs[i * 2] = source;
+          edgePairs[i * 2 + 1] = target;
+        }
+
+        return { nodeCount, edgeCount, positions, edgePairs };
+      }
+
+      // UI elements
+      const canvas = document.getElementById("graphCanvas");
+      const runBtn = document.getElementById("runBtn");
+      const nodeCountSelect = document.getElementById("nodeCount");
+      const edgesPerNodeInput = document.getElementById("edgesPerNode");
+      const durationInput = document.getElementById("duration");
+      const progressContainer = document.getElementById("progressContainer");
+      const progressFill = document.getElementById("progressFill");
+      const progressText = document.getElementById("progressText");
+      const resultsOutput = document.getElementById("resultsOutput");
+
+      // Stats display
+      const fpsValue = document.getElementById("fpsValue");
+      const frameTimeValue = document.getElementById("frameTimeValue");
+      const nodeCountValue = document.getElementById("nodeCountValue");
+      const edgeCountValue = document.getElementById("edgeCountValue");
+
+      // Resize canvas
+      function resizeCanvas() {
+        const container = canvas.parentElement;
+        canvas.width = container.clientWidth * window.devicePixelRatio;
+        canvas.height = container.clientHeight * window.devicePixelRatio;
+      }
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+
+      // Run benchmark
+      runBtn.addEventListener("click", async () => {
+        const nodeCount = parseInt(nodeCountSelect.value);
+        const edgesPerNode = parseFloat(edgesPerNodeInput.value);
+        const duration = parseInt(durationInput.value);
+        const targetFps = 30;
+        const warmUpFrames = 60;
+
+        runBtn.disabled = true;
+        progressContainer.style.display = "block";
+        progressFill.style.width = "0%";
+        progressText.textContent = "Generating graph...";
+
+        try {
+          // Generate graph
+          await new Promise((r) => setTimeout(r, 100)); // Allow UI update
+          const graphData = generateGraph(nodeCount, edgesPerNode);
+
+          nodeCountValue.textContent = nodeCount.toLocaleString();
+          edgeCountValue.textContent = graphData.edgeCount.toLocaleString();
+
+          // Initialize WebGPU (placeholder - full implementation would use HeroineGraph)
+          progressText.textContent = "Initializing WebGPU...";
+          await new Promise((r) => setTimeout(r, 500));
+
+          // Note: Full implementation would load the actual library
+          // For now, simulate with requestAnimationFrame timing
+
+          const tracker = new FrameTimeTracker();
+          let frameCount = 0;
+          let running = true;
+
+          // Warm-up phase
+          progressText.textContent = `Warming up (${warmUpFrames} frames)...`;
+          await new Promise((resolve) => {
+            function warmUp() {
+              if (frameCount >= warmUpFrames) {
+                tracker.reset();
+                resolve();
+                return;
+              }
+              tracker.recordFrame();
+              frameCount++;
+              requestAnimationFrame(warmUp);
+            }
+            requestAnimationFrame(warmUp);
+          });
+
+          // Benchmark phase
+          const startTime = performance.now();
+          frameCount = 0;
+
+          await new Promise((resolve) => {
+            function benchmark() {
+              const elapsed = performance.now() - startTime;
+              const progress = Math.min(100, (elapsed / (duration * 1000)) * 100);
+
+              progressFill.style.width = `${progress}%`;
+              progressText.textContent = `Benchmarking... ${
+                (duration - elapsed / 1000).toFixed(1)
+              }s remaining`;
+
+              tracker.recordFrame();
+              frameCount++;
+
+              // Update live stats
+              const instantFps = tracker.frameTimes.length > 0
+                ? 1000 / tracker.frameTimes[tracker.frameTimes.length - 1]
+                : 0;
+              fpsValue.textContent = instantFps.toFixed(0);
+              fpsValue.className = `stat-value ${instantFps >= 30 ? "good" : "bad"}`;
+
+              const frameTime = tracker.frameTimes.length > 0
+                ? tracker.frameTimes[tracker.frameTimes.length - 1]
+                : 0;
+              frameTimeValue.textContent = `${frameTime.toFixed(1)}ms`;
+
+              if (elapsed >= duration * 1000) {
+                resolve();
+                return;
+              }
+              requestAnimationFrame(benchmark);
             }
             requestAnimationFrame(benchmark);
-          }
-          requestAnimationFrame(benchmark);
-        });
+          });
 
-        // Calculate results
-        const stats = tracker.getStats(targetFps);
-        const result = {
-          ...stats,
-          nodeCount,
-          edgeCount: graphData.edgeCount,
-          targetFps
-        };
+          // Calculate results
+          const stats = tracker.getStats(targetFps);
+          const result = {
+            ...stats,
+            nodeCount,
+            edgeCount: graphData.edgeCount,
+            targetFps,
+          };
 
-        // Display results
-        const passedStr = result.targetMet ? '✓ PASSED' : '✗ FAILED';
-        const passedClass = result.targetMet ? 'good' : 'bad';
+          // Display results
+          const passedStr = result.targetMet ? "✓ PASSED" : "✗ FAILED";
+          const passedClass = result.targetMet ? "good" : "bad";
 
-        resultsOutput.innerHTML = `
-${'='.repeat(45)}
+          resultsOutput.innerHTML = `
+${"=".repeat(45)}
 BENCHMARK RESULTS
-${'='.repeat(45)}
+${"=".repeat(45)}
 Nodes:           ${result.nodeCount.toLocaleString()}
 Edges:           ${result.edgeCount.toLocaleString()}
 Frames:          ${result.frameCount.toLocaleString()}
 Total time:      ${(result.totalTime / 1000).toFixed(2)}s
-${'-'.repeat(45)}
+${"-".repeat(45)}
 Average FPS:     ${result.averageFps.toFixed(1)}
 Min FPS:         ${result.minFps.toFixed(1)}
 Max FPS:         ${result.maxFps.toFixed(1)}
 1% Low FPS:      ${result.percentile1Fps.toFixed(1)}
-${'-'.repeat(45)}
+${"-".repeat(45)}
 Avg frame time:  ${result.avgFrameTime.toFixed(2)}ms
 Max frame time:  ${result.maxFrameTime.toFixed(2)}ms
-${'-'.repeat(45)}
+${"-".repeat(45)}
 Target (${targetFps} FPS): <span class="${passedClass}">${passedStr}</span>
-${'='.repeat(45)}
+${"=".repeat(45)}
 `;
 
-        progressFill.style.width = '100%';
-        progressText.textContent = 'Complete!';
-
-      } catch (err) {
-        resultsOutput.textContent = `ERROR: ${err.message}`;
-        console.error(err);
-      } finally {
-        runBtn.disabled = false;
-      }
-    });
-  </script>
-</body>
+          progressFill.style.width = "100%";
+          progressText.textContent = "Complete!";
+        } catch (err) {
+          resultsOutput.textContent = `ERROR: ${err.message}`;
+          console.error(err);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
 </html>

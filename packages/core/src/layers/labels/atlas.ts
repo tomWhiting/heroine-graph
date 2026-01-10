@@ -164,7 +164,7 @@ export async function loadFontAtlas(
   context: GPUContext,
   jsonUrl: string,
   pngUrl: string,
-  options: FontAtlasOptions = {}
+  options: FontAtlasOptions = {},
 ): Promise<FontAtlas> {
   const { device } = context;
   const { distanceRange = 4 } = options;
@@ -201,8 +201,7 @@ export async function loadFontAtlas(
       height: imageBitmap.height,
     },
     format: "rgba8unorm",
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING |
+    usage: GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
@@ -212,7 +211,7 @@ export async function loadFontAtlas(
     { texture },
     imageData.data,
     { bytesPerRow: imageBitmap.width * 4 },
-    { width: imageBitmap.width, height: imageBitmap.height }
+    { width: imageBitmap.width, height: imageBitmap.height },
   );
 
   // Create texture view
@@ -321,7 +320,7 @@ export function measureText(atlas: FontAtlas, text: string, fontSize: number): n
  */
 export function getGlyphUVs(
   atlas: FontAtlas,
-  glyph: BMFontChar
+  glyph: BMFontChar,
 ): [number, number, number, number] {
   const { scaleW, scaleH } = atlas.common;
 
@@ -344,6 +343,6 @@ export const DEFAULT_FONT_ATLAS_PNG = "./assets/fonts/roboto-msdf.png";
 /**
  * Load the default Roboto MSDF font atlas
  */
-export async function loadDefaultFontAtlas(context: GPUContext): Promise<FontAtlas> {
+export function loadDefaultFontAtlas(context: GPUContext): Promise<FontAtlas> {
   return loadFontAtlas(context, DEFAULT_FONT_ATLAS_JSON, DEFAULT_FONT_ATLAS_PNG);
 }

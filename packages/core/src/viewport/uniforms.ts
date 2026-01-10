@@ -65,7 +65,7 @@ export class ViewportUniformBuffer {
     deviceOrState: GPUDevice | ViewportState,
     state?: ViewportState,
     width?: number,
-    height?: number
+    height?: number,
   ): void {
     // Handle both signatures
     let viewport: ViewportState;

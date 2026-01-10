@@ -5,7 +5,7 @@
  * subscribe/unsubscribe and one-time listeners.
  */
 
-import type { EventMap, GraphEvent, EventHandler } from "../types.ts";
+import type { EventHandler, EventMap, GraphEvent } from "../types.ts";
 
 /**
  * Type-safe event emitter for graph events.
@@ -205,7 +205,7 @@ export const Events = {
   nodeClick(
     nodeId: number,
     position: { x: number; y: number },
-    originalEvent: PointerEvent
+    originalEvent: PointerEvent,
   ): EventMap["node:click"] {
     return {
       type: "node:click",
@@ -222,7 +222,7 @@ export const Events = {
   nodeDoubleClick(
     nodeId: number,
     position: { x: number; y: number },
-    originalEvent: PointerEvent
+    originalEvent: PointerEvent,
   ): EventMap["node:dblclick"] {
     return {
       type: "node:dblclick",
@@ -238,7 +238,7 @@ export const Events = {
    */
   nodeHoverEnter(
     nodeId: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
   ): EventMap["node:hoverenter"] {
     return {
       type: "node:hoverenter",
@@ -264,7 +264,7 @@ export const Events = {
    */
   nodeDragStart(
     nodeId: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
   ): EventMap["node:dragstart"] {
     return {
       type: "node:dragstart",
@@ -280,7 +280,7 @@ export const Events = {
   nodeDragMove(
     nodeId: number,
     position: { x: number; y: number },
-    delta: { x: number; y: number }
+    delta: { x: number; y: number },
   ): EventMap["node:dragmove"] {
     return {
       type: "node:dragmove",
@@ -296,7 +296,7 @@ export const Events = {
    */
   nodeDragEnd(
     nodeId: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
   ): EventMap["node:dragend"] {
     return {
       type: "node:dragend",
@@ -312,7 +312,7 @@ export const Events = {
   edgeClick(
     edgeId: number,
     position: { x: number; y: number },
-    originalEvent: PointerEvent
+    originalEvent: PointerEvent,
   ): EventMap["edge:click"] {
     return {
       type: "edge:click",
@@ -328,7 +328,7 @@ export const Events = {
    */
   edgeHoverEnter(
     edgeId: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
   ): EventMap["edge:hoverenter"] {
     return {
       type: "edge:hoverenter",
@@ -353,7 +353,7 @@ export const Events = {
    * Create a viewport change event.
    */
   viewportChange(
-    viewport: EventMap["viewport:change"]["viewport"]
+    viewport: EventMap["viewport:change"]["viewport"],
   ): EventMap["viewport:change"] {
     return {
       type: "viewport:change",
@@ -390,7 +390,7 @@ export const Events = {
    */
   selectionChange(
     selectedNodes: readonly number[],
-    selectedEdges: readonly number[]
+    selectedEdges: readonly number[],
   ): EventMap["selection:change"] {
     return {
       type: "selection:change",
@@ -405,7 +405,7 @@ export const Events = {
    */
   backgroundClick(
     position: { x: number; y: number },
-    originalEvent: PointerEvent
+    originalEvent: PointerEvent,
   ): EventMap["background:click"] {
     return {
       type: "background:click",

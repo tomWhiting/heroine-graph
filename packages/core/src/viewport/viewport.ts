@@ -4,7 +4,7 @@
  * Handles pan, zoom, and coordinate transforms for the graph view.
  */
 
-import type { ViewportState, Vec2, BoundingBox } from "../types.ts";
+import type { BoundingBox, Vec2, ViewportState } from "../types.ts";
 import { EventEmitter, Events } from "../events/emitter.ts";
 
 /**
@@ -51,7 +51,7 @@ export class Viewport {
     width: number,
     height: number,
     config: Partial<ViewportConfig> = {},
-    emitter?: EventEmitter
+    emitter?: EventEmitter,
   ) {
     this.x = 0;
     this.y = 0;
@@ -397,7 +397,7 @@ export function createViewport(
   canvasOrWidth: HTMLCanvasElement | number,
   optionsOrHeight?: CreateViewportOptions | number,
   config?: Partial<ViewportConfig>,
-  emitter?: EventEmitter
+  emitter?: EventEmitter,
 ): Viewport {
   if (typeof canvasOrWidth === "number") {
     // Legacy signature: (width, height, config, emitter)

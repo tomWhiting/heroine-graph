@@ -8,7 +8,7 @@
  */
 
 import type { FontAtlas } from "./atlas.ts";
-import { getGlyph, getKerning, getGlyphUVs, measureText } from "./atlas.ts";
+import { getGlyph, getGlyphUVs, getKerning, measureText } from "./atlas.ts";
 
 /**
  * Position provider for dynamic label positioning
@@ -192,7 +192,7 @@ export class LabelManager {
     scale: number,
     canvasWidth: number,
     canvasHeight: number,
-    positionProvider?: PositionProvider
+    positionProvider?: PositionProvider,
   ): VisibleLabel[] {
     if (!this.fontAtlas) {
       return [];
@@ -303,7 +303,7 @@ export class LabelManager {
     viewportY: number,
     scale: number,
     canvasWidth: number,
-    canvasHeight: number
+    canvasHeight: number,
   ): { instances: Float32Array; count: number } {
     if (!this.fontAtlas) {
       return { instances: new Float32Array(0), count: 0 };
@@ -411,12 +411,12 @@ export class LabelManager {
     const startCol = Math.max(0, Math.floor(bbox.x / gridCellSize));
     const endCol = Math.min(
       this.gridCols - 1,
-      Math.floor((bbox.x + bbox.width) / gridCellSize)
+      Math.floor((bbox.x + bbox.width) / gridCellSize),
     );
     const startRow = Math.max(0, Math.floor(bbox.y / gridCellSize));
     const endRow = Math.min(
       this.gridRows - 1,
-      Math.floor((bbox.y + bbox.height) / gridCellSize)
+      Math.floor((bbox.y + bbox.height) / gridCellSize),
     );
 
     for (let row = startRow; row <= endRow; row++) {
@@ -439,12 +439,12 @@ export class LabelManager {
     const startCol = Math.max(0, Math.floor(bbox.x / gridCellSize));
     const endCol = Math.min(
       this.gridCols - 1,
-      Math.floor((bbox.x + bbox.width) / gridCellSize)
+      Math.floor((bbox.x + bbox.width) / gridCellSize),
     );
     const startRow = Math.max(0, Math.floor(bbox.y / gridCellSize));
     const endRow = Math.min(
       this.gridRows - 1,
-      Math.floor((bbox.y + bbox.height) / gridCellSize)
+      Math.floor((bbox.y + bbox.height) / gridCellSize),
     );
 
     for (let row = startRow; row <= endRow; row++) {

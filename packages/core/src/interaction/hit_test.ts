@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { NodeId, EdgeId, Vec2 } from "../types.ts";
+import type { EdgeId, NodeId, Vec2 } from "../types.ts";
 
 /**
  * Hit test result for a node.
@@ -150,7 +150,7 @@ export class HitTester {
   hitTestNode(
     graphX: number,
     graphY: number,
-    hitRadius?: number
+    hitRadius?: number,
   ): NodeHitResult | null {
     const radius = hitRadius ?? this.config.nodeHitRadius;
 
@@ -192,7 +192,7 @@ export class HitTester {
   hitTestEdge(
     graphX: number,
     graphY: number,
-    hitRadius?: number
+    hitRadius?: number,
   ): EdgeHitResult | null {
     if (!this.edgeProvider || !this.positionProvider) {
       return null;
@@ -214,7 +214,7 @@ export class HitTester {
         sourcePos.x,
         sourcePos.y,
         targetPos.x,
-        targetPos.y
+        targetPos.y,
       );
 
       if (distance < closestDistance) {
@@ -245,7 +245,7 @@ export class HitTester {
     graphX: number,
     graphY: number,
     nodeRadius?: number,
-    edgeRadius?: number
+    edgeRadius?: number,
   ): HitResult | null {
     const nodeHit = this.hitTestNode(graphX, graphY, nodeRadius);
     const edgeHit = this.hitTestEdge(graphX, graphY, edgeRadius);
@@ -275,7 +275,7 @@ export class HitTester {
     minX: number,
     minY: number,
     maxX: number,
-    maxY: number
+    maxY: number,
   ): NodeId[] {
     if (this.spatialEngine) {
       return this.spatialEngine.findNodesInRect(minX, minY, maxX, maxY);
@@ -310,7 +310,7 @@ export class HitTester {
   private bruteForceNodeHitTest(
     graphX: number,
     graphY: number,
-    maxRadius: number
+    maxRadius: number,
   ): NodeHitResult | null {
     if (!this.positionProvider) return null;
 
@@ -353,7 +353,7 @@ export class HitTester {
     x1: number,
     y1: number,
     x2: number,
-    y2: number
+    y2: number,
   ): number {
     const dx = x2 - x1;
     const dy = y2 - y1;

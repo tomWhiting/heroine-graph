@@ -12,8 +12,8 @@ export type { MetaballConfig } from "./config.ts";
 export {
   DEFAULT_METABALL_CONFIG,
   mergeMetaballConfig,
-  validateMetaballConfig,
   parseMetaballColor,
+  validateMetaballConfig,
 } from "./config.ts";
 
 // Pipeline
@@ -22,4 +22,4 @@ export { createMetaballPipeline, DEFAULT_METABALL_UNIFORMS } from "./pipeline.ts
 
 // Layer
 export type { MetaballRenderContext } from "./layer.ts";
-export { MetaballLayer, createMetaballLayer } from "./layer.ts";
+export { createMetaballLayer, MetaballLayer } from "./layer.ts";

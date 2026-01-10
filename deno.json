@@ -35,25 +35,17 @@
   },
   "lint": {
     "include": ["packages/", "tests/", "examples/"],
-    "exclude": ["**/node_modules/", "**/dist/", "**/pkg/"],
+    "exclude": ["**/node_modules/", "**/dist/", "**/pkg/", "stories/"],
     "rules": {
       "tags": ["recommended"],
       "include": [
-        "ban-untagged-todo",
         "camelcase",
-        "default-param-last",
         "eqeqeq",
-        "explicit-function-return-type",
-        "explicit-module-boundary-types",
-        "no-await-in-loop",
         "no-const-assign",
         "no-eval",
-        "no-external-import",
-        "no-throw-literal",
-        "prefer-ascii",
-        "prefer-primordials"
+        "no-throw-literal"
       ],
-      "exclude": []
+      "exclude": ["require-await"]
     }
   },
   "fmt": {

@@ -12,12 +12,7 @@
 // import { createHeroineGraph, type GraphInput } from '@heroine-graph/core';
 
 // For this example, we import from the local package:
-import {
-  createHeroineGraph,
-  type GraphInput,
-  isSupported,
-  getSupportInfo,
-} from "../../packages/core/mod.ts";
+import { getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";
 
 /**
  * Generate a sample social network graph

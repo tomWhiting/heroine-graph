@@ -65,15 +65,16 @@ export async function checkWebGPU(): Promise<WebGPUStatus> {
   } catch (error) {
     return {
       supported: false,
-      error: `Failed to request GPU adapter: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Failed to request GPU adapter: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     };
   }
 
   if (!adapter) {
     return {
       supported: false,
-      error:
-        "No suitable GPU adapter found. " +
+      error: "No suitable GPU adapter found. " +
         "This may occur if no compatible GPU is available or GPU drivers need updating.",
     };
   }
@@ -100,7 +101,9 @@ export async function checkWebGPU(): Promise<WebGPUStatus> {
   } catch (error) {
     return {
       supported: false,
-      error: `Failed to request GPU device: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Failed to request GPU device: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
       adapterInfo,
     };
   }

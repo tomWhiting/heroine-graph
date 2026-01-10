@@ -14,8 +14,8 @@ export type { ContourConfig } from "./config.ts";
 export {
   DEFAULT_CONTOUR_CONFIG,
   mergeContourConfig,
-  validateContourConfig,
   parseColor,
+  validateContourConfig,
 } from "./config.ts";
 
 // Simple Pipeline (new approach)
@@ -24,10 +24,7 @@ export { createSimpleContourPipeline } from "./simple-pipeline.ts";
 
 // Simple Layer (new approach)
 export type { SimpleContourRenderContext } from "./simple-layer.ts";
-export {
-  SimpleContourLayer,
-  createSimpleContourLayer,
-} from "./simple-layer.ts";
+export { createSimpleContourLayer, SimpleContourLayer } from "./simple-layer.ts";
 
 // Re-export with old names for backwards compatibility
 export { SimpleContourLayer as ContourLayer } from "./simple-layer.ts";

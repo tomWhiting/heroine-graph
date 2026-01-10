@@ -11,94 +11,85 @@
 // =============================================================================
 
 export type {
-  // Identifiers
-  NodeId,
-  EdgeId,
-
-  // Primitives
-  Vec2,
+  BackgroundClickEvent,
   BoundingBox,
   Color,
   ColorScale,
-
-  // Node types
-  NodeMetadata,
-  NodeState,
-  Node,
-
-  // Edge types
-  EdgeMetadata,
-  EdgeState,
-  Edge,
-
-  // Simulation types
-  SimulationStatus,
-  ForceConfig,
-  SimulationState,
-
-  // Layer types
-  LayerType,
-  HeatmapLayerConfig,
   ContourLayerConfig,
-  MetaballLayerConfig,
-  LabelLayerConfig,
-  LayerConfig,
-  Layer,
-
-  // Viewport types
-  ViewportState,
-
-  // Configuration
-  GraphConfig,
-
-  // Input types
-  NodeInput,
-  EdgeInput,
-  GraphInput,
-  GraphTypedInput,
-
-  // Event types
-  GraphEvent,
-  NodeClickEvent,
-  NodeDoubleClickEvent,
-  NodeHoverEnterEvent,
-  NodeHoverLeaveEvent,
-  NodeDragStartEvent,
-  NodeDragMoveEvent,
-  NodeDragEndEvent,
+  Edge,
   EdgeClickEvent,
   EdgeHoverEnterEvent,
   EdgeHoverLeaveEvent,
-  ViewportChangeEvent,
-  SimulationTickEvent,
-  SimulationEndEvent,
-  SelectionChangeEvent,
-  BackgroundClickEvent,
-  HeroineGraphEvent,
+  EdgeId,
+  EdgeInput,
+  // Edge types
+  EdgeMetadata,
+  EdgeState,
   EventHandler,
   EventMap,
+  ForceConfig,
+  // Configuration
+  GraphConfig,
+  // Event types
+  GraphEvent,
+  GraphInput,
+  GraphTypedInput,
+  HeatmapLayerConfig,
+  HeroineGraphEvent,
+  LabelLayerConfig,
+  Layer,
+  LayerConfig,
+  // Layer types
+  LayerType,
+  MetaballLayerConfig,
+  Node,
+  NodeClickEvent,
+  NodeDoubleClickEvent,
+  NodeDragEndEvent,
+  NodeDragMoveEvent,
+  NodeDragStartEvent,
+  NodeHoverEnterEvent,
+  NodeHoverLeaveEvent,
+  // Identifiers
+  NodeId,
+  // Input types
+  NodeInput,
+  // Node types
+  NodeMetadata,
+  NodeState,
+  SelectionChangeEvent,
+  SimulationEndEvent,
+  SimulationState,
+  // Simulation types
+  SimulationStatus,
+  SimulationTickEvent,
+  // Primitives
+  Vec2,
+  ViewportChangeEvent,
+  // Viewport types
+  ViewportState,
 } from "./src/types.ts";
 
 // =============================================================================
 // Errors
 // =============================================================================
 
-export { HeroineGraphError, ErrorCode, Errors, assert, wrapAsync } from "./src/errors.ts";
+export { assert, ErrorCode, Errors, HeroineGraphError, wrapAsync } from "./src/errors.ts";
 
 // =============================================================================
 // WebGPU
 // =============================================================================
 
-export { checkWebGPU, hasWebGPU, describeWebGPUStatus } from "./src/webgpu/check.ts";
+export { checkWebGPU, describeWebGPUStatus, hasWebGPU } from "./src/webgpu/check.ts";
 export type { WebGPUStatus } from "./src/webgpu/check.ts";
 
 export {
+  createDepthTexture,
   createGPUContext,
   destroyGPUContext,
-  resizeGPUContext,
-  getCurrentTexture,
-  createDepthTexture,
   estimateMaxNodes,
+  getCurrentTexture,
+  resizeGPUContext,
 } from "./src/webgpu/context.ts";
 export type { GPUContext, GPUContextOptions } from "./src/webgpu/context.ts";
 
@@ -107,11 +98,11 @@ export type { GPUContext, GPUContextOptions } from "./src/webgpu/context.ts";
 // =============================================================================
 
 export {
-  loadWasmModule,
   createWasmEngine,
   createWasmEngineWithCapacity,
-  isWasmLoaded,
   getWasmModule,
+  isWasmLoaded,
+  loadWasmModule,
   WasmMemory,
 } from "./src/wasm/loader.ts";
 
@@ -119,43 +110,43 @@ export {
 // Events
 // =============================================================================
 
-export { EventEmitter, createEventEmitter, createTimestamp, Events } from "./src/events/emitter.ts";
+export { createEventEmitter, createTimestamp, EventEmitter, Events } from "./src/events/emitter.ts";
 
 // =============================================================================
 // Viewport
 // =============================================================================
 
-export { Viewport, createViewport, DEFAULT_VIEWPORT_CONFIG } from "./src/viewport/viewport.ts";
+export { createViewport, DEFAULT_VIEWPORT_CONFIG, Viewport } from "./src/viewport/viewport.ts";
 export type { ViewportConfig } from "./src/viewport/viewport.ts";
 
 export {
-  identity,
-  translate,
-  scale,
-  rotate,
-  multiply,
-  transformPoint,
-  invert,
-  graphToScreenMatrix,
-  screenToGraphMatrix,
-  graphToClipMatrix,
-  screenToGraph,
-  graphToScreen,
-  getVisibleBounds,
-  fitBoundsScale,
   boundsCenter,
-  pointInBounds,
-  expandBounds,
   distanceToBounds,
+  expandBounds,
+  fitBoundsScale,
+  getVisibleBounds,
+  graphToClipMatrix,
+  graphToScreen,
+  graphToScreenMatrix,
+  identity,
+  invert,
+  multiply,
+  pointInBounds,
+  rotate,
+  scale,
+  screenToGraph,
+  screenToGraphMatrix,
+  transformPoint,
+  translate,
 } from "./src/viewport/transforms.ts";
 export type { Matrix3 } from "./src/viewport/transforms.ts";
 
 export {
-  ViewportUniformBuffer,
   createViewportUniformBuffer,
+  VIEWPORT_BIND_GROUP_LAYOUT_ENTRY,
   VIEWPORT_UNIFORM_SIZE,
   VIEWPORT_UNIFORM_WGSL,
-  VIEWPORT_BIND_GROUP_LAYOUT_ENTRY,
+  ViewportUniformBuffer,
 } from "./src/viewport/uniforms.ts";
 
 // =============================================================================
@@ -163,60 +154,57 @@ export {
 // =============================================================================
 
 export {
-  PositionBufferManager,
   DEFAULT_POSITION_BUFFER_CONFIG,
+  PositionBufferManager,
 } from "./src/renderer/buffers/positions.ts";
 export type { PositionBufferConfig } from "./src/renderer/buffers/positions.ts";
 
 export {
-  PingPongBuffer,
   createFloat32PingPong,
   createInt32PingPong,
   createUint32PingPong,
+  PingPongBuffer,
 } from "./src/renderer/buffers/pingpong.ts";
-export type { PingPongBufferConfig, BufferPair } from "./src/renderer/buffers/pingpong.ts";
+export type { BufferPair, PingPongBufferConfig } from "./src/renderer/buffers/pingpong.ts";
 
 export {
-  UniformBuffer,
   createSimulationUniformBuffer,
   createViewportUniformBuffer as createViewportUniformBuffer2,
-  forceConfigToUniforms,
-  viewportStateToUniforms,
-  SIMULATION_UNIFORMS_SIZE,
-  VIEWPORT_UNIFORMS_SIZE,
   DEFAULT_SIMULATION_UNIFORMS,
+  forceConfigToUniforms,
+  SIMULATION_UNIFORMS_SIZE,
+  UniformBuffer,
+  VIEWPORT_UNIFORMS_SIZE,
+  viewportStateToUniforms,
 } from "./src/renderer/buffers/uniforms.ts";
-export type {
-  SimulationUniforms,
-  ViewportUniforms,
-} from "./src/renderer/buffers/uniforms.ts";
+export type { SimulationUniforms, ViewportUniforms } from "./src/renderer/buffers/uniforms.ts";
 
 export {
+  DEFAULT_EDGE_BUFFER_CONFIG,
   EdgeBufferManager,
   edgePairsToCSR,
-  DEFAULT_EDGE_BUFFER_CONFIG,
 } from "./src/renderer/buffers/edges.ts";
-export type { EdgeBufferConfig, CSREdgeData } from "./src/renderer/buffers/edges.ts";
+export type { CSREdgeData, EdgeBufferConfig } from "./src/renderer/buffers/edges.ts";
 
 // =============================================================================
 // Render Pipelines
 // =============================================================================
 
 export {
-  createNodeRenderPipeline,
   createNodeBindGroup,
+  createNodeRenderPipeline,
   createViewportBindGroup as createNodeViewportBindGroup,
-  renderNodes,
   DEFAULT_NODE_PIPELINE_CONFIG,
+  renderNodes,
 } from "./src/renderer/pipelines/nodes.ts";
 export type { NodePipelineConfig, NodeRenderPipeline } from "./src/renderer/pipelines/nodes.ts";
 
 export {
-  createEdgeRenderPipeline,
   createEdgeBindGroup,
+  createEdgeRenderPipeline,
   createEdgeViewportBindGroup,
-  renderEdges,
   DEFAULT_EDGE_PIPELINE_CONFIG,
+  renderEdges,
 } from "./src/renderer/pipelines/edges.ts";
 export type { EdgePipelineConfig, EdgeRenderPipeline } from "./src/renderer/pipelines/edges.ts";
 
@@ -225,18 +213,18 @@ export type { EdgePipelineConfig, EdgeRenderPipeline } from "./src/renderer/pipe
 // =============================================================================
 
 export {
-  createRenderLoop,
-  createGPUTimer,
   createFramePacer,
+  createGPUTimer,
+  createRenderLoop,
   DEFAULT_RENDER_LOOP_CONFIG,
 } from "./src/renderer/render_loop.ts";
 export type {
-  RenderLoop,
-  RenderCallback,
-  RenderLoopConfig,
+  FramePacer,
   FrameStats,
   GPUTimer,
-  FramePacer,
+  RenderCallback,
+  RenderLoop,
+  RenderLoopConfig,
 } from "./src/renderer/render_loop.ts";
 
 // =============================================================================
@@ -244,23 +232,23 @@ export type {
 // =============================================================================
 
 export {
-  createCommandOrchestrator,
-  createRenderPassDescriptor,
-  createComputePassDescriptor,
-  dispatchCompute,
   calculateWorkgroups,
   createBufferUpdater,
+  createCommandOrchestrator,
+  createComputePassDescriptor,
+  createRenderPassDescriptor,
   DEFAULT_CLEAR_COLOR,
+  dispatchCompute,
 } from "./src/renderer/commands.ts";
 export type {
-  CommandOrchestrator,
-  CommandStats,
-  CommandOrchestratorConfig,
-  ClearColor,
-  RenderPassConfig,
-  FrameContext,
-  FrameBindGroups,
   BufferUpdater,
+  ClearColor,
+  CommandOrchestrator,
+  CommandOrchestratorConfig,
+  CommandStats,
+  FrameBindGroups,
+  FrameContext,
+  RenderPassConfig,
 } from "./src/renderer/commands.ts";
 
 // =============================================================================
@@ -268,103 +256,103 @@ export type {
 // =============================================================================
 
 export {
-  createSimulationController,
   calculateAlphaDecay,
+  createSimulationController,
   DEFAULT_SIMULATION_CONFIG,
 } from "./src/simulation/controller.ts";
 export type {
   SimulationController,
   SimulationControllerConfig,
-  SimulationState as SimulationControllerState,
-  SimulationEventType,
   SimulationEventData,
-  SimulationEventHandler,
   SimulationEventEmitter,
+  SimulationEventHandler,
+  SimulationEventType,
+  SimulationState as SimulationControllerState,
 } from "./src/simulation/controller.ts";
 
 export {
-  createSimulationPipeline,
-  recordSimulationStep,
-  createSimulationBindGroups,
   copyPositionsToReadback,
-  readbackPositions,
+  createSimulationBindGroups,
+  createSimulationPipeline,
   DEFAULT_SIMULATION_PIPELINE_CONFIG,
+  readbackPositions,
+  recordSimulationStep,
 } from "./src/simulation/pipeline.ts";
 export type {
+  SimulationBindGroups,
+  SimulationBuffers,
   SimulationPipeline,
   SimulationPipelineConfig,
-  SimulationBuffers,
-  SimulationBindGroups,
 } from "./src/simulation/pipeline.ts";
 
 export {
-  createAlphaManager,
   calculateDecayRate,
   calculateIterations,
-  createConvergenceDetector,
   createAdaptiveAlphaController,
+  createAlphaManager,
+  createConvergenceDetector,
   DEFAULT_ALPHA_CONFIG,
 } from "./src/simulation/alpha.ts";
 export type {
-  AlphaManager,
-  AlphaConfig,
-  ConvergenceDetector,
   AdaptiveAlphaController,
+  AlphaConfig,
+  AlphaManager,
+  ConvergenceDetector,
 } from "./src/simulation/alpha.ts";
 
 export {
-  forceConfigBuilder,
-  validateForceConfig,
-  forceConfigToUniformData,
-  mergeForceConfig,
   DEFAULT_FORCE_CONFIG,
   FORCE_PRESETS,
+  forceConfigBuilder,
+  forceConfigToUniformData,
+  mergeForceConfig,
+  validateForceConfig,
 } from "./src/simulation/config.ts";
-export type { FullForceConfig, ForceConfigBuilder } from "./src/simulation/config.ts";
+export type { ForceConfigBuilder, FullForceConfig } from "./src/simulation/config.ts";
 
 // =============================================================================
 // Graph Data
 // =============================================================================
 
 export {
-  parseGraphInput,
-  validateGraphInput,
   createEdgeIndicesBuffer,
   DEFAULT_PARSER_CONFIG,
+  parseGraphInput,
+  validateGraphInput,
 } from "./src/graph/parser.ts";
 export type { ParsedGraph, ParserConfig } from "./src/graph/parser.ts";
 
 export {
+  createTypedInput,
+  DEFAULT_TYPED_PARSER_CONFIG,
+  mergeTypedInputs,
   parseGraphTypedInput,
   validateGraphTypedInput,
-  createTypedInput,
-  mergeTypedInputs,
-  DEFAULT_TYPED_PARSER_CONFIG,
 } from "./src/graph/typed_parser.ts";
 export type { TypedParserConfig } from "./src/graph/typed_parser.ts";
 
 export {
   createIdMap,
-  createSequentialIdMap,
   createIdMapFromArray,
-  serializeIdMap,
+  createSequentialIdMap,
   deserializeIdMap,
   mapIdMap,
+  serializeIdMap,
 } from "./src/graph/id_map.ts";
-export type { IdMap, IdLike } from "./src/graph/id_map.ts";
+export type { IdLike, IdMap } from "./src/graph/id_map.ts";
 
 export {
-  initializePositions,
-  initializeRandom,
-  initializeGrid,
-  initializeCircle,
-  initializeSpiral,
-  initializePhyllotaxis,
-  needsInitialization,
   addJitter,
   DEFAULT_INITIALIZE_CONFIG,
+  initializeCircle,
+  initializeGrid,
+  initializePhyllotaxis,
+  initializePositions,
+  initializeRandom,
+  initializeSpiral,
+  needsInitialization,
 } from "./src/graph/initialize.ts";
-export type { InitializeConfig, InitializationStrategy } from "./src/graph/initialize.ts";
+export type { InitializationStrategy, InitializeConfig } from "./src/graph/initialize.ts";
 
 // =============================================================================
 // Main API
@@ -372,9 +360,9 @@ export type { InitializeConfig, InitializationStrategy } from "./src/graph/initi
 
 export {
   createHeroineGraph,
-  isSupported,
-  getSupportInfo,
   DEFAULT_WASM_URL,
+  getSupportInfo,
+  isSupported,
   VERSION,
 } from "./src/api/factory.ts";
 export type { CreateHeroineGraphOptions, InitResult } from "./src/api/factory.ts";
@@ -386,30 +374,25 @@ export type { HeroineGraphConfig } from "./src/api/graph.ts";
 // Interaction
 // =============================================================================
 
-export {
-  createHitTester,
-  DEFAULT_HIT_TESTER_CONFIG,
-} from "./src/interaction/hit_test.ts";
+export { createHitTester, DEFAULT_HIT_TESTER_CONFIG } from "./src/interaction/hit_test.ts";
 export type {
+  EdgeHitResult,
+  EdgeProvider,
+  HitResult,
   HitTester,
   HitTesterConfig,
   NodeHitResult,
-  EdgeHitResult,
-  HitResult,
-  SpatialQueryEngine,
   PositionProvider,
-  EdgeProvider,
+  SpatialQueryEngine,
 } from "./src/interaction/hit_test.ts";
 
-export {
-  createPointerManager,
-} from "./src/interaction/pointer.ts";
+export { createPointerManager } from "./src/interaction/pointer.ts";
 export type {
-  PointerManager,
-  PointerManagerConfig,
-  PointerEventType,
   NormalizedPointerEvent,
   PointerEventCallback,
+  PointerEventType,
+  PointerManager,
+  PointerManagerConfig,
 } from "./src/interaction/pointer.ts";
 
 // =============================================================================
@@ -417,41 +400,41 @@ export type {
 // =============================================================================
 
 export {
-  LayerManager,
   createLayerManager,
   DEFAULT_LAYER_MANAGER_CONFIG,
+  LayerManager,
 } from "./src/layers/manager.ts";
-export type { LayerManagerConfig, LayerInfo } from "./src/layers/manager.ts";
+export type { LayerInfo, LayerManagerConfig } from "./src/layers/manager.ts";
 
 export {
-  HeatmapLayer,
-  createHeatmapLayer,
-  DEFAULT_HEATMAP_CONFIG,
-  mergeHeatmapConfig,
-  validateHeatmapConfig,
+  clearDensityTexture,
   COLOR_SCALES,
-  generateColorScaleData,
   createColorScaleTexture,
   createCustomColorScaleTexture,
-  getColorScaleNames,
-  DEFAULT_DENSITY_TEXTURE_CONFIG,
   createDensityTexture,
-  clearDensityTexture,
+  createHeatmapLayer,
   createHeatmapPipeline,
-  DEFAULT_HEATMAP_UNIFORMS,
   DEFAULT_COLORMAP_UNIFORMS,
+  DEFAULT_DENSITY_TEXTURE_CONFIG,
+  DEFAULT_HEATMAP_CONFIG,
+  DEFAULT_HEATMAP_UNIFORMS,
+  generateColorScaleData,
+  getColorScaleNames,
+  HeatmapLayer,
+  mergeHeatmapConfig,
+  validateHeatmapConfig,
 } from "./src/layers/mod.ts";
 export type {
-  Layer as VisualizationLayer,
-  HeatmapRenderContext,
-  HeatmapConfig as HeatmapLayerConfiguration,
+  ColormapUniforms,
   ColorRGBA,
-  ColorStop,
   ColorScaleName,
   ColorScaleTexture,
-  DensityTextureConfig,
+  ColorStop,
   DensityTexture,
-  HeatmapUniforms,
-  ColormapUniforms,
+  DensityTextureConfig,
+  HeatmapConfig as HeatmapLayerConfiguration,
   HeatmapPipeline,
+  HeatmapRenderContext,
+  HeatmapUniforms,
+  Layer as VisualizationLayer,
 } from "./src/layers/mod.ts";

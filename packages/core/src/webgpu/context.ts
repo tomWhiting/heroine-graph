@@ -4,7 +4,7 @@
  * Handles WebGPU device/adapter initialization and lifecycle.
  */
 
-import { HeroineGraphError, ErrorCode, Errors } from "../errors.ts";
+import { ErrorCode, Errors, HeroineGraphError } from "../errors.ts";
 
 /**
  * GPU context configuration options.
@@ -116,7 +116,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
     throw new HeroineGraphError(
       ErrorCode.WEBGPU_DEVICE_FAILED,
       `Failed to create GPU device: ${error instanceof Error ? error.message : String(error)}`,
-      { originalError: error, unsupportedLimits }
+      { originalError: error, unsupportedLimits },
     );
   }
 
@@ -143,7 +143,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
       ErrorCode.CANVAS_NOT_FOUND,
       "Failed to get WebGPU context from canvas",
       {},
-      "Ensure the canvas element supports WebGPU"
+      "Ensure the canvas element supports WebGPU",
     );
   }
 

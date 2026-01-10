@@ -54,7 +54,7 @@ export class SimpleContourLayer implements Layer {
   constructor(
     id: string,
     context: GPUContext,
-    config: ContourConfig = {}
+    config: ContourConfig = {},
   ) {
     this.id = id;
     this.config = mergeContourConfig(config);
@@ -137,7 +137,7 @@ export class SimpleContourLayer implements Layer {
     if (!this.bindGroupDirty || !this.renderContext) return;
 
     this.bindGroup = this.pipeline.createBindGroup(
-      this.renderContext.densityTextureView
+      this.renderContext.densityTextureView,
     );
     this.bindGroupDirty = false;
   }
@@ -165,7 +165,7 @@ export class SimpleContourLayer implements Layer {
   private renderThreshold(
     encoder: GPUCommandEncoder,
     targetView: GPUTextureView,
-    threshold: number
+    threshold: number,
   ): void {
     // Update threshold in uniforms
     const [r, g, b, a] = parseColor(this.config.strokeColor);
@@ -218,7 +218,7 @@ export class SimpleContourLayer implements Layer {
 export function createSimpleContourLayer(
   id: string,
   context: GPUContext,
-  config?: ContourConfig
+  config?: ContourConfig,
 ): SimpleContourLayer {
   return new SimpleContourLayer(id, context, config);
 }

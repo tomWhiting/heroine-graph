@@ -5,7 +5,7 @@
  * Uses ping-pong double buffering for compute shader updates.
  */
 
-import { HeroineGraphError, ErrorCode } from "../../errors.ts";
+import { ErrorCode, HeroineGraphError } from "../../errors.ts";
 import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
@@ -74,8 +74,7 @@ export class PositionBufferManager {
   private createBuffer(size: number, label: string): GPUBuffer {
     return this.device.createBuffer({
       size,
-      usage:
-        GPUBufferUsage.STORAGE |
+      usage: GPUBufferUsage.STORAGE |
         GPUBufferUsage.COPY_DST |
         GPUBufferUsage.COPY_SRC |
         GPUBufferUsage.VERTEX,
@@ -138,7 +137,7 @@ export class PositionBufferManager {
     if (posX.length !== posY.length) {
       throw new HeroineGraphError(
         ErrorCode.INVALID_POSITIONS,
-        `Position arrays must have same length: X=${posX.length}, Y=${posY.length}`
+        `Position arrays must have same length: X=${posX.length}, Y=${posY.length}`,
       );
     }
 
@@ -231,7 +230,7 @@ export class PositionBufferManager {
    */
   static createLayoutEntries(
     startBinding: number,
-    access: "read-only" | "read-write"
+    access: "read-only" | "read-write",
   ): GPUBindGroupLayoutEntry[] {
     const storageAccess = access === "read-only" ? "read-only-storage" : "storage";
     return [

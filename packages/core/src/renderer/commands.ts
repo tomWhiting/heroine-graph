@@ -376,7 +376,9 @@ export function createBufferUpdater(device: GPUDevice): BufferUpdater {
     flush(): void {
       for (const { buffer, data, offset } of pendingUpdates) {
         // Convert to ArrayBuffer to satisfy BufferSource type
-        const arrayBuffer = toArrayBuffer(data as Float32Array | Uint32Array | Uint8Array | Int32Array | Uint16Array | Int16Array);
+        const arrayBuffer = toArrayBuffer(
+          data as Float32Array | Uint32Array | Uint8Array | Int32Array | Uint16Array | Int16Array,
+        );
         device.queue.writeBuffer(buffer, offset, arrayBuffer);
       }
       pendingUpdates.length = 0;

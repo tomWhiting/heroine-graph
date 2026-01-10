@@ -44,15 +44,13 @@ export const DEFAULT_CONTOUR_CONFIG: Required<ContourConfig> = {
  * Merge user config with defaults
  */
 export function mergeContourConfig(
-  config: ContourConfig = {}
+  config: ContourConfig = {},
 ): Required<ContourConfig> {
   return {
     ...DEFAULT_CONTOUR_CONFIG,
     ...config,
     // Deep copy thresholds array
-    thresholds: config.thresholds
-      ? [...config.thresholds]
-      : [...DEFAULT_CONTOUR_CONFIG.thresholds],
+    thresholds: config.thresholds ? [...config.thresholds] : [...DEFAULT_CONTOUR_CONFIG.thresholds],
   };
 }
 

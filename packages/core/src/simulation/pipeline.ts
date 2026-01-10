@@ -35,12 +35,11 @@ export interface SimulationPipelineConfig {
 /**
  * Default simulation pipeline configuration
  */
-export const DEFAULT_SIMULATION_PIPELINE_CONFIG: Required<SimulationPipelineConfig> =
-  {
-    maxNodes: 1_000_000,
-    maxEdges: 2_000_000,
-    workgroupSize: 256,
-  };
+export const DEFAULT_SIMULATION_PIPELINE_CONFIG: Required<SimulationPipelineConfig> = {
+  maxNodes: 1_000_000,
+  maxEdges: 2_000_000,
+  workgroupSize: 256,
+};
 
 /**
  * Simulation pipeline resources
@@ -103,23 +102,9 @@ export function createSimulationPipeline(
   const { device } = context;
   const finalConfig = { ...DEFAULT_SIMULATION_PIPELINE_CONFIG, ...config };
 
-  // Helper to create shader module with error logging
+  // Helper to create shader module
   const createModule = (label: string, code: string): GPUShaderModule => {
-    console.log(`[Simulation] Creating shader module: ${label}`);
-    const module = device.createShaderModule({ label, code });
-
-    // Check for compilation errors asynchronously
-    module.getCompilationInfo().then((info) => {
-      for (const msg of info.messages) {
-        const level = msg.type === 'error' ? 'ERROR' : msg.type === 'warning' ? 'WARN' : 'INFO';
-        console.log(`[${label}] ${level}: ${msg.message} (line ${msg.lineNum}:${msg.linePos})`);
-      }
-      if (info.messages.length === 0) {
-        console.log(`[${label}] Compiled successfully`);
-      }
-    });
-
-    return module;
+    return device.createShaderModule({ label, code });
   };
 
   // Create shader modules - each module now has only bindings it needs

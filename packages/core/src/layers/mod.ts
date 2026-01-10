@@ -8,12 +8,8 @@
  */
 
 // Layer Manager
-export type { LayerManagerConfig, LayerInfo } from "./manager.ts";
-export {
-  LayerManager,
-  createLayerManager,
-  DEFAULT_LAYER_MANAGER_CONFIG,
-} from "./manager.ts";
+export type { LayerInfo, LayerManagerConfig } from "./manager.ts";
+export { createLayerManager, DEFAULT_LAYER_MANAGER_CONFIG, LayerManager } from "./manager.ts";
 
 // Layer Interface
 export type { Layer } from "./heatmap/layer.ts";

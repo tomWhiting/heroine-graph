@@ -8,8 +8,8 @@
  */
 
 import type { GraphInput } from "../types.ts";
-import { HeroineGraphError, ErrorCode } from "../errors.ts";
-import { createIdMap, type IdMap, type IdLike } from "./id_map.ts";
+import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import { createIdMap, type IdLike, type IdMap } from "./id_map.ts";
 
 /**
  * Internal RGBA color representation for GPU upload

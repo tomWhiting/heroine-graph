@@ -5,7 +5,7 @@
  * converting between screen space, graph space, and clip space.
  */
 
-import type { Vec2, BoundingBox, ViewportState } from "../types.ts";
+import type { BoundingBox, Vec2, ViewportState } from "../types.ts";
 
 /**
  * 3x3 transformation matrix in column-major order.
@@ -81,8 +81,7 @@ export function transformPoint(m: Matrix3, p: Vec2): Vec2 {
  * Invert a matrix.
  */
 export function invert(m: Matrix3): Matrix3 | null {
-  const det =
-    m[0] * (m[4] * m[8] - m[7] * m[5]) -
+  const det = m[0] * (m[4] * m[8] - m[7] * m[5]) -
     m[3] * (m[1] * m[8] - m[7] * m[2]) +
     m[6] * (m[1] * m[5] - m[4] * m[2]);
 
@@ -198,7 +197,7 @@ export function fitBoundsScale(
   bounds: BoundingBox,
   width: number,
   height: number,
-  padding: number = 0
+  padding: number = 0,
 ): number {
   const contentWidth = bounds.maxX - bounds.minX;
   const contentHeight = bounds.maxY - bounds.minY;

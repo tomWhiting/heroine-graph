@@ -49,7 +49,7 @@ export interface SimulationEventData {
  * Simulation event handler
  */
 export type SimulationEventHandler<T extends SimulationEventType> = (
-  data: SimulationEventData[T]
+  data: SimulationEventData[T],
 ) => void;
 
 /**

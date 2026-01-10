@@ -141,7 +141,7 @@ export class PointerManager {
     const addListener = (
       eventName: string,
       handler: (e: Event) => void,
-      options?: AddEventListenerOptions
+      options?: AddEventListenerOptions,
     ): void => {
       const boundHandler = handler.bind(this);
       this.canvas.addEventListener(eventName, boundHandler, options);
@@ -207,7 +207,7 @@ export class PointerManager {
 
     this.emit(
       "pointercancel",
-      this.normalizePointerEvent(event, "pointercancel")
+      this.normalizePointerEvent(event, "pointercancel"),
     );
   };
 
@@ -245,12 +245,12 @@ export class PointerManager {
 
   private normalizePointerEvent(
     event: PointerEvent,
-    type: PointerEventType
+    type: PointerEventType,
   ): NormalizedPointerEvent {
     const screenPosition = this.getScreenPosition(event);
     const graphPosition = this.viewport.screenToGraph(
       screenPosition.x,
-      screenPosition.y
+      screenPosition.y,
     );
 
     return {
@@ -275,7 +275,7 @@ export class PointerManager {
     const screenPosition = this.getScreenPosition(event);
     const graphPosition = this.viewport.screenToGraph(
       screenPosition.x,
-      screenPosition.y
+      screenPosition.y,
     );
 
     return {
@@ -318,7 +318,7 @@ export class PointerManager {
  * Create a pointer manager for a canvas.
  */
 export function createPointerManager(
-  config: PointerManagerConfig
+  config: PointerManagerConfig,
 ): PointerManager {
   return new PointerManager(config);
 }

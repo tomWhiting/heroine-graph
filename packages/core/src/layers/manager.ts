@@ -57,7 +57,7 @@ export class LayerManager {
   addLayer(layer: Layer): void {
     if (this.layers.size >= this.config.maxLayers) {
       throw new Error(
-        `Maximum layer count (${this.config.maxLayers}) exceeded`
+        `Maximum layer count (${this.config.maxLayers}) exceeded`,
       );
     }
 
@@ -253,7 +253,7 @@ export class LayerManager {
  * Create a layer manager
  */
 export function createLayerManager(
-  config?: LayerManagerConfig
+  config?: LayerManagerConfig,
 ): LayerManager {
   return new LayerManager(config);
 }

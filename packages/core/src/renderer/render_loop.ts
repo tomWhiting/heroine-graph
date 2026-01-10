@@ -115,8 +115,7 @@ export function createRenderLoop(
   };
 
   // Target frame time for capping
-  const getTargetFrameTime = () =>
-    finalConfig.targetFps > 0 ? 1000 / finalConfig.targetFps : 0;
+  const getTargetFrameTime = () => finalConfig.targetFps > 0 ? 1000 / finalConfig.targetFps : 0;
 
   /**
    * Main render loop function
@@ -215,8 +214,7 @@ export function createRenderLoop(
     if (isRunning) return;
 
     const now = performance.now();
-    const deltaTime =
-      lastFrameTime > 0 ? now - lastFrameTime : 16.67; // Default to ~60fps
+    const deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 16.67; // Default to ~60fps
     lastFrameTime = now;
     frameCount++;
 

@@ -5,7 +5,7 @@
  * CSR format is efficient for GPU access patterns in force simulation.
  */
 
-import { HeroineGraphError, ErrorCode } from "../../errors.ts";
+import { ErrorCode, HeroineGraphError } from "../../errors.ts";
 import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
@@ -92,8 +92,7 @@ export class EdgeBufferManager {
   private createOffsetsBuffer(count: number): GPUBuffer {
     return this.device.createBuffer({
       size: count * Uint32Array.BYTES_PER_ELEMENT,
-      usage:
-        GPUBufferUsage.STORAGE |
+      usage: GPUBufferUsage.STORAGE |
         GPUBufferUsage.COPY_DST |
         GPUBufferUsage.COPY_SRC,
       label: `${this.config.label}_offsets`,
@@ -106,8 +105,7 @@ export class EdgeBufferManager {
   private createEdgeBuffer(count: number, suffix: string): GPUBuffer {
     return this.device.createBuffer({
       size: count * Float32Array.BYTES_PER_ELEMENT,
-      usage:
-        GPUBufferUsage.STORAGE |
+      usage: GPUBufferUsage.STORAGE |
         GPUBufferUsage.COPY_DST |
         GPUBufferUsage.COPY_SRC,
       label: `${this.config.label}_${suffix}`,
@@ -118,8 +116,6 @@ export class EdgeBufferManager {
    * Ensure buffers have sufficient capacity.
    */
   private ensureCapacity(nodeCount: number, edgeCount: number): void {
-    let needsResize = false;
-
     // Check node capacity
     if (nodeCount + 1 > this.nodeCapacity) {
       let newCapacity = this.nodeCapacity;
@@ -130,7 +126,6 @@ export class EdgeBufferManager {
       this.offsetsBuffer.destroy();
       this.offsetsBuffer = newBuffer;
       this.nodeCapacity = newCapacity;
-      needsResize = true;
     }
 
     // Check edge capacity
@@ -146,13 +141,6 @@ export class EdgeBufferManager {
       this.targetsBuffer = newTargets;
       this.weightsBuffer = newWeights;
       this.edgeCapacity = newCapacity;
-      needsResize = true;
-    }
-
-    if (needsResize) {
-      console.debug(
-        `[EdgeBufferManager] Resized to nodeCapacity=${this.nodeCapacity}, edgeCapacity=${this.edgeCapacity}`
-      );
     }
   }
 
@@ -166,7 +154,7 @@ export class EdgeBufferManager {
     if (edgeCount !== (data.weights?.length ?? edgeCount)) {
       throw new HeroineGraphError(
         ErrorCode.INVALID_GRAPH_DATA,
-        `Edge targets and weights must have same length: targets=${edgeCount}, weights=${data.weights?.length}`
+        `Edge targets and weights must have same length: targets=${edgeCount}, weights=${data.weights?.length}`,
       );
     }
 
@@ -292,7 +280,7 @@ export class EdgeBufferManager {
 export function edgePairsToCSR(
   nodeCount: number,
   edges: readonly [number, number][],
-  weights?: readonly number[]
+  weights?: readonly number[],
 ): CSREdgeData {
   const edgeCount = edges.length;
 

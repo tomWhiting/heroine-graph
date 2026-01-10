@@ -8,7 +8,7 @@
  */
 
 import type { GraphTypedInput } from "../types.ts";
-import { HeroineGraphError, ErrorCode } from "../errors.ts";
+import { ErrorCode, HeroineGraphError } from "../errors.ts";
 import { createIdMap, type IdLike } from "./id_map.ts";
 import type { ParsedGraph } from "./parser.ts";
 
@@ -302,13 +302,13 @@ export function createTypedInput(
     positions: positions instanceof Float32Array
       ? positions
       : positions
-        ? new Float32Array(positions)
-        : undefined,
+      ? new Float32Array(positions)
+      : undefined,
     edgePairs: edgePairs instanceof Uint32Array
       ? edgePairs
       : edgePairs
-        ? new Uint32Array(edgePairs)
-        : undefined,
+      ? new Uint32Array(edgePairs)
+      : undefined,
   };
 }
 

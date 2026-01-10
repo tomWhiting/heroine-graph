@@ -66,16 +66,13 @@ export class ContourLayer implements Layer {
   private screenWidth = 800;
   private screenHeight = 600;
 
-  // Debug flag
-  private _debugLogged = false;
-
   // Debug test mode: render test segments instead of computed contours
   private _debugTestSegments = false;
 
   constructor(
     id: string,
     context: GPUContext,
-    config: ContourConfig = {}
+    config: ContourConfig = {},
   ) {
     this.id = id;
     this.context = context;
@@ -98,12 +95,15 @@ export class ContourLayer implements Layer {
     return 1; // Contours render above heatmap but below nodes
   }
 
+  set order(_value: number) {
+    // Contour order is fixed
+  }
+
   /**
    * Enable debug test segments (bypasses compute shaders)
    */
   enableTestSegments(): void {
     this._debugTestSegments = true;
-    console.log("[ContourLayer] Test segment mode enabled");
   }
 
   /**
@@ -116,21 +116,28 @@ export class ContourLayer implements Layer {
     // Each segment: [x1, y1, x2, y2] in UV coordinates (0-1)
     const segments = new Float32Array([
       // Diagonal from top-left to center
-      0.1, 0.1, 0.5, 0.5,
+      0.1,
+      0.1,
+      0.5,
+      0.5,
       // Horizontal line at center
-      0.2, 0.5, 0.8, 0.5,
+      0.2,
+      0.5,
+      0.8,
+      0.5,
       // Vertical line at center
-      0.5, 0.2, 0.5, 0.8,
+      0.5,
+      0.2,
+      0.5,
+      0.8,
       // Diagonal from center to bottom-right
-      0.5, 0.5, 0.9, 0.9,
+      0.5,
+      0.5,
+      0.9,
+      0.9,
     ]);
 
     this.context.device.queue.writeBuffer(this.vertexBuffer, 0, segments);
-    console.log("[ContourLayer] Wrote 4 test segments to vertex buffer");
-  }
-
-  set order(_value: number) {
-    // Contour order is fixed
   }
 
   /**
@@ -193,8 +200,7 @@ export class ContourLayer implements Layer {
     this.activeCountBuffer = device.createBuffer({
       label: "Contour Active Count Buffer",
       size: 4,
-      usage:
-        GPUBufferUsage.STORAGE |
+      usage: GPUBufferUsage.STORAGE |
         GPUBufferUsage.COPY_DST |
         GPUBufferUsage.COPY_SRC,
     });
@@ -258,25 +264,6 @@ export class ContourLayer implements Layer {
       return;
     }
 
-    // Debug: log render context on first frame
-    if (!this._debugLogged) {
-      const cellCount = (this.renderContext.width - 1) * (this.renderContext.height - 1);
-      const segmentEstimate = Math.min(Math.ceil(cellCount * 0.02), MAX_CONTOUR_SEGMENTS);
-      console.log("[ContourLayer] Rendering with context:", {
-        width: this.renderContext.width,
-        height: this.renderContext.height,
-        maxDensity: this.renderContext.maxDensity,
-        thresholds: this.config.thresholds,
-        cellCount,
-        segmentEstimate,
-        screenWidth: this.screenWidth,
-        screenHeight: this.screenHeight,
-        strokeWidth: this.config.strokeWidth,
-        strokeColor: this.config.strokeColor,
-      });
-      this._debugLogged = true;
-    }
-
     if (
       !this.cellCasesBuffer ||
       !this.activeCountBuffer ||
@@ -333,8 +320,6 @@ export class ContourLayer implements Layer {
     // Draw 4 test segments (6 vertices each for quad expansion)
     renderPass.draw(6, 4, 0, 0);
     renderPass.end();
-
-    console.log("[ContourLayer] Rendered 4 test segments");
   }
 
   /**
@@ -345,7 +330,7 @@ export class ContourLayer implements Layer {
     targetView: GPUTextureView,
     threshold: number,
     width: number,
-    height: number
+    height: number,
   ): void {
     if (!this.renderContext) return;
 
@@ -421,14 +406,14 @@ export class ContourLayer implements Layer {
     this.identifyBindGroup = this.pipeline.createIdentifyBindGroup(
       this.renderContext.densityTextureView,
       this.cellCasesBuffer!,
-      this.activeCountBuffer!
+      this.activeCountBuffer!,
     );
 
     this.generateBindGroup = this.pipeline.createGenerateBindGroup(
       this.renderContext.densityTextureView,
       this.cellCasesBuffer!,
       this.activeCountBuffer!,
-      this.vertexBuffer!
+      this.vertexBuffer!,
     );
 
     this.lineBindGroup = this.pipeline.createLineBindGroup(this.vertexBuffer!);
@@ -464,7 +449,7 @@ export class ContourLayer implements Layer {
 export function createContourLayer(
   id: string,
   context: GPUContext,
-  config?: ContourConfig
+  config?: ContourConfig,
 ): ContourLayer {
   return new ContourLayer(id, context, config);
 }

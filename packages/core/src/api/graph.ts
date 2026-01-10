@@ -8,81 +8,89 @@
  */
 
 import type {
-  GraphInput,
-  GraphTypedInput,
-  GraphConfig,
-  Vec2,
   BoundingBox,
-  SimulationStatus,
-  ViewportState,
+  EdgeId,
   EventHandler,
   EventMap,
+  GraphConfig,
+  GraphInput,
+  GraphTypedInput,
   NodeId,
-  EdgeId,
+  SimulationStatus,
+  Vec2,
+  ViewportState,
 } from "../types.ts";
 import type { GPUContext } from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
-import { HeroineGraphError, ErrorCode } from "../errors.ts";
-import { type EventEmitter, createEventEmitter } from "../events/emitter.ts";
-import { type Viewport, createViewport } from "../viewport/viewport.ts";
+import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import { createEventEmitter, type EventEmitter } from "../events/emitter.ts";
+import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
-import { parseGraphInput, type ParsedGraph } from "../graph/parser.ts";
+import { type ParsedGraph, parseGraphInput } from "../graph/parser.ts";
 import { parseGraphTypedInput } from "../graph/typed_parser.ts";
 import { initializePositions, needsInitialization } from "../graph/initialize.ts";
-import { createNodeRenderPipeline, createNodeBindGroup, createViewportBindGroup, renderNodes, type NodeRenderPipeline } from "../renderer/pipelines/nodes.ts";
-import { createEdgeRenderPipeline, createEdgeBindGroup, renderEdges, type EdgeRenderPipeline } from "../renderer/pipelines/edges.ts";
-import { createRenderLoop, type RenderLoop, type FrameStats } from "../renderer/render_loop.ts";
+import {
+  createNodeBindGroup,
+  createNodeRenderPipeline,
+  createViewportBindGroup,
+  type NodeRenderPipeline,
+  renderNodes,
+} from "../renderer/pipelines/nodes.ts";
+import {
+  createEdgeBindGroup,
+  createEdgeRenderPipeline,
+  type EdgeRenderPipeline,
+  renderEdges,
+} from "../renderer/pipelines/edges.ts";
+import { createRenderLoop, type FrameStats, type RenderLoop } from "../renderer/render_loop.ts";
 import { createSimulationController, type SimulationController } from "../simulation/controller.ts";
 import { createEdgeIndicesBuffer } from "../graph/parser.ts";
-import { fitBoundsScale, boundsCenter } from "../viewport/transforms.ts";
+import { boundsCenter, fitBoundsScale } from "../viewport/transforms.ts";
 import {
-  createSimulationPipeline,
-  createSimulationBuffers,
-  createSimulationBindGroups,
-  copyPositionsToSimulation,
   copyEdgesToSimulation,
-  updateSimulationUniforms,
-  recordSimulationStep,
-  swapSimulationBuffers,
   copyPositionsToReadback,
+  copyPositionsToSimulation,
+  createSimulationBindGroups,
+  createSimulationBuffers,
+  createSimulationPipeline,
   readbackPositions,
-  type SimulationPipeline,
-  type SimulationBuffers,
+  recordSimulationStep,
   type SimulationBindGroups,
+  type SimulationBuffers,
+  type SimulationPipeline,
+  swapSimulationBuffers,
+  updateSimulationUniforms,
 } from "../simulation/pipeline.ts";
 import {
   createHitTester,
   type HitTester,
   type SpatialQueryEngine,
 } from "../interaction/hit_test.ts";
+import { createPointerManager, type PointerManager } from "../interaction/pointer.ts";
 import {
-  createPointerManager,
-  type PointerManager,
-} from "../interaction/pointer.ts";
-import {
-  type LayerManager,
-  createLayerManager,
-  type HeatmapLayer,
-  createHeatmapLayer,
-  type HeatmapConfig,
-  type LayerInfo,
-  type HeatmapRenderContext,
   type ColorScaleName,
+  type ContourConfig,
   // Contour layer
   type ContourLayer,
-  createContourLayer,
-  type ContourConfig,
   type ContourRenderContext,
-  // Metaball layer
-  type MetaballLayer,
+  createContourLayer,
+  createHeatmapLayer,
+  createLayerManager,
   createMetaballLayer,
-  type MetaballConfig,
-  type MetaballRenderContext,
+  type HeatmapConfig,
+  type HeatmapLayer,
+  type HeatmapRenderContext,
+  type LabelConfig,
+  type LabelData,
   // Labels layer
   LabelsLayer,
-  type LabelConfig,
   type LabelsRenderContext,
-  type LabelData,
+  type LayerInfo,
+  type LayerManager,
+  type MetaballConfig,
+  // Metaball layer
+  type MetaballLayer,
+  type MetaballRenderContext,
 } from "../layers/mod.ts";
 
 /**
@@ -318,7 +326,7 @@ export class HeroineGraph {
       this.simBuffers,
       this.state.nodeCount,
       this.state.edgeCount,
-      alpha
+      alpha,
     );
 
     // Record simulation compute passes
@@ -327,7 +335,7 @@ export class HeroineGraph {
       this.simulationPipeline,
       this.simBindGroups,
       this.state.nodeCount,
-      this.state.edgeCount
+      this.state.edgeCount,
     );
 
     // Tick the simulation controller
@@ -347,7 +355,7 @@ export class HeroineGraph {
     this.simBindGroups = createSimulationBindGroups(
       this.gpuContext.device,
       this.simulationPipeline,
-      this.simBuffers
+      this.simBuffers,
     );
 
     // Also update render bind groups to use new position buffers
@@ -357,7 +365,7 @@ export class HeroineGraph {
         this.nodePipeline,
         this.simBuffers.positionsX,
         this.simBuffers.positionsY,
-        this.buffers!.nodeAttributes
+        this.buffers!.nodeAttributes,
       );
     }
 
@@ -368,7 +376,7 @@ export class HeroineGraph {
         this.simBuffers.positionsX,
         this.simBuffers.positionsY,
         this.buffers.edgeIndices,
-        this.buffers.edgeAttributes
+        this.buffers.edgeAttributes,
       );
     }
 
@@ -554,7 +562,7 @@ export class HeroineGraph {
     }
 
     // Create GPU buffers for rendering
-    await this.createBuffers(parsed);
+    this.createBuffers(parsed);
 
     // Update state
     this.state.loaded = true;
@@ -563,7 +571,7 @@ export class HeroineGraph {
     this.state.parsedGraph = parsed;
 
     // Create GPU simulation buffers and bind groups
-    await this.createSimulationResources(parsed);
+    this.createSimulationResources(parsed);
 
     // Update layer render contexts with new position buffers
     this.updateLayerRenderContext();
@@ -600,7 +608,7 @@ export class HeroineGraph {
   /**
    * Create GPU simulation resources
    */
-  private async createSimulationResources(parsed: ParsedGraph): Promise<void> {
+  private createSimulationResources(parsed: ParsedGraph): void {
     if (!this.simulationPipeline) return;
 
     const { device } = this.gpuContext;
@@ -609,7 +617,7 @@ export class HeroineGraph {
     this.simBuffers = createSimulationBuffers(
       device,
       parsed.nodeCount,
-      parsed.edgeCount
+      parsed.edgeCount,
     );
 
     // Copy initial positions to simulation buffers
@@ -617,7 +625,7 @@ export class HeroineGraph {
       device,
       this.simBuffers,
       parsed.positionsX,
-      parsed.positionsY
+      parsed.positionsY,
     );
 
     // Copy edge data to simulation buffers
@@ -625,7 +633,7 @@ export class HeroineGraph {
       device,
       this.simBuffers,
       parsed.edgeSources,
-      parsed.edgeTargets
+      parsed.edgeTargets,
     );
 
     // Initialize uniforms
@@ -634,14 +642,14 @@ export class HeroineGraph {
       this.simBuffers,
       parsed.nodeCount,
       parsed.edgeCount,
-      1.0 // Initial alpha
+      1.0, // Initial alpha
     );
 
     // Create simulation bind groups
     this.simBindGroups = createSimulationBindGroups(
       device,
       this.simulationPipeline,
-      this.simBuffers
+      this.simBuffers,
     );
 
     // Update render bind groups to use simulation position buffers
@@ -651,7 +659,7 @@ export class HeroineGraph {
         this.nodePipeline,
         this.simBuffers.positionsX,
         this.simBuffers.positionsY,
-        this.buffers!.nodeAttributes
+        this.buffers!.nodeAttributes,
       );
     }
 
@@ -662,7 +670,7 @@ export class HeroineGraph {
         this.simBuffers.positionsX,
         this.simBuffers.positionsY,
         this.buffers.edgeIndices,
-        this.buffers.edgeAttributes
+        this.buffers.edgeAttributes,
       );
     }
   }
@@ -670,7 +678,7 @@ export class HeroineGraph {
   /**
    * Create GPU buffers from parsed graph
    */
-  private async createBuffers(parsed: ParsedGraph): Promise<void> {
+  private createBuffers(parsed: ParsedGraph): void {
     const { device } = this.gpuContext;
 
     // Destroy old buffers
@@ -930,7 +938,7 @@ export class HeroineGraph {
         this.gpuContext,
         cssWidth,
         cssHeight,
-        { ...config, enabled: true }
+        { ...config, enabled: true },
       );
 
       this.layerManager.addLayer(heatmapLayer);
@@ -1095,7 +1103,7 @@ export class HeroineGraph {
       const contourLayer = createContourLayer(
         layerId,
         this.gpuContext,
-        { ...config, enabled: true }
+        { ...config, enabled: true },
       );
 
       this.layerManager.addLayer(contourLayer);
@@ -1158,7 +1166,7 @@ export class HeroineGraph {
       const metaballLayer = createMetaballLayer(
         layerId,
         this.gpuContext,
-        { ...config, enabled: true }
+        { ...config, enabled: true },
       );
 
       this.layerManager.addLayer(metaballLayer);
@@ -1221,7 +1229,7 @@ export class HeroineGraph {
       const labelsLayer = new LabelsLayer(
         layerId,
         this.gpuContext,
-        { ...config, visible: true }
+        { ...config, visible: true },
       );
 
       // Initialize the layer (loads font atlas)
@@ -1322,22 +1330,7 @@ export class HeroineGraph {
     const graphPos = this.viewport.screenToGraph(screenX, screenY);
     const hitRadius = 20 / this.viewport.state.scale; // Adjust for zoom
 
-    if (this.debug) {
-      console.log("[Hit Test] Checking at graph coords:", graphPos, "hitRadius:", hitRadius);
-      // Show a sample node position to compare
-      if (this.state.parsedGraph && this.state.parsedGraph.nodeCount > 0) {
-        console.log("[Hit Test] Node 0 position:", {
-          x: this.state.parsedGraph.positionsX[0],
-          y: this.state.parsedGraph.positionsY[0],
-        });
-      }
-    }
-
     const result = this.hitTester.hitTestNode(graphPos.x, graphPos.y, hitRadius);
-
-    if (this.debug) {
-      console.log("[Hit Test] Result:", result ? `Node ${result.nodeId} at dist ${result.distance}` : "null");
-    }
 
     return result?.nodeId ?? null;
   }
@@ -1566,15 +1559,7 @@ export class HeroineGraph {
     this.pointerManager.on("pointerdown", (e) => {
       if (e.button !== 0) return; // Only left click
 
-      if (this.debug) {
-        console.log("[Interaction] pointerdown at screen:", e.screenPosition, "graph:", e.graphPosition);
-      }
-
       const nodeId = this.getNodeAtPosition(e.screenPosition.x, e.screenPosition.y);
-
-      if (this.debug) {
-        console.log("[Interaction] hit test result:", nodeId);
-      }
 
       if (nodeId !== null) {
         // Start drag on node
@@ -1621,9 +1606,9 @@ export class HeroineGraph {
         // Calculate delta from last position
         const delta: Vec2 = this.lastDragPosition
           ? {
-              x: e.graphPosition.x - this.lastDragPosition.x,
-              y: e.graphPosition.y - this.lastDragPosition.y,
-            }
+            x: e.graphPosition.x - this.lastDragPosition.x,
+            y: e.graphPosition.y - this.lastDragPosition.y,
+          }
           : { x: 0, y: 0 };
 
         // Update last position
@@ -1681,7 +1666,8 @@ export class HeroineGraph {
       if (e.wheelDelta) {
         // Normalize wheel delta and apply gradual zoom
         // deltaY is typically ~100 for one scroll tick
-        const normalizedDelta = Math.sign(e.wheelDelta.y) * Math.min(Math.abs(e.wheelDelta.y), 100) / 100;
+        const normalizedDelta = Math.sign(e.wheelDelta.y) *
+          Math.min(Math.abs(e.wheelDelta.y), 100) / 100;
         const zoomFactor = 1 - normalizedDelta * 0.05; // 5% per scroll tick
         this.viewport.zoom(zoomFactor, e.screenPosition.x, e.screenPosition.y);
       }
@@ -1763,7 +1749,7 @@ export class HeroineGraph {
   private emitSelectionChange(
     type: "node" | "edge",
     previous: Set<number>,
-    current: Set<number>
+    current: Set<number>,
   ): void {
     const added = [...current].filter((id) => !previous.has(id));
     const removed = [...previous].filter((id) => !current.has(id));

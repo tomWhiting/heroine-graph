@@ -7,10 +7,10 @@
  * @module
  */
 
-import { HeroineGraphError, ErrorCode, wrapAsync } from "../errors.ts";
+import { ErrorCode, HeroineGraphError, wrapAsync } from "../errors.ts";
 import { checkWebGPU, hasWebGPU } from "../webgpu/check.ts";
 import { createGPUContext, type GPUContext, type GPUContextOptions } from "../webgpu/context.ts";
-import { loadWasmModule, createWasmEngine, isWasmLoaded } from "../wasm/loader.ts";
+import { createWasmEngine, isWasmLoaded, loadWasmModule } from "../wasm/loader.ts";
 import { HeroineGraph, type HeroineGraphConfig } from "./graph.ts";
 import type { GraphConfig } from "../types.ts";
 
@@ -172,7 +172,7 @@ function resolveCanvas(canvas: HTMLCanvasElement | string): HTMLCanvasElement {
  *
  * @returns Promise resolving to true if supported
  */
-export async function isSupported(): Promise<boolean> {
+export function isSupported(): boolean {
   return hasWebGPU();
 }
 
@@ -190,8 +190,7 @@ export async function getSupportInfo(): Promise<{
   const webgpuStatus = await checkWebGPU();
 
   // Check WASM support
-  const wasmSupported =
-    typeof WebAssembly !== "undefined" &&
+  const wasmSupported = typeof WebAssembly !== "undefined" &&
     typeof WebAssembly.instantiate === "function";
 
   return {

@@ -66,12 +66,12 @@ export interface HeatmapPipeline {
   createSplatBindGroup: (
     viewportUniformBuffer: GPUBuffer,
     positionsX: GPUBuffer,
-    positionsY: GPUBuffer
+    positionsY: GPUBuffer,
   ) => { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup };
   /** Create colormap bind group */
   createColormapBindGroup: (
     densityTexture: DensityTexture,
-    colorScale: ColorScaleTexture
+    colorScale: ColorScaleTexture,
   ) => GPUBindGroup;
   /** Destroy resources */
   destroy: () => void;
@@ -322,7 +322,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
   function createSplatBindGroup(
     viewportUniformBuffer: GPUBuffer,
     positionsX: GPUBuffer,
-    positionsY: GPUBuffer
+    positionsY: GPUBuffer,
   ): { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup } {
     const uniformsBindGroup = device.createBindGroup({
       label: "Heatmap Uniforms Bind Group",
@@ -347,7 +347,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
 
   function createColormapBindGroup(
     densityTexture: DensityTexture,
-    colorScale: ColorScaleTexture
+    colorScale: ColorScaleTexture,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: "Heatmap Colormap Bind Group",

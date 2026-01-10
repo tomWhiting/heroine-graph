@@ -11,19 +11,16 @@
  */
 
 export { LabelsLayer, type LabelsRenderContext, type PositionProvider } from "./layer.ts";
-export { LabelManager, type LabelData, type VisibleLabel } from "./manager.ts";
+export { type LabelData, LabelManager, type VisibleLabel } from "./manager.ts";
+export { DEFAULT_LABEL_CONFIG, type LabelConfig } from "./config.ts";
 export {
-  type LabelConfig,
-  DEFAULT_LABEL_CONFIG,
-} from "./config.ts";
-export {
-  type FontAtlas,
   type BMFontChar,
   type BMFontData,
-  loadFontAtlas,
-  loadDefaultFontAtlas,
+  type FontAtlas,
   getGlyph,
-  getKerning,
   getGlyphUVs,
+  getKerning,
+  loadDefaultFontAtlas,
+  loadFontAtlas,
   measureText,
 } from "./atlas.ts";

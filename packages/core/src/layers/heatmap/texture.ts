@@ -78,8 +78,7 @@ export function createDensityTexture(
     label: "Heatmap Density Texture",
     size: { width: scaledWidth, height: scaledHeight },
     format: "rgba16float",
-    usage:
-      GPUTextureUsage.RENDER_ATTACHMENT |
+    usage: GPUTextureUsage.RENDER_ATTACHMENT |
       GPUTextureUsage.TEXTURE_BINDING,
   });
 
@@ -124,8 +123,7 @@ export function createDensityTexture(
       label: "Heatmap Density Texture",
       size: { width: newWidth, height: newHeight },
       format: "rgba16float",
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
+      usage: GPUTextureUsage.RENDER_ATTACHMENT |
         GPUTextureUsage.TEXTURE_BINDING,
     });
 
@@ -142,12 +140,22 @@ export function createDensityTexture(
   }
 
   return {
-    get texture() { return texture; },
-    get renderView() { return renderView; },
-    get sampleView() { return sampleView; },
+    get texture() {
+      return texture;
+    },
+    get renderView() {
+      return renderView;
+    },
+    get sampleView() {
+      return sampleView;
+    },
     sampler,
-    get width() { return currentWidth; },
-    get height() { return currentHeight; },
+    get width() {
+      return currentWidth;
+    },
+    get height() {
+      return currentHeight;
+    },
     destroy,
     resize,
   };

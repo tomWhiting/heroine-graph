@@ -114,7 +114,7 @@ export class PingPongBuffer {
       0,
       this.getWriteBuffer(),
       0,
-      copySize
+      copySize,
     );
   }
 
@@ -184,12 +184,11 @@ export class PingPongBuffer {
 export function createFloat32PingPong(
   device: GPUDevice,
   elementCount: number,
-  label: string
+  label: string,
 ): PingPongBuffer {
   return new PingPongBuffer(device, {
     size: elementCount * Float32Array.BYTES_PER_ELEMENT,
-    usage:
-      GPUBufferUsage.STORAGE |
+    usage: GPUBufferUsage.STORAGE |
       GPUBufferUsage.COPY_DST |
       GPUBufferUsage.COPY_SRC,
     label,
@@ -202,12 +201,11 @@ export function createFloat32PingPong(
 export function createInt32PingPong(
   device: GPUDevice,
   elementCount: number,
-  label: string
+  label: string,
 ): PingPongBuffer {
   return new PingPongBuffer(device, {
     size: elementCount * Int32Array.BYTES_PER_ELEMENT,
-    usage:
-      GPUBufferUsage.STORAGE |
+    usage: GPUBufferUsage.STORAGE |
       GPUBufferUsage.COPY_DST |
       GPUBufferUsage.COPY_SRC,
     label,
@@ -220,12 +218,11 @@ export function createInt32PingPong(
 export function createUint32PingPong(
   device: GPUDevice,
   elementCount: number,
-  label: string
+  label: string,
 ): PingPongBuffer {
   return new PingPongBuffer(device, {
     size: elementCount * Uint32Array.BYTES_PER_ELEMENT,
-    usage:
-      GPUBufferUsage.STORAGE |
+    usage: GPUBufferUsage.STORAGE |
       GPUBufferUsage.COPY_DST |
       GPUBufferUsage.COPY_SRC,
     label,

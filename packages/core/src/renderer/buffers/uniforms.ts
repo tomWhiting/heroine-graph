@@ -110,7 +110,7 @@ export class UniformBuffer<T extends Record<string, number>> {
     device: GPUDevice,
     size: number,
     fieldOrder: (keyof T)[],
-    label: string
+    label: string,
   ) {
     this.device = device;
     this.fieldOrder = fieldOrder;
@@ -202,13 +202,13 @@ const SIMULATION_FIELD_ORDER: (keyof SimulationUniforms)[] = [
  * Create a simulation uniform buffer.
  */
 export function createSimulationUniformBuffer(
-  device: GPUDevice
+  device: GPUDevice,
 ): UniformBuffer<SimulationUniforms> {
   const buffer = new UniformBuffer<SimulationUniforms>(
     device,
     SIMULATION_UNIFORMS_SIZE,
     SIMULATION_FIELD_ORDER,
-    "SimulationUniforms"
+    "SimulationUniforms",
   );
   buffer.update(DEFAULT_SIMULATION_UNIFORMS);
   buffer.forceUpload();
@@ -233,13 +233,13 @@ const VIEWPORT_FIELD_ORDER: (keyof ViewportUniforms)[] = [
  * Create a viewport uniform buffer.
  */
 export function createViewportUniformBuffer(
-  device: GPUDevice
+  device: GPUDevice,
 ): UniformBuffer<ViewportUniforms> {
   const buffer = new UniformBuffer<ViewportUniforms>(
     device,
     VIEWPORT_UNIFORMS_SIZE,
     VIEWPORT_FIELD_ORDER,
-    "ViewportUniforms"
+    "ViewportUniforms",
   );
   return buffer;
 }
@@ -253,7 +253,7 @@ export function forceConfigToUniforms(
   velocityDecay: number,
   nodeCount: number,
   edgeCount: number,
-  dt: number = 1.0
+  dt: number = 1.0,
 ): Partial<SimulationUniforms> {
   return {
     repulsion: config.repulsion,
@@ -276,7 +276,7 @@ export function forceConfigToUniforms(
  */
 export function viewportStateToUniforms(
   state: ViewportState,
-  dpr: number = 1.0
+  dpr: number = 1.0,
 ): Partial<ViewportUniforms> {
   return {
     panX: state.x,

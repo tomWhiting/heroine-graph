@@ -83,7 +83,7 @@ export interface ContourPipeline {
   createIdentifyBindGroup: (
     densityTexture: GPUTextureView,
     cellCases: GPUBuffer,
-    activeCount: GPUBuffer
+    activeCount: GPUBuffer,
   ) => GPUBindGroup;
   /** Create prefix sum bind group */
   createPrefixSumBindGroup: (data: GPUBuffer, elementCount: number) => GPUBindGroup;
@@ -92,7 +92,7 @@ export interface ContourPipeline {
     densityTexture: GPUTextureView,
     cellCases: GPUBuffer,
     prefixSums: GPUBuffer,
-    vertices: GPUBuffer
+    vertices: GPUBuffer,
   ) => GPUBindGroup;
   /** Create line render bind group */
   createLineBindGroup: (segments: GPUBuffer) => GPUBindGroup;
@@ -384,7 +384,7 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
   function createIdentifyBindGroup(
     densityTexture: GPUTextureView,
     cellCases: GPUBuffer,
-    activeCount: GPUBuffer
+    activeCount: GPUBuffer,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: "Contour Identify Bind Group",
@@ -400,7 +400,7 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
 
   function createPrefixSumBindGroup(
     data: GPUBuffer,
-    elementCount: number
+    elementCount: number,
   ): GPUBindGroup {
     // Update uniforms
     const uniformData = new Uint32Array([elementCount, 0, 0, 0]);
@@ -420,7 +420,7 @@ export function createContourPipeline(context: GPUContext): ContourPipeline {
     densityTexture: GPUTextureView,
     cellCases: GPUBuffer,
     prefixSums: GPUBuffer,
-    vertices: GPUBuffer
+    vertices: GPUBuffer,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: "Contour Generate Bind Group",

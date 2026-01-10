@@ -11,11 +11,11 @@
 import type { GPUContext } from "../../webgpu/context.ts";
 import type { HeatmapConfig } from "./config.ts";
 import type { DensityTexture } from "./texture.ts";
-import type { ColorScaleTexture, ColorScaleName } from "./colorscale.ts";
+import type { ColorScaleName, ColorScaleTexture } from "./colorscale.ts";
 import type { HeatmapPipeline } from "./pipeline.ts";
 
 import { mergeHeatmapConfig } from "./config.ts";
-import { createDensityTexture, clearDensityTexture } from "./texture.ts";
+import { clearDensityTexture, createDensityTexture } from "./texture.ts";
 import { createColorScaleTexture } from "./colorscale.ts";
 import { createHeatmapPipeline } from "./pipeline.ts";
 
@@ -78,7 +78,7 @@ export class HeatmapLayer implements Layer {
     context: GPUContext,
     width: number,
     height: number,
-    config: HeatmapConfig = {}
+    config: HeatmapConfig = {},
   ) {
     this.id = id;
     this.context = context;
@@ -216,7 +216,7 @@ export class HeatmapLayer implements Layer {
    */
   private renderColormapPass(
     encoder: GPUCommandEncoder,
-    targetView: GPUTextureView
+    targetView: GPUTextureView,
   ): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -243,19 +243,18 @@ export class HeatmapLayer implements Layer {
   private ensureBindGroups(): void {
     if (!this.bindGroupsDirty || !this.renderContext) return;
 
-    const { uniformsBindGroup, positionBindGroup } =
-      this.pipeline.createSplatBindGroup(
-        this.renderContext.viewportUniformBuffer,
-        this.renderContext.positionsX,
-        this.renderContext.positionsY
-      );
+    const { uniformsBindGroup, positionBindGroup } = this.pipeline.createSplatBindGroup(
+      this.renderContext.viewportUniformBuffer,
+      this.renderContext.positionsX,
+      this.renderContext.positionsY,
+    );
 
     this.uniformsBindGroup = uniformsBindGroup;
     this.positionBindGroup = positionBindGroup;
 
     this.colormapBindGroup = this.pipeline.createColormapBindGroup(
       this.densityTexture,
-      this.colorScale
+      this.colorScale,
     );
 
     this.bindGroupsDirty = false;
@@ -310,7 +309,7 @@ export function createHeatmapLayer(
   context: GPUContext,
   width: number,
   height: number,
-  config?: HeatmapConfig
+  config?: HeatmapConfig,
 ): HeatmapLayer {
   return new HeatmapLayer(id, context, width, height, config);
 }

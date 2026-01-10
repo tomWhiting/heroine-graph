@@ -153,7 +153,7 @@ export class MetaballLayer implements Layer {
 
     this.bindGroup = this.pipeline.createBindGroup(
       this.renderContext.positionsX,
-      this.renderContext.positionsY
+      this.renderContext.positionsY,
     );
 
     this.bindGroupDirty = false;
@@ -181,7 +181,7 @@ export class MetaballLayer implements Layer {
 export function createMetaballLayer(
   id: string,
   context: GPUContext,
-  config?: MetaballConfig
+  config?: MetaballConfig,
 ): MetaballLayer {
   return new MetaballLayer(id, context, config);
 }

@@ -220,7 +220,7 @@ export function createMetaballPipeline(context: GPUContext): MetaballPipeline {
 
   function createBindGroup(
     positionsX: GPUBuffer,
-    positionsY: GPUBuffer
+    positionsY: GPUBuffer,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: "Metaball Bind Group",

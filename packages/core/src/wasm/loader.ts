@@ -6,7 +6,7 @@
  */
 
 import type { HeroineGraphWasm } from "@heroine-graph/wasm";
-import { HeroineGraphError, ErrorCode } from "../errors.ts";
+import { ErrorCode, HeroineGraphError } from "../errors.ts";
 
 /** WASM module state */
 interface WasmState {
@@ -33,10 +33,10 @@ const state: WasmState = {
  * @returns Promise resolving to the WASM module exports
  * @throws HeroineGraphError if WASM loading fails
  */
-export async function loadWasmModule(): Promise<typeof import("@heroine-graph/wasm")> {
+export function loadWasmModule(): Promise<typeof import("@heroine-graph/wasm")> {
   // Already loaded
   if (state.module) {
-    return state.module;
+    return Promise.resolve(state.module);
   }
 
   // Loading in progress
@@ -64,7 +64,7 @@ export async function loadWasmModule(): Promise<typeof import("@heroine-graph/wa
       throw new HeroineGraphError(
         ErrorCode.WASM_LOAD_FAILED,
         `Failed to load WASM module: ${message}`,
-        { originalError: error }
+        { originalError: error },
       );
     }
   })();
@@ -94,7 +94,7 @@ export async function createWasmEngine(): Promise<HeroineGraphWasm> {
  */
 export async function createWasmEngineWithCapacity(
   nodeCapacity: number,
-  edgeCapacity: number
+  edgeCapacity: number,
 ): Promise<HeroineGraphWasm> {
   const module = await loadWasmModule();
   return module.HeroineGraphWasm.withCapacity(nodeCapacity, edgeCapacity);

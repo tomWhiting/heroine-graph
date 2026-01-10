@@ -132,16 +132,12 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
 
   try {
     // Wait for container to be laid out with valid dimensions
-    console.log('[initGraph] Waiting for layout...');
     await waitForLayout(container);
-    console.log('[initGraph] Layout ready');
 
     // Size canvas BEFORE creating graph context
     const rect = container.getBoundingClientRect();
-    console.log('[initGraph] Container rect:', rect);
     canvas.width = rect.width * window.devicePixelRatio;
     canvas.height = rect.height * window.devicePixelRatio;
-    console.log('[initGraph] Canvas sized to:', canvas.width, 'x', canvas.height);
 
     // Dynamic import of the library
     loadingText.textContent = 'Loading HeroineGraph...';
@@ -276,11 +272,8 @@ export const RandomGraph: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    console.log('[Story] canvasElement:', canvasElement);
     const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
-    console.log('[Story] container:', container);
     if (!container) {
-      console.error('[Story] Container not found!');
       return;
     }
     const nodeCount = parseInt(container.dataset.nodeCount || '1000', 10);

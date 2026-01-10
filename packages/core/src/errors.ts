@@ -84,7 +84,7 @@ export class HeroineGraphError extends Error {
     code: ErrorCode,
     message: string,
     context: ErrorContext = {},
-    suggestion?: string
+    suggestion?: string,
   ) {
     super(message);
     this.name = "HeroineGraphError";
@@ -148,7 +148,7 @@ export const Errors = {
       `WebGPU is not supported: ${reason}`,
       {},
       "Use Chrome 113+, Firefox 141+, Safari 26+, or Edge 113+. " +
-        "Ensure hardware acceleration is enabled in browser settings."
+        "Ensure hardware acceleration is enabled in browser settings.",
     );
   },
 
@@ -161,7 +161,7 @@ export const Errors = {
       "Failed to request WebGPU adapter",
       {},
       "Check GPU driver installation. Try updating graphics drivers. " +
-        "Some integrated GPUs may not support WebGPU."
+        "Some integrated GPUs may not support WebGPU.",
     );
   },
 
@@ -174,7 +174,7 @@ export const Errors = {
       "Failed to request WebGPU device",
       { unsupportedLimits: limits },
       "The GPU may not support required features. " +
-        "Try reducing graph size or disabling advanced features."
+        "Try reducing graph size or disabling advanced features.",
     );
   },
 
@@ -186,7 +186,7 @@ export const Errors = {
       ErrorCode.CANVAS_NOT_FOUND,
       `Canvas element not found: "${selector}"`,
       { selector },
-      "Ensure the canvas element exists in the DOM before creating the graph."
+      "Ensure the canvas element exists in the DOM before creating the graph.",
     );
   },
 
@@ -197,7 +197,7 @@ export const Errors = {
     shaderName: string,
     messages: string,
     line?: number,
-    snippet?: string
+    snippet?: string,
   ): HeroineGraphError {
     return new HeroineGraphError(
       ErrorCode.SHADER_COMPILATION_FAILED,
@@ -208,7 +208,7 @@ export const Errors = {
         shaderLine: line,
         shaderSnippet: snippet,
       },
-      "This is a library bug. Please report it with the error details."
+      "This is a library bug. Please report it with the error details.",
     );
   },
 
@@ -220,7 +220,7 @@ export const Errors = {
       ErrorCode.NODE_NOT_FOUND,
       `Node not found: ${nodeId}`,
       { nodeId },
-      "Ensure the node exists before performing operations on it."
+      "Ensure the node exists before performing operations on it.",
     );
   },
 
@@ -232,7 +232,7 @@ export const Errors = {
       ErrorCode.EDGE_NOT_FOUND,
       `Edge not found: ${edgeId}`,
       { edgeId },
-      "Ensure the edge exists before performing operations on it."
+      "Ensure the edge exists before performing operations on it.",
     );
   },
 
@@ -244,7 +244,7 @@ export const Errors = {
       ErrorCode.INVALID_GRAPH_DATA,
       `Invalid graph data: ${reason}`,
       {},
-      "Check that all nodes have unique IDs and all edges reference existing nodes."
+      "Check that all nodes have unique IDs and all edges reference existing nodes.",
     );
   },
 
@@ -256,7 +256,7 @@ export const Errors = {
       ErrorCode.LAYER_NOT_FOUND,
       `Layer not found: ${layerType}`,
       { layerType },
-      "Valid layer types are: heatmap, contour, metaball, labels."
+      "Valid layer types are: heatmap, contour, metaball, labels.",
     );
   },
 
@@ -268,7 +268,7 @@ export const Errors = {
       ErrorCode.BUFFER_CREATION_FAILED,
       `Failed to create GPU buffer "${bufferName}": ${reason}`,
       { bufferName },
-      "The GPU may be out of memory. Try reducing graph size."
+      "The GPU may be out of memory. Try reducing graph size.",
     );
   },
 };
@@ -281,7 +281,7 @@ export const Errors = {
  */
 export function assert(
   condition: boolean,
-  error: HeroineGraphError
+  error: HeroineGraphError,
 ): asserts condition {
   if (!condition) {
     throw error;
@@ -294,7 +294,7 @@ export function assert(
 export async function wrapAsync<T>(
   fn: () => Promise<T>,
   code: ErrorCode,
-  message: string
+  message: string,
 ): Promise<T> {
   try {
     return await fn();

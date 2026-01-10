@@ -13,13 +13,7 @@
 // import { createHeroineGraph, HeatmapLayer, ... } from '@heroine-graph/core';
 
 // For this example, we import from the local package:
-import {
-  isSupported,
-  getSupportInfo,
-  type GraphInput,
-  getColorScaleNames,
-  type ColorScaleName,
-} from "../../packages/core/mod.ts";
+import { getColorScaleNames, getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";
 
 /**
  * Generate a clustered graph with varying density regions
@@ -27,7 +21,7 @@ import {
  */
 export function generateClusteredGraph(
   clusterCount: number,
-  nodesPerCluster: number
+  nodesPerCluster: number,
 ): GraphInput {
   const nodes = [];
   const edges = [];
@@ -95,10 +89,13 @@ export function generateClusteredGraph(
   // Add some inter-cluster connections
   for (let i = 0; i < clusterCount * 3; i++) {
     const sourceCluster = Math.floor(Math.random() * clusterCount);
-    const targetCluster = (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) % clusterCount;
+    const targetCluster = (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) %
+      clusterCount;
 
-    const sourceNode = sourceCluster * nodesPerCluster + Math.floor(Math.random() * nodesPerCluster);
-    const targetNode = targetCluster * nodesPerCluster + Math.floor(Math.random() * nodesPerCluster);
+    const sourceNode = sourceCluster * nodesPerCluster +
+      Math.floor(Math.random() * nodesPerCluster);
+    const targetNode = targetCluster * nodesPerCluster +
+      Math.floor(Math.random() * nodesPerCluster);
 
     edges.push({
       source: `node_${sourceNode}`,
@@ -201,12 +198,12 @@ async function main() {
 
   const clusteredGraph = generateClusteredGraph(5, 100);
   console.log(
-    `  Clustered: ${clusteredGraph.nodes.length} nodes, ${clusteredGraph.edges.length} edges`
+    `  Clustered: ${clusteredGraph.nodes.length} nodes, ${clusteredGraph.edges.length} edges`,
   );
 
   const spiralGraph = generateSpiralGraph(1000, 4);
   console.log(
-    `  Spiral:    ${spiralGraph.nodes.length} nodes, ${spiralGraph.edges.length} edges`
+    `  Spiral:    ${spiralGraph.nodes.length} nodes, ${spiralGraph.edges.length} edges`,
   );
 
   console.log();

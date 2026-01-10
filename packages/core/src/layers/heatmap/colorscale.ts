@@ -163,7 +163,7 @@ function interpolateColorStops(stops: ColorStop[], position: number): ColorRGBA 
  */
 export function generateColorScaleData(
   stops: ColorStop[],
-  resolution: number = 256
+  resolution: number = 256,
 ): Float32Array {
   const data = new Float32Array(resolution * 4);
 
@@ -186,7 +186,7 @@ export function generateColorScaleData(
 export function createColorScaleTexture(
   context: GPUContext,
   name: ColorScaleName,
-  resolution: number = 256
+  resolution: number = 256,
 ): ColorScaleTexture {
   const stops = COLOR_SCALES[name];
   return createCustomColorScaleTexture(context, stops, resolution, name);
@@ -199,7 +199,7 @@ export function createCustomColorScaleTexture(
   context: GPUContext,
   stops: ColorStop[],
   resolution: number = 256,
-  name: ColorScaleName | "custom" = "custom"
+  name: ColorScaleName | "custom" = "custom",
 ): ColorScaleTexture {
   const { device } = context;
 
@@ -224,7 +224,7 @@ export function createCustomColorScaleTexture(
     { texture },
     colorData,
     { bytesPerRow: resolution * 4 },
-    { width: resolution }
+    { width: resolution },
   );
 
   // Create view
