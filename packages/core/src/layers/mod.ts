@@ -26,3 +26,6 @@ export * from "./contour/mod.ts";
 
 // Metaball Layer
 export * from "./metaball/mod.ts";
+
+// Labels Layer
+export * from "./labels/mod.ts";

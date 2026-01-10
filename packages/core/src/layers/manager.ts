@@ -194,11 +194,18 @@ export class LayerManager {
 
   /**
    * Render all enabled layers in order
+   * @param encoder - GPU command encoder
+   * @param targetView - Target texture view
+   * @param skipLayers - Optional array of layer IDs to skip
    */
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  render(encoder: GPUCommandEncoder, targetView: GPUTextureView, skipLayers?: string[]): void {
     const layers = this.getSortedLayers();
+    const skipSet = skipLayers ? new Set(skipLayers) : null;
 
     for (const layer of layers) {
+      if (skipSet && skipSet.has(layer.id)) {
+        continue;
+      }
       layer.render(encoder, targetView);
     }
   }

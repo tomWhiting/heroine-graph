@@ -9,6 +9,9 @@ const config = {
     "../stories/**/*.mdx",
     "../stories/**/*.stories.@(js|jsx|mjs|ts|tsx)"
   ],
+  "staticDirs": [
+    { from: "../dist/assets", to: "/assets" }
+  ],
   "addons": [
     "@chromatic-com/storybook",
     "@storybook/addon-vitest",

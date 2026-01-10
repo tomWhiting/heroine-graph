@@ -78,6 +78,11 @@ import {
   createMetaballLayer,
   type MetaballConfig,
   type MetaballRenderContext,
+  // Labels layer
+  LabelsLayer,
+  type LabelConfig,
+  type LabelsRenderContext,
+  type LabelData,
 } from "../layers/mod.ts";
 
 /**
@@ -172,6 +177,10 @@ export class HeroineGraph {
   private draggedNode: NodeId | null = null;
   private lastDragPosition: Vec2 | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
+
+  // Viewport panning state
+  private isPanning: boolean = false;
+  private lastPanPosition: Vec2 | null = null;
 
   // Position sync (GPU -> JS for hit testing)
   private syncFrameCounter: number = 0;
@@ -408,8 +417,9 @@ export class HeroineGraph {
     // Update layer render contexts before rendering (ensures fresh texture references)
     this.updateLayerRenderContext();
 
-    // Render visualization layers FIRST (heatmap renders behind nodes)
-    this.layerManager.render(encoder, textureView);
+    // Render background visualization layers FIRST (heatmap, contour, metaball render behind nodes)
+    // Skip labels layer - it renders after nodes
+    this.layerManager.render(encoder, textureView, ["labels"]);
 
     // Begin main render pass (loads existing content from layers)
     const renderPass = encoder.beginRenderPass({
@@ -455,6 +465,12 @@ export class HeroineGraph {
     }
 
     renderPass.end();
+
+    // Render overlay layers AFTER nodes (labels render on top)
+    const labelsLayer = this.layerManager.getLayer<LabelsLayer>("labels");
+    if (labelsLayer && labelsLayer.enabled) {
+      labelsLayer.render(encoder, textureView);
+    }
 
     // Schedule position sync if simulation is running
     let syncEncoder: GPUCommandEncoder | null = null;
@@ -1036,6 +1052,32 @@ export class HeroineGraph {
       };
       metaballLayer.setRenderContext(metaballContext);
     }
+
+    // Update labels layer if it exists
+    const labelsLayer = this.layerManager.getLayer<LabelsLayer>("labels");
+    if (labelsLayer && this.state.parsedGraph) {
+      const viewportState = this.viewport.state;
+      const cssWidth = this.canvas.clientWidth || this.canvas.width;
+      const cssHeight = this.canvas.clientHeight || this.canvas.height;
+
+      // Create position provider that reads from parsedGraph arrays
+      const positionsX = this.state.parsedGraph.positionsX;
+      const positionsY = this.state.parsedGraph.positionsY;
+      const positionProvider = {
+        getX: (nodeId: number) => positionsX[nodeId] ?? 0,
+        getY: (nodeId: number) => positionsY[nodeId] ?? 0,
+      };
+
+      const labelsContext: LabelsRenderContext = {
+        viewportX: viewportState.x,
+        viewportY: viewportState.y,
+        scale: viewportState.scale,
+        canvasWidth: cssWidth,
+        canvasHeight: cssHeight,
+        positionProvider,
+      };
+      labelsLayer.setRenderContext(labelsContext);
+    }
   }
 
   // ==========================================================================
@@ -1162,6 +1204,83 @@ export class HeroineGraph {
   getMetaballConfig(): MetaballConfig | null {
     const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
     return layer?.getConfig() ?? null;
+  }
+
+  // ==========================================================================
+  // Public API - Labels Layer
+  // ==========================================================================
+
+  /**
+   * Enable the labels layer.
+   * Creates the layer if it doesn't exist.
+   */
+  async enableLabels(config?: Partial<LabelConfig>): Promise<void> {
+    const layerId = "labels";
+
+    if (!this.layerManager.hasLayer(layerId)) {
+      const labelsLayer = new LabelsLayer(
+        layerId,
+        this.gpuContext,
+        { ...config, visible: true }
+      );
+
+      // Initialize the layer (loads font atlas)
+      await labelsLayer.initialize();
+
+      this.layerManager.addLayer(labelsLayer);
+      this.updateLayerRenderContext();
+    } else {
+      const layer = this.layerManager.getLayer<LabelsLayer>(layerId);
+      if (layer) {
+        layer.enabled = true;
+        if (config) {
+          layer.setConfig(config);
+        }
+      }
+    }
+  }
+
+  /**
+   * Disable the labels layer.
+   */
+  disableLabels(): void {
+    this.layerManager.disableLayer("labels");
+  }
+
+  /**
+   * Check if labels are enabled.
+   */
+  isLabelsEnabled(): boolean {
+    return this.layerManager.isLayerVisible("labels");
+  }
+
+  /**
+   * Configure the labels layer.
+   */
+  setLabelsConfig(config: Partial<LabelConfig>): void {
+    const layer = this.layerManager.getLayer<LabelsLayer>("labels");
+    if (layer) {
+      layer.setConfig(config);
+    }
+  }
+
+  /**
+   * Get labels configuration.
+   */
+  getLabelsConfig(): LabelConfig | null {
+    const layer = this.layerManager.getLayer<LabelsLayer>("labels");
+    return layer?.getConfig() ?? null;
+  }
+
+  /**
+   * Set labels data for the labels layer.
+   * @param labels Array of label data to display
+   */
+  setLabels(labels: LabelData[]): void {
+    const layer = this.layerManager.getLayer<LabelsLayer>("labels");
+    if (layer) {
+      layer.setLabels(labels);
+    }
   }
 
   // ==========================================================================
@@ -1477,7 +1596,8 @@ export class HeroineGraph {
           position: e.graphPosition,
         });
       } else {
-        // Check for edge click
+        // No node hit - start panning (allow panning even when clicking on/near edges)
+        // Check for edge click to select it, but still allow panning
         const edgeId = this.getEdgeAtPosition(e.screenPosition.x, e.screenPosition.y);
         if (edgeId !== null) {
           if (!e.modifiers.shift) {
@@ -1485,13 +1605,17 @@ export class HeroineGraph {
           }
           this.selectEdges([edgeId]);
         } else if (!e.modifiers.shift) {
-          // Click on empty space - clear selection
+          // Empty space - clear selection
           this.clearSelection();
         }
+
+        // Start panning regardless of edge hit
+        this.isPanning = true;
+        this.lastPanPosition = { ...e.screenPosition };
       }
     });
 
-    // Handle pointer move (drag or hover)
+    // Handle pointer move (drag, pan, or hover)
     this.pointerManager.on("pointermove", (e) => {
       if (this.draggedNode !== null) {
         // Calculate delta from last position
@@ -1515,13 +1639,19 @@ export class HeroineGraph {
           position: e.graphPosition,
           delta,
         });
+      } else if (this.isPanning && this.lastPanPosition) {
+        // Pan the viewport (inverted - like pushing a piece of paper)
+        const dx = this.lastPanPosition.x - e.screenPosition.x;
+        const dy = this.lastPanPosition.y - e.screenPosition.y;
+        this.viewport.pan(dx, dy);
+        this.lastPanPosition = { ...e.screenPosition };
       } else {
         // Hover detection
         this.updateHover(e.screenPosition.x, e.screenPosition.y);
       }
     });
 
-    // Handle pointer up (end drag)
+    // Handle pointer up (end drag or pan)
     this.pointerManager.on("pointerup", (e) => {
       if (this.draggedNode !== null) {
         const nodeId = this.draggedNode;
@@ -1537,6 +1667,12 @@ export class HeroineGraph {
           nodeId,
           position: e.graphPosition,
         });
+      }
+
+      // End panning
+      if (this.isPanning) {
+        this.isPanning = false;
+        this.lastPanPosition = null;
       }
     });
 
