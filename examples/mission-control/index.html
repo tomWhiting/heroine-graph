@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeroineGraph - Mission Control</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg-dark: #0a0a0f;
+        --bg-panel: #12121a;
+        --bg-card: #1a1a24;
+        --border: #2a2a3a;
+        --text: #e0e0e0;
+        --text-dim: #808090;
+        --accent: #4f8cff;
+        --accent-hover: #6ba0ff;
+        --success: #4caf50;
+        --warning: #ff9800;
+        --danger: #f44336;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg-dark);
+        color: var(--text);
+        overflow: hidden;
+        height: 100vh;
+      }
+
+      /* Main canvas container */
+      #graph-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+
+      #graph-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      /* Loading overlay */
+      #loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--bg-dark);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        transition: opacity 0.3s ease;
+      }
+
+      #loading-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .loading-spinner {
+        width: 48px;
+        height: 48px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .loading-text {
+        margin-top: 16px;
+        color: var(--text-dim);
+      }
+
+      /* Stats display */
+      #stats {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 16px;
+        font-size: 13px;
+        z-index: 100;
+        min-width: 160px;
+      }
+
+      .stat-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+      }
+
+      .stat-row:last-child {
+        margin-bottom: 0;
+      }
+
+      .stat-label {
+        color: var(--text-dim);
+      }
+
+      .stat-value {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* Node buttons */
+      #node-buttons {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        gap: 8px;
+        z-index: 100;
+      }
+
+      .node-btn {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.15s ease;
+      }
+
+      .node-btn:hover {
+        background: var(--bg-card);
+        border-color: var(--accent);
+      }
+
+      .node-btn:active {
+        transform: scale(0.98);
+      }
+
+      .node-btn.danger {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .node-btn.danger:hover {
+        background: rgba(244, 67, 54, 0.1);
+      }
+
+      /* Drawer toggle */
+      #drawer-toggle {
+        position: fixed;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 24px;
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        z-index: 200;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #drawer-toggle:hover {
+        background: var(--bg-card);
+        border-color: var(--accent);
+      }
+
+      #drawer-toggle .arrow {
+        transition: transform 0.3s ease;
+      }
+
+      #drawer-toggle.open .arrow {
+        transform: rotate(180deg);
+      }
+
+      /* Control drawer */
+      #drawer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: var(--bg-panel);
+        border-top: 1px solid var(--border);
+        transform: translateY(100%);
+        transition: transform 0.3s ease;
+        z-index: 150;
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+
+      #drawer.open {
+        transform: translateY(0);
+      }
+
+      .drawer-content {
+        padding: 24px;
+        padding-bottom: 80px;
+      }
+
+      .drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 24px;
+      }
+
+      .drawer-title {
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      /* Layer sections */
+      .layers-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+      }
+
+      .layer-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+      }
+
+      .layer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+
+      .layer-title {
+        font-size: 14px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .layer-icon {
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+      }
+
+      /* Toggle switch */
+      .toggle {
+        position: relative;
+        width: 44px;
+        height: 24px;
+      }
+
+      .toggle input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--border);
+        border-radius: 12px;
+        transition: 0.2s;
+      }
+
+      .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background: white;
+        border-radius: 50%;
+        transition: 0.2s;
+      }
+
+      .toggle input:checked + .toggle-slider {
+        background: var(--accent);
+      }
+
+      .toggle input:checked + .toggle-slider:before {
+        transform: translateX(20px);
+      }
+
+      /* Control rows */
+      .control-row {
+        margin-bottom: 12px;
+      }
+
+      .control-row:last-child {
+        margin-bottom: 0;
+      }
+
+      .control-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--text-dim);
+      }
+
+      .control-value {
+        font-variant-numeric: tabular-nums;
+        color: var(--text);
+      }
+
+      /* Range slider */
+      input[type="range"] {
+        width: 100%;
+        height: 6px;
+        -webkit-appearance: none;
+        background: var(--border);
+        border-radius: 3px;
+        outline: none;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 16px;
+        height: 16px;
+        background: var(--accent);
+        border-radius: 50%;
+        cursor: pointer;
+        transition: transform 0.1s;
+      }
+
+      input[type="range"]::-webkit-slider-thumb:hover {
+        transform: scale(1.1);
+      }
+
+      input[type="range"]::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        background: var(--accent);
+        border-radius: 50%;
+        cursor: pointer;
+        border: none;
+      }
+
+      /* Select dropdown */
+      select {
+        width: 100%;
+        padding: 8px 12px;
+        background: var(--bg-dark);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        outline: none;
+      }
+
+      select:focus {
+        border-color: var(--accent);
+      }
+
+      /* Color input */
+      input[type="color"] {
+        width: 100%;
+        height: 32px;
+        padding: 2px;
+        background: var(--bg-dark);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      /* Simulation section */
+      .simulation-section {
+        margin-top: 24px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border);
+      }
+
+      .section-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .simulation-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+      }
+
+      .simulation-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      /* Buttons row */
+      .sim-buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .sim-btn {
+        flex: 1;
+        padding: 10px 16px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-card);
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .sim-btn:hover {
+        border-color: var(--accent);
+        background: var(--bg-panel);
+      }
+
+      .sim-btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .sim-btn.primary:hover {
+        background: var(--accent-hover);
+      }
+
+      /* Error state */
+      #error-message {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--bg-panel);
+        border: 1px solid var(--danger);
+        border-radius: 12px;
+        padding: 24px;
+        text-align: center;
+        max-width: 400px;
+        z-index: 1000;
+        display: none;
+      }
+
+      #error-message.visible {
+        display: block;
+      }
+
+      #error-message h3 {
+        color: var(--danger);
+        margin-bottom: 12px;
+      }
+
+      /* Keyboard hint */
+      .keyboard-hint {
+        position: fixed;
+        bottom: 60px;
+        right: 16px;
+        font-size: 11px;
+        color: var(--text-dim);
+        z-index: 100;
+      }
+
+      kbd {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Loading overlay -->
+    <div id="loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Initializing WebGPU...</div>
+    </div>
+
+    <!-- Error message -->
+    <div id="error-message">
+      <h3>WebGPU Not Available</h3>
+      <p id="error-text">
+        Your browser does not support WebGPU. Please use Chrome 113+, Edge 113+, or Safari 18+.
+      </p>
+    </div>
+
+    <!-- Graph container -->
+    <div id="graph-container">
+      <canvas id="graph-canvas"></canvas>
+    </div>
+
+    <!-- Stats display -->
+    <div id="stats">
+      <div class="stat-row">
+        <span class="stat-label">Nodes</span>
+        <span class="stat-value" id="stat-nodes">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Edges</span>
+        <span class="stat-value" id="stat-edges">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value" id="stat-fps">0</span>
+      </div>
+    </div>
+
+    <!-- Node count buttons -->
+    <div id="node-buttons">
+      <button class="node-btn" data-count="100">+ 100</button>
+      <button class="node-btn" data-count="1000">+ 1K</button>
+      <button class="node-btn" data-count="10000">+ 10K</button>
+      <button class="node-btn" data-count="100000">+ 100K</button>
+      <button class="node-btn danger" id="clear-btn">Clear</button>
+    </div>
+
+    <!-- Keyboard hint -->
+    <div class="keyboard-hint">
+      <kbd>Space</kbd> Toggle drawer &nbsp; <kbd>R</kbd> Restart simulation
+    </div>
+
+    <!-- Drawer toggle -->
+    <button id="drawer-toggle">
+      <span>Mission Control</span>
+      <span class="arrow">&#9650;</span>
+    </button>
+
+    <!-- Control drawer -->
+    <div id="drawer">
+      <div class="drawer-content">
+        <div class="drawer-header">
+          <h2 class="drawer-title">Layer Configuration</h2>
+        </div>
+
+        <!-- Layers grid -->
+        <div class="layers-grid">
+          <!-- Heatmap -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(135deg, #440154, #21918c, #fde725)"
+                ></span>
+                Heatmap
+              </span>
+              <label class="toggle">
+                <input type="checkbox" id="heatmap-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Color Scale</span>
+              </div>
+              <select id="heatmap-colorscale">
+                <option value="viridis">Viridis</option>
+                <option value="plasma">Plasma</option>
+                <option value="inferno">Inferno</option>
+                <option value="magma">Magma</option>
+                <option value="cividis">Cividis</option>
+                <option value="turbo">Turbo</option>
+                <option value="spectral">Spectral</option>
+                <option value="coolwarm">Cool/Warm</option>
+                <option value="blues">Blues</option>
+                <option value="reds">Reds</option>
+                <option value="greens">Greens</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Radius</span>
+                <span class="control-value" id="heatmap-radius-val">50</span>
+              </div>
+              <input type="range" id="heatmap-radius" min="10" max="200" value="50">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Intensity</span>
+                <span class="control-value" id="heatmap-intensity-val">1.0</span>
+              </div>
+              <input type="range" id="heatmap-intensity" min="0.1" max="5" step="0.1" value="1">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Opacity</span>
+                <span class="control-value" id="heatmap-opacity-val">0.8</span>
+              </div>
+              <input type="range" id="heatmap-opacity" min="0" max="1" step="0.05" value="0.8">
+            </div>
+          </div>
+
+          <!-- Contours -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: #fff; border: 2px solid var(--border)"
+                ></span>
+                Contours
+              </span>
+              <label class="toggle">
+                <input type="checkbox" id="contour-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Stroke Width</span>
+                <span class="control-value" id="contour-width-val">2</span>
+              </div>
+              <input type="range" id="contour-width" min="0.5" max="8" step="0.5" value="2">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Stroke Color</span>
+              </div>
+              <input type="color" id="contour-color" value="#ffffff">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Threshold Count</span>
+                <span class="control-value" id="contour-thresholds-val">4</span>
+              </div>
+              <input type="range" id="contour-thresholds" min="1" max="10" value="4">
+            </div>
+          </div>
+
+          <!-- Metaballs -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: radial-gradient(circle, #6ba0ff, #4f8cff)"
+                ></span>
+                Metaballs
+              </span>
+              <label class="toggle">
+                <input type="checkbox" id="metaball-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Fill Color</span>
+              </div>
+              <input type="color" id="metaball-colorscale" value="#4f8cff">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Threshold</span>
+                <span class="control-value" id="metaball-threshold-val">0.5</span>
+              </div>
+              <input type="range" id="metaball-threshold" min="0.1" max="1" step="0.05" value="0.5">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Opacity</span>
+                <span class="control-value" id="metaball-opacity-val">0.6</span>
+              </div>
+              <input type="range" id="metaball-opacity" min="0" max="1" step="0.05" value="0.6">
+            </div>
+          </div>
+
+          <!-- Labels -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: var(--bg-dark); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold"
+                >A</span>
+                Labels
+              </span>
+              <label class="toggle">
+                <input type="checkbox" id="labels-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Font Size</span>
+                <span class="control-value" id="labels-fontsize-val">14</span>
+              </div>
+              <input type="range" id="labels-fontsize" min="8" max="32" value="14">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Text Color</span>
+              </div>
+              <input type="color" id="labels-color" value="#ffffff">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Max Labels</span>
+                <span class="control-value" id="labels-max-val">100</span>
+              </div>
+              <input type="range" id="labels-max" min="10" max="500" step="10" value="100">
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulation section -->
+        <div class="simulation-section">
+          <h3 class="section-title">Simulation</h3>
+          <div class="simulation-grid">
+            <div class="simulation-card">
+              <div class="control-row">
+                <div class="control-label">
+                  <span>Charge (Repulsion)</span>
+                  <span class="control-value" id="sim-charge-val">-30</span>
+                </div>
+                <input type="range" id="sim-charge" min="-200" max="0" value="-30">
+              </div>
+            </div>
+            <div class="simulation-card">
+              <div class="control-row">
+                <div class="control-label">
+                  <span>Link Distance</span>
+                  <span class="control-value" id="sim-linkdist-val">30</span>
+                </div>
+                <input type="range" id="sim-linkdist" min="5" max="200" value="30">
+              </div>
+            </div>
+            <div class="simulation-card">
+              <div class="control-row">
+                <div class="control-label">
+                  <span>Link Strength</span>
+                  <span class="control-value" id="sim-linkstr-val">1.0</span>
+                </div>
+                <input type="range" id="sim-linkstr" min="0" max="2" step="0.1" value="1">
+              </div>
+            </div>
+            <div class="simulation-card">
+              <div class="control-row">
+                <div class="control-label">
+                  <span>Center Strength</span>
+                  <span class="control-value" id="sim-center-val">0.1</span>
+                </div>
+                <input type="range" id="sim-center" min="0" max="1" step="0.05" value="0.1">
+              </div>
+            </div>
+          </div>
+          <div class="sim-buttons">
+            <button class="sim-btn" id="sim-stop">Stop</button>
+            <button class="sim-btn" id="sim-start">Start</button>
+            <button class="sim-btn primary" id="sim-restart">Restart</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
