@@ -44,6 +44,11 @@ import {
 } from "../renderer/pipelines/edges.ts";
 import { createRenderLoop, type FrameStats, type RenderLoop } from "../renderer/render_loop.ts";
 import { createSimulationController, type SimulationController } from "../simulation/controller.ts";
+import {
+  DEFAULT_FORCE_CONFIG,
+  type FullForceConfig,
+  validateForceConfig,
+} from "../simulation/config.ts";
 import { createEdgeIndicesBuffer } from "../graph/parser.ts";
 import { boundsCenter, fitBoundsScale } from "../viewport/transforms.ts";
 import {
@@ -54,7 +59,7 @@ import {
   createSimulationBuffers,
   createSimulationPipeline,
   readbackPositions,
-  recordSimulationStep,
+  recordSimulationStepWithOptions,
   type SimulationBindGroups,
   type SimulationBuffers,
   type SimulationPipeline,
@@ -92,6 +97,16 @@ import {
   type MetaballLayer,
   type MetaballRenderContext,
 } from "../layers/mod.ts";
+import {
+  type AlgorithmBindGroups,
+  type AlgorithmBuffers,
+  type AlgorithmPipelines,
+  type AlgorithmRenderContext,
+  type ForceAlgorithm,
+  type ForceAlgorithmType,
+  getAlgorithmRegistry,
+  initializeBuiltinAlgorithms,
+} from "../simulation/algorithms/mod.ts";
 
 /**
  * WASM engine interface for spatial queries.
@@ -159,6 +174,7 @@ export class HeroineGraph {
   private events: EventEmitter;
   private renderLoop: RenderLoop;
   private simulationController: SimulationController;
+  private forceConfig: FullForceConfig;
 
   // Pipelines
   private nodePipeline: NodeRenderPipeline | null = null;
@@ -174,6 +190,12 @@ export class HeroineGraph {
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
   private simBindGroups: SimulationBindGroups | null = null;
+
+  // Force algorithm resources
+  private currentAlgorithm: ForceAlgorithm | null = null;
+  private algorithmPipelines: AlgorithmPipelines | null = null;
+  private algorithmBuffers: AlgorithmBuffers | null = null;
+  private algorithmBindGroups: AlgorithmBindGroups | null = null;
 
   // Interaction
   private hitTester: HitTester;
@@ -239,6 +261,17 @@ export class HeroineGraph {
 
     // Create simulation controller
     this.simulationController = createSimulationController();
+
+    // Initialize force configuration
+    this.forceConfig = { ...DEFAULT_FORCE_CONFIG };
+
+    // Initialize force algorithm registry and default algorithm
+    initializeBuiltinAlgorithms();
+    const registry = getAlgorithmRegistry();
+    this.currentAlgorithm = registry.get("n2") ?? null;
+    if (this.currentAlgorithm) {
+      this.algorithmPipelines = this.currentAlgorithm.createPipelines(this.gpuContext);
+    }
 
     // Initialize pipelines
     this.initializePipelines();
@@ -320,22 +353,50 @@ export class HeroineGraph {
     const { device } = this.gpuContext;
     const alpha = this.simulationController.state.alpha;
 
-    // Update uniforms with current alpha
+    // Update uniforms with current alpha and force config
     updateSimulationUniforms(
       device,
       this.simBuffers,
       this.state.nodeCount,
       this.state.edgeCount,
       alpha,
+      this.forceConfig,
     );
 
-    // Record simulation compute passes
-    recordSimulationStep(
+    // Update algorithm uniforms if using custom algorithm
+    if (this.currentAlgorithm && this.algorithmBuffers && this.algorithmBindGroups) {
+      const context: AlgorithmRenderContext = {
+        device,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        forcesX: this.simBuffers.forcesX,
+        forcesY: this.simBuffers.forcesY,
+        nodeCount: this.state.nodeCount,
+        forceConfig: this.forceConfig,
+      };
+      this.currentAlgorithm.updateUniforms(device, this.algorithmBuffers, context);
+    }
+
+    // Record simulation compute passes with custom algorithm for repulsion
+    recordSimulationStepWithOptions(
       encoder,
       this.simulationPipeline,
       this.simBindGroups,
       this.state.nodeCount,
       this.state.edgeCount,
+      {
+        recordRepulsionPass:
+          this.currentAlgorithm && this.algorithmPipelines && this.algorithmBindGroups
+            ? (enc) => {
+              this.currentAlgorithm!.recordRepulsionPass(
+                enc,
+                this.algorithmPipelines!,
+                this.algorithmBindGroups!,
+                this.state.nodeCount,
+              );
+            }
+            : undefined,
+      },
     );
 
     // Tick the simulation controller
@@ -377,6 +438,26 @@ export class HeroineGraph {
         this.simBuffers.positionsY,
         this.buffers.edgeIndices,
         this.buffers.edgeAttributes,
+      );
+    }
+
+    // Rebuild algorithm bind groups with swapped position/force buffers
+    if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
+      const context: AlgorithmRenderContext = {
+        device: this.gpuContext.device,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        forcesX: this.simBuffers.forcesX,
+        forcesY: this.simBuffers.forcesY,
+        nodeCount: this.state.nodeCount,
+        forceConfig: this.forceConfig,
+      };
+
+      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
+        this.gpuContext.device,
+        this.algorithmPipelines,
+        context,
+        this.algorithmBuffers,
       );
     }
 
@@ -636,13 +717,14 @@ export class HeroineGraph {
       parsed.edgeTargets,
     );
 
-    // Initialize uniforms
+    // Initialize uniforms with force config
     updateSimulationUniforms(
       device,
       this.simBuffers,
       parsed.nodeCount,
       parsed.edgeCount,
       1.0, // Initial alpha
+      this.forceConfig,
     );
 
     // Create simulation bind groups
@@ -671,6 +753,31 @@ export class HeroineGraph {
         this.simBuffers.positionsY,
         this.buffers.edgeIndices,
         this.buffers.edgeAttributes,
+      );
+    }
+
+    // Create algorithm-specific buffers and bind groups
+    if (this.currentAlgorithm && this.algorithmPipelines) {
+      this.algorithmBuffers = this.currentAlgorithm.createBuffers(
+        device,
+        parsed.nodeCount,
+      );
+
+      const context: AlgorithmRenderContext = {
+        device,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        forcesX: this.simBuffers.forcesX,
+        forcesY: this.simBuffers.forcesY,
+        nodeCount: parsed.nodeCount,
+        forceConfig: this.forceConfig,
+      };
+
+      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
+        device,
+        this.algorithmPipelines,
+        context,
+        this.algorithmBuffers,
       );
     }
   }
@@ -915,6 +1022,129 @@ export class HeroineGraph {
    */
   setSimulationAlpha(alpha: number): void {
     this.simulationController.setAlpha(alpha);
+  }
+
+  /**
+   * Set force configuration parameters.
+   * Updates take effect immediately on the running simulation.
+   *
+   * @param config - Partial force configuration to merge with current config
+   */
+  setForceConfig(config: Partial<FullForceConfig>): void {
+    this.forceConfig = validateForceConfig({
+      ...this.forceConfig,
+      ...config,
+    });
+
+    // Reheat simulation so changes take effect
+    const currentAlpha = this.simulationController.state.alpha;
+    if (currentAlpha < 0.3) {
+      this.simulationController.setAlpha(0.3);
+    }
+  }
+
+  /**
+   * Get current force configuration.
+   *
+   * @returns A copy of the current force configuration
+   */
+  getForceConfig(): FullForceConfig {
+    return { ...this.forceConfig };
+  }
+
+  /**
+   * Get information about available force algorithms.
+   *
+   * @returns Array of available algorithm info
+   */
+  getAvailableAlgorithms(): Array<{ id: string; name: string; description: string; complexity: string }> {
+    const registry = getAlgorithmRegistry();
+    return registry.listInfo().map((info) => ({
+      id: info.id,
+      name: info.name,
+      description: info.description,
+      complexity: info.complexity,
+    }));
+  }
+
+  /**
+   * Get the current force algorithm type.
+   *
+   * @returns Current algorithm ID or null if no algorithm set
+   */
+  getForceAlgorithm(): ForceAlgorithmType | null {
+    return this.currentAlgorithm?.info.id ?? null;
+  }
+
+  /**
+   * Set the force algorithm for repulsion calculations.
+   *
+   * Available algorithms:
+   * - "n2": Simple O(n²) all-pairs repulsion (< 10K nodes)
+   * - "barnes-hut": O(n log n) quadtree approximation (5K-100K nodes)
+   *
+   * @param type - Algorithm type to use
+   */
+  setForceAlgorithm(type: ForceAlgorithmType): void {
+    const registry = getAlgorithmRegistry();
+    const algorithm = registry.get(type);
+
+    if (!algorithm) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Unknown force algorithm: ${type}. Available: ${registry.listInfo().map((i) => i.id).join(", ")}`,
+      );
+    }
+
+    // Skip if already using this algorithm
+    if (this.currentAlgorithm?.info.id === type) {
+      return;
+    }
+
+    // Destroy old algorithm resources
+    this.algorithmBuffers?.destroy();
+    this.algorithmBuffers = null;
+    this.algorithmBindGroups = null;
+
+    // Set new algorithm and create pipelines
+    this.currentAlgorithm = algorithm;
+    this.algorithmPipelines = algorithm.createPipelines(this.gpuContext);
+
+    // Create buffers if graph is loaded
+    if (this.state.loaded && this.simBuffers) {
+      this.algorithmBuffers = algorithm.createBuffers(
+        this.gpuContext.device,
+        this.state.nodeCount,
+      );
+
+      // Create bind groups
+      const context: AlgorithmRenderContext = {
+        device: this.gpuContext.device,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        forcesX: this.simBuffers.forcesX,
+        forcesY: this.simBuffers.forcesY,
+        nodeCount: this.state.nodeCount,
+        forceConfig: this.forceConfig,
+      };
+
+      this.algorithmBindGroups = algorithm.createBindGroups(
+        this.gpuContext.device,
+        this.algorithmPipelines,
+        context,
+        this.algorithmBuffers,
+      );
+    }
+
+    // Reheat simulation
+    const currentAlpha = this.simulationController.state.alpha;
+    if (currentAlpha < 0.5) {
+      this.simulationController.setAlpha(0.5);
+    }
+
+    if (this.debug) {
+      console.log(`Force algorithm switched to: ${algorithm.info.name}`);
+    }
   }
 
   // ==========================================================================
@@ -1980,6 +2210,11 @@ export class HeroineGraph {
       this.simBuffers = null;
     }
     this.simBindGroups = null;
+
+    // Destroy algorithm-specific buffers
+    this.algorithmBuffers?.destroy();
+    this.algorithmBuffers = null;
+    this.algorithmBindGroups = null;
   }
 
   // ==========================================================================

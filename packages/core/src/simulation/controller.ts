@@ -83,10 +83,14 @@ export interface SimulationControllerConfig {
 
 /**
  * Default simulation configuration
+ *
+ * Note: alphaTarget defaults to 0.1 for continuous simulation mode.
+ * This keeps the simulation responsive to changes and dragging.
+ * Set to 0.0 if you want the simulation to fully stop after cooling down.
  */
 export const DEFAULT_SIMULATION_CONFIG: Required<SimulationControllerConfig> = {
   alpha: 1.0,
-  alphaTarget: 0.0,
+  alphaTarget: 0.1, // Non-zero for continuous simulation
   alphaMin: 0.001,
   alphaDecay: 0.0228, // ~300 iterations to cool down
   velocityDecay: 0.4,

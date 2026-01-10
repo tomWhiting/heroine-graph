@@ -764,9 +764,73 @@
           </div>
         </div>
 
-        <!-- Simulation section -->
+        <!-- Force Configuration section -->
         <div class="simulation-section">
-          <h3 class="section-title">Simulation</h3>
+          <h3 class="section-title">Force Configuration</h3>
+          <div class="simulation-grid">
+            <!-- Algorithm Selector -->
+            <div class="simulation-card" style="grid-column: span 2;">
+              <div class="control-row">
+                <span class="control-label">Algorithm</span>
+                <span class="control-value" id="force-algorithm-val">N²</span>
+              </div>
+              <select id="force-algorithm" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 13px;">
+                <option value="n2">N² (Direct) - up to 10K nodes</option>
+                <option value="force-atlas2">ForceAtlas2 - network visualization</option>
+                <option value="barnes-hut">Barnes-Hut - up to 100K nodes</option>
+              </select>
+            </div>
+
+            <!-- Repulsion -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Repulsion</span>
+                <span class="control-value" id="force-repulsion-val">30</span>
+              </div>
+              <input type="range" id="force-repulsion" min="1" max="1000" step="1" value="30">
+            </div>
+
+            <!-- Spring Strength -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Spring Strength</span>
+                <span class="control-value" id="force-spring-val">0.10</span>
+              </div>
+              <input type="range" id="force-spring" min="0.01" max="1" step="0.01" value="0.1">
+            </div>
+
+            <!-- Spring Length -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Link Distance</span>
+                <span class="control-value" id="force-distance-val">30</span>
+              </div>
+              <input type="range" id="force-distance" min="1" max="500" step="1" value="30">
+            </div>
+
+            <!-- Center Gravity -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Center Gravity</span>
+                <span class="control-value" id="force-center-val">0.01</span>
+              </div>
+              <input type="range" id="force-center" min="0" max="0.5" step="0.01" value="0.01">
+            </div>
+
+            <!-- Velocity Decay -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Damping</span>
+                <span class="control-value" id="force-damping-val">0.40</span>
+              </div>
+              <input type="range" id="force-damping" min="0.1" max="0.9" step="0.05" value="0.4">
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulation Controls section -->
+        <div class="simulation-section">
+          <h3 class="section-title">Simulation Controls</h3>
           <div class="sim-buttons">
             <button class="sim-btn" id="sim-stop">Stop</button>
             <button class="sim-btn" id="sim-start">Start</button>

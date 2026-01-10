@@ -268,6 +268,64 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * Add nodes to the existing graph (instead of replacing)
+   */
+  async function addNodes(count: number): Promise<void> {
+    if (!state.graph) return;
+
+    // Generate new graph data
+    const newData = generateRandomGraph(count);
+
+    // If no existing graph, just load it
+    if (!state.graphData || state.graphData.nodes.length === 0) {
+      await loadNodes(count);
+      return;
+    }
+
+    // Merge with existing data
+    const existingNodeCount = state.graphData.nodes.length;
+
+    // Remap new node IDs to avoid collisions
+    const remappedNodes = newData.nodes.map((node, i) => ({
+      ...node,
+      id: `n${existingNodeCount + i}`,
+      metadata: {
+        ...node.metadata as Record<string, unknown>,
+        label: `Node ${existingNodeCount + i}`,
+      },
+    }));
+
+    const remappedEdges = newData.edges.map((edge) => ({
+      ...edge,
+      source: `n${existingNodeCount + parseInt(String(edge.source).slice(1), 10)}`,
+      target: `n${existingNodeCount + parseInt(String(edge.target).slice(1), 10)}`,
+    }));
+
+    // Combine existing and new data
+    const mergedData: GraphInput = {
+      nodes: [...state.graphData.nodes, ...remappedNodes],
+      edges: [...state.graphData.edges, ...remappedEdges],
+    };
+
+    await state.graph.load(mergedData);
+
+    state.graphData = mergedData;
+    state.nodeCount = mergedData.nodes.length;
+    state.edgeCount = mergedData.edges.length;
+
+    $("stat-nodes").textContent = formatNumber(state.nodeCount);
+    $("stat-edges").textContent = formatNumber(state.edgeCount);
+
+    // Update labels if enabled
+    if ($input("labels-enabled").checked) {
+      updateLabels();
+    }
+
+    // Reheat simulation to integrate new nodes
+    state.graph.restartSimulation();
+  }
+
   // Helper to update labels from current graph data
   function updateLabels(): void {
     if (!state.graph || !state.graphData) return;
@@ -283,11 +341,11 @@ async function main(): Promise<void> {
     state.graph.setLabels(labels);
   }
 
-  // Add node button handlers
+  // Add node button handlers - ADD nodes to existing graph
   document.querySelectorAll(".node-btn[data-count]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const count = parseInt((btn as HTMLElement).dataset.count || "100", 10);
-      loadNodes(count);
+      addNodes(count);
     });
   });
 
@@ -508,6 +566,64 @@ async function main(): Promise<void> {
     "labels-max",
     "labels-max-val",
     (v) => $input("labels-enabled").checked && state.graph?.setLabelsConfig({ maxLabels: v }),
+  );
+
+  // ========================================================================
+  // Force Configuration
+  // ========================================================================
+
+  // Algorithm selector
+  const algorithmSelect = $("force-algorithm") as HTMLSelectElement;
+  const algorithmVal = $("force-algorithm-val");
+  algorithmSelect.addEventListener("change", () => {
+    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2";
+    try {
+      state.graph?.setForceAlgorithm(type);
+      const algorithms = state.graph?.getAvailableAlgorithms() ?? [];
+      const selected = algorithms.find((a) => a.id === type);
+      algorithmVal.textContent = selected?.name ?? type;
+      console.log(`Switched to algorithm: ${selected?.name ?? type}`);
+    } catch (e) {
+      console.error("Failed to set algorithm:", e);
+    }
+  });
+
+  // Repulsion strength
+  setupSlider(
+    "force-repulsion",
+    "force-repulsion-val",
+    (v) => state.graph?.setForceConfig({ repulsionStrength: -v }),
+  );
+
+  // Spring strength
+  setupSlider(
+    "force-spring",
+    "force-spring-val",
+    (v) => state.graph?.setForceConfig({ springStrength: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Link distance (spring length)
+  setupSlider(
+    "force-distance",
+    "force-distance-val",
+    (v) => state.graph?.setForceConfig({ springLength: v }),
+  );
+
+  // Center gravity
+  setupSlider(
+    "force-center",
+    "force-center-val",
+    (v) => state.graph?.setForceConfig({ centerStrength: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Velocity decay (damping)
+  setupSlider(
+    "force-damping",
+    "force-damping-val",
+    (v) => state.graph?.setForceConfig({ velocityDecay: v }),
+    (v) => v.toFixed(2),
   );
 
   // ========================================================================

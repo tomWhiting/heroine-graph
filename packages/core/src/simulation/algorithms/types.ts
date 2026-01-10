@@ -1,0 +1,165 @@
+/**
+ * Force Algorithm Type Definitions
+ *
+ * Defines the interface for pluggable force algorithms.
+ *
+ * @module
+ */
+
+import type { GPUContext } from "../../webgpu/context.ts";
+import type { FullForceConfig } from "../config.ts";
+
+/**
+ * Available force algorithm types
+ */
+export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density";
+
+/**
+ * Algorithm metadata for display
+ */
+export interface ForceAlgorithmInfo {
+  /** Unique identifier */
+  readonly id: ForceAlgorithmType;
+  /** Display name */
+  readonly name: string;
+  /** Description of the algorithm */
+  readonly description: string;
+  /** Minimum recommended node count */
+  readonly minNodes: number;
+  /** Maximum recommended node count (-1 for unlimited) */
+  readonly maxNodes: number;
+  /** Time complexity description */
+  readonly complexity: string;
+}
+
+/**
+ * Buffers specific to an algorithm (beyond the standard simulation buffers)
+ */
+export interface AlgorithmBuffers {
+  /** Dispose of all algorithm-specific buffers */
+  destroy(): void;
+}
+
+/**
+ * Empty algorithm buffers for algorithms that don't need extra buffers
+ */
+export class EmptyAlgorithmBuffers implements AlgorithmBuffers {
+  destroy(): void {
+    // No buffers to destroy
+  }
+}
+
+/**
+ * Bind groups for algorithm-specific compute passes
+ */
+export interface AlgorithmBindGroups {
+  /** Repulsion pass bind group */
+  repulsion: GPUBindGroup;
+}
+
+/**
+ * Pipelines for algorithm-specific compute passes
+ */
+export interface AlgorithmPipelines {
+  /** Repulsion compute pipeline */
+  repulsion: GPUComputePipeline;
+}
+
+/**
+ * Context passed to algorithm for rendering
+ */
+export interface AlgorithmRenderContext {
+  /** GPU device */
+  device: GPUDevice;
+  /** Position buffers (X coordinates) */
+  positionsX: GPUBuffer;
+  /** Position buffers (Y coordinates) */
+  positionsY: GPUBuffer;
+  /** Force accumulator buffers (X) */
+  forcesX: GPUBuffer;
+  /** Force accumulator buffers (Y) */
+  forcesY: GPUBuffer;
+  /** Number of nodes */
+  nodeCount: number;
+  /** Current force configuration */
+  forceConfig: FullForceConfig;
+  /** Viewport bounds (for spatial algorithms) */
+  bounds?: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  };
+}
+
+/**
+ * Force algorithm interface
+ *
+ * Algorithms implement this interface to provide custom repulsion force calculations.
+ * The standard spring forces and integration are handled by the main pipeline.
+ */
+export interface ForceAlgorithm {
+  /** Algorithm info */
+  readonly info: ForceAlgorithmInfo;
+
+  /**
+   * Create GPU pipelines for this algorithm
+   *
+   * @param context - GPU context
+   * @returns Algorithm-specific pipelines
+   */
+  createPipelines(context: GPUContext): AlgorithmPipelines;
+
+  /**
+   * Create algorithm-specific buffers
+   *
+   * @param device - GPU device
+   * @param maxNodes - Maximum number of nodes to support
+   * @returns Algorithm-specific buffers
+   */
+  createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers;
+
+  /**
+   * Create bind groups for the repulsion pass
+   *
+   * @param device - GPU device
+   * @param pipelines - Algorithm pipelines
+   * @param context - Render context with buffers
+   * @param algorithmBuffers - Algorithm-specific buffers
+   * @returns Bind groups
+   */
+  createBindGroups(
+    device: GPUDevice,
+    pipelines: AlgorithmPipelines,
+    context: AlgorithmRenderContext,
+    algorithmBuffers: AlgorithmBuffers,
+  ): AlgorithmBindGroups;
+
+  /**
+   * Update algorithm-specific uniform buffers
+   *
+   * @param device - GPU device
+   * @param algorithmBuffers - Algorithm-specific buffers
+   * @param context - Render context
+   */
+  updateUniforms(
+    device: GPUDevice,
+    algorithmBuffers: AlgorithmBuffers,
+    context: AlgorithmRenderContext,
+  ): void;
+
+  /**
+   * Record the repulsion compute pass
+   *
+   * @param encoder - Command encoder
+   * @param pipelines - Algorithm pipelines
+   * @param bindGroups - Algorithm bind groups
+   * @param nodeCount - Number of nodes
+   */
+  recordRepulsionPass(
+    encoder: GPUCommandEncoder,
+    pipelines: AlgorithmPipelines,
+    bindGroups: AlgorithmBindGroups,
+    nodeCount: number,
+  ): void;
+}

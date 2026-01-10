@@ -13,6 +13,7 @@
 import type { GPUContext } from "../webgpu/context.ts";
 import { calculateWorkgroups } from "../renderer/commands.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
+import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
 
 // Import shader sources (bundled as text by esbuild)
 import CLEAR_FORCES_WGSL from "./shaders/clear_forces.comp.wgsl";
@@ -195,6 +196,71 @@ export function recordSimulationStep(
   repulsionPass.setBindGroup(0, bindGroups.repulsion);
   repulsionPass.dispatchWorkgroups(nodeWorkgroups);
   repulsionPass.end();
+
+  // Stage 3: Compute spring forces
+  if (edgeCount > 0) {
+    const springsPass = encoder.beginComputePass({ label: "Springs" });
+    springsPass.setPipeline(pipeline.pipelines.springs);
+    springsPass.setBindGroup(0, bindGroups.springs);
+    springsPass.dispatchWorkgroups(edgeWorkgroups);
+    springsPass.end();
+  }
+
+  // Stage 4: Integration
+  const integratePass = encoder.beginComputePass({ label: "Integration" });
+  integratePass.setPipeline(pipeline.pipelines.integrate);
+  integratePass.setBindGroup(0, bindGroups.integration);
+  integratePass.dispatchWorkgroups(nodeWorkgroups);
+  integratePass.end();
+}
+
+/**
+ * Options for recording simulation step with custom algorithm
+ */
+export interface RecordSimulationOptions {
+  /** Custom repulsion pass recorder (replaces default N² repulsion) */
+  recordRepulsionPass?: ((encoder: GPUCommandEncoder) => void) | undefined;
+}
+
+/**
+ * Records a simulation step with optional custom algorithm for repulsion
+ *
+ * @param encoder - Command encoder
+ * @param pipeline - Simulation pipeline
+ * @param bindGroups - Pre-created bind groups for each stage
+ * @param nodeCount - Number of nodes
+ * @param edgeCount - Number of edges
+ * @param options - Optional configuration including custom repulsion
+ */
+export function recordSimulationStepWithOptions(
+  encoder: GPUCommandEncoder,
+  pipeline: SimulationPipeline,
+  bindGroups: SimulationBindGroups,
+  nodeCount: number,
+  edgeCount: number,
+  options: RecordSimulationOptions = {},
+): void {
+  const workgroupSize = pipeline.config.workgroupSize;
+  const nodeWorkgroups = calculateWorkgroups(nodeCount, workgroupSize);
+  const edgeWorkgroups = calculateWorkgroups(edgeCount, workgroupSize);
+
+  // Stage 1: Clear forces
+  const clearPass = encoder.beginComputePass({ label: "Clear Forces" });
+  clearPass.setPipeline(pipeline.pipelines.clearForces);
+  clearPass.setBindGroup(0, bindGroups.clearForces);
+  clearPass.dispatchWorkgroups(nodeWorkgroups);
+  clearPass.end();
+
+  // Stage 2: Compute repulsion forces (custom algorithm or default N²)
+  if (options.recordRepulsionPass) {
+    options.recordRepulsionPass(encoder);
+  } else {
+    const repulsionPass = encoder.beginComputePass({ label: "N^2 Repulsion" });
+    repulsionPass.setPipeline(pipeline.pipelines.repulsion);
+    repulsionPass.setBindGroup(0, bindGroups.repulsion);
+    repulsionPass.dispatchWorkgroups(nodeWorkgroups);
+    repulsionPass.end();
+  }
 
   // Stage 3: Compute spring forces
   if (edgeCount > 0) {
@@ -438,6 +504,13 @@ export function createSimulationBuffers(
 
 /**
  * Update simulation uniform buffers
+ *
+ * @param device - GPU device
+ * @param buffers - Simulation buffers
+ * @param nodeCount - Number of nodes
+ * @param edgeCount - Number of edges
+ * @param alpha - Simulation temperature (0-1)
+ * @param forceConfig - Force configuration (optional, uses defaults if not provided)
  */
 export function updateSimulationUniforms(
   device: GPUDevice,
@@ -445,6 +518,7 @@ export function updateSimulationUniforms(
   nodeCount: number,
   edgeCount: number,
   alpha: number,
+  forceConfig: FullForceConfig = DEFAULT_FORCE_CONFIG,
 ): void {
   // ClearUniforms: { node_count: u32 }
   const clearData = new ArrayBuffer(16);
@@ -453,11 +527,12 @@ export function updateSimulationUniforms(
   device.queue.writeBuffer(buffers.clearUniforms, 0, clearData);
 
   // RepulsionUniforms: { node_count, repulsion_strength, min_distance, _padding }
+  // Note: repulsionStrength is negative in config (d3 convention), shader uses positive
   const repulsionData = new ArrayBuffer(16);
   const repulsionView = new DataView(repulsionData);
   repulsionView.setUint32(0, nodeCount, true);
-  repulsionView.setFloat32(4, 500.0, true); // repulsion_strength
-  repulsionView.setFloat32(8, 1.0, true); // min_distance
+  repulsionView.setFloat32(4, Math.abs(forceConfig.repulsionStrength), true);
+  repulsionView.setFloat32(8, forceConfig.repulsionDistanceMin, true);
   repulsionView.setUint32(12, 0, true); // padding
   device.queue.writeBuffer(buffers.repulsionUniforms, 0, repulsionData);
 
@@ -465,18 +540,20 @@ export function updateSimulationUniforms(
   const springData = new ArrayBuffer(16);
   const springView = new DataView(springData);
   springView.setUint32(0, edgeCount, true);
-  springView.setFloat32(4, 0.01, true); // spring_strength
-  springView.setFloat32(8, 30.0, true); // rest_length
+  springView.setFloat32(4, forceConfig.springStrength, true);
+  springView.setFloat32(8, forceConfig.springLength, true);
   springView.setUint32(12, 0, true); // padding
   device.queue.writeBuffer(buffers.springUniforms, 0, springData);
 
   // IntegrationUniforms: { node_count, dt, damping, alpha }
+  // Note: velocityDecay is the fraction lost per frame, damping is fraction retained
+  // damping = 1 - velocityDecay
   const intData = new ArrayBuffer(16);
   const intView = new DataView(intData);
   intView.setUint32(0, nodeCount, true);
-  intView.setFloat32(4, 1.0, true); // dt
-  intView.setFloat32(8, 0.9, true); // damping
-  intView.setFloat32(12, alpha, true); // alpha
+  intView.setFloat32(4, forceConfig.timeStep, true);
+  intView.setFloat32(8, 1 - forceConfig.velocityDecay, true);
+  intView.setFloat32(12, alpha, true);
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
 }
 

@@ -30,10 +30,11 @@ const WORKGROUP_SIZE: u32 = 256u;
 
 var<workgroup> local_histogram: array<atomic<u32>, 16>;
 var<workgroup> local_prefix: array<u32, 16>;
+var<workgroup> bucket_offsets: array<atomic<u32>, 16>;
 
-// Extract 4-bit digit at given pass
-fn get_digit(key: u32, pass: u32) -> u32 {
-    let shift = pass * RADIX_BITS;
+// Extract 4-bit digit at given radix pass
+fn get_digit(key: u32, pass_idx: u32) -> u32 {
+    let shift = pass_idx * RADIX_BITS;
     return (key >> shift) & 0xFu;
 }
 
@@ -43,22 +44,23 @@ fn histogram_count(@builtin(global_invocation_id) global_id: vec3<u32>,
                    @builtin(local_invocation_id) local_id: vec3<u32>,
                    @builtin(workgroup_id) group_id: vec3<u32>) {
     let idx = global_id.x;
+    let is_valid = idx < uniforms.node_count;
 
-    // Initialize local histogram
+    // Initialize local histogram - all threads participate
     if (local_id.x < RADIX_SIZE) {
         atomicStore(&local_histogram[local_id.x], 0u);
     }
     workgroupBarrier();
 
-    // Count digits in this workgroup
-    if (idx < uniforms.node_count) {
+    // Count digits in this workgroup - only valid threads contribute
+    if (is_valid) {
         let key = keys_in[idx];
         let digit = get_digit(key, uniforms.pass_number);
         atomicAdd(&local_histogram[digit], 1u);
     }
     workgroupBarrier();
 
-    // Add local histogram to global histogram
+    // Add local histogram to global histogram - all threads participate in sync
     if (local_id.x < RADIX_SIZE) {
         let count = atomicLoad(&local_histogram[local_id.x]);
         if (count > 0u) {
@@ -77,67 +79,83 @@ fn scatter(@builtin(global_invocation_id) global_id: vec3<u32>,
            @builtin(local_invocation_id) local_id: vec3<u32>,
            @builtin(workgroup_id) group_id: vec3<u32>) {
     let idx = global_id.x;
+    let is_valid = idx < uniforms.node_count;
 
-    // Load prefix sums for this workgroup's buckets
+    // Load prefix sums for this workgroup's buckets - all threads participate
     if (local_id.x < RADIX_SIZE) {
         let global_bucket = group_id.x * RADIX_SIZE + local_id.x;
         local_prefix[local_id.x] = prefix_sums[global_bucket];
     }
     workgroupBarrier();
 
-    if (idx >= uniforms.node_count) {
-        return;
-    }
-
-    let key = keys_in[idx];
-    let value = values_in[idx];
-    let digit = get_digit(key, uniforms.pass_number);
-
-    // Compute position within bucket
-    // This requires counting how many elements with same digit came before
-    // in this workgroup (simplified - full implementation needs local scan)
-    let base_pos = local_prefix[digit];
-
-    // Atomic increment to get unique position
-    // Note: This is a simplified version. Full parallel radix sort uses
-    // more sophisticated techniques to avoid atomic contention.
-    var<workgroup> bucket_offsets: array<atomic<u32>, 16>;
+    // Initialize bucket offsets - all threads participate
     if (local_id.x < RADIX_SIZE) {
         atomicStore(&bucket_offsets[local_id.x], 0u);
     }
     workgroupBarrier();
 
-    let local_offset = atomicAdd(&bucket_offsets[digit], 1u);
-    let output_pos = base_pos + local_offset;
+    // Load data for valid threads
+    var key = 0u;
+    var value = 0u;
+    var digit = 0u;
+    if (is_valid) {
+        key = keys_in[idx];
+        value = values_in[idx];
+        digit = get_digit(key, uniforms.pass_number);
+    }
 
-    // Write to output
-    if (output_pos < uniforms.node_count) {
+    // Compute position within bucket using atomic increment
+    // All threads compute, but only valid ones will write
+    var output_pos = 0u;
+    if (is_valid) {
+        let base_pos = local_prefix[digit];
+        let local_offset = atomicAdd(&bucket_offsets[digit], 1u);
+        output_pos = base_pos + local_offset;
+    }
+
+    // Write to output - only valid threads with valid positions
+    if (is_valid && output_pos < uniforms.node_count) {
         keys_out[output_pos] = key;
         values_out[output_pos] = value;
     }
 }
 
-// Simple single-pass sort for small arrays (fallback)
+// Simple counting sort for small arrays or single-pass fallback
+// Each thread computes its sorted position by counting smaller keys
+// O(n²) but GPU-parallel and works correctly with WGSL uniform control flow
 @compute @workgroup_size(256)
 fn simple_sort(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
+    let is_valid = idx < uniforms.node_count;
 
-    if (idx >= uniforms.node_count) {
-        return;
+    // Touch histogram and prefix_sums to ensure they're included in bind group layout
+    // (needed because we share the same bind group as histogram_count/scatter)
+    _ = atomicLoad(&histogram[0]);
+    _ = prefix_sums[0];
+
+    // Load key and value (use 0 for out-of-bounds threads)
+    var key = 0u;
+    var value = 0u;
+    if (is_valid) {
+        key = keys_in[idx];
+        value = values_in[idx];
     }
-
-    let key = keys_in[idx];
-    let value = values_in[idx];
 
     // Count how many keys are smaller (gives sorted position)
     var pos = 0u;
-    for (var i = 0u; i < uniforms.node_count; i++) {
-        let other_key = keys_in[i];
-        if (other_key < key || (other_key == key && i < idx)) {
-            pos++;
+    if (is_valid) {
+        for (var i = 0u; i < uniforms.node_count; i++) {
+            let other_key = keys_in[i];
+            // Sort stable: use index as tiebreaker
+            if (other_key < key || (other_key == key && i < idx)) {
+                pos++;
+            }
         }
     }
 
-    keys_out[pos] = key;
-    values_out[pos] = value;
+    // Write to sorted position
+    if (is_valid) {
+        keys_out[pos] = key;
+        values_out[pos] = value;
+    }
 }
