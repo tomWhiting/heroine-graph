@@ -1266,6 +1266,27 @@ export class HeroineGraph {
   }
 
   /**
+   * Set a custom heatmap color scale from color stops.
+   *
+   * @param stops - Array of color stops, each with position (0-1) and color (RGBA 0-1)
+   *
+   * @example
+   * ```typescript
+   * graph.setCustomHeatmapColorScale([
+   *   { position: 0, color: [0, 0, 0, 1] },      // Black at low density
+   *   { position: 0.5, color: [1, 0.4, 0, 1] },  // Orange at mid density
+   *   { position: 1, color: [1, 1, 0, 1] },      // Yellow at high density
+   * ]);
+   * ```
+   */
+  setCustomHeatmapColorScale(stops: Array<{ position: number; color: [number, number, number, number] }>): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (layer) {
+      layer.setCustomColorScale(stops);
+    }
+  }
+
+  /**
    * Set heatmap data source.
    *
    * @param source - 'density' for uniform intensity (all nodes contribute equally),

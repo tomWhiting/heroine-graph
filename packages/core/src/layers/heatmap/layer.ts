@@ -11,12 +11,12 @@
 import type { GPUContext } from "../../webgpu/context.ts";
 import type { HeatmapConfig } from "./config.ts";
 import type { DensityTexture } from "./texture.ts";
-import type { ColorScaleName, ColorScaleTexture } from "./colorscale.ts";
+import type { ColorScaleName, ColorScaleTexture, ColorStop } from "./colorscale.ts";
 import type { HeatmapPipeline } from "./pipeline.ts";
 
 import { mergeHeatmapConfig } from "./config.ts";
 import { clearDensityTexture, createDensityTexture } from "./texture.ts";
-import { createColorScaleTexture } from "./colorscale.ts";
+import { createColorScaleTexture, createCustomColorScaleTexture } from "./colorscale.ts";
 import { createHeatmapPipeline } from "./pipeline.ts";
 
 /**
@@ -170,6 +170,18 @@ export class HeatmapLayer implements Layer {
     this.scheduleDestruction(this.colorScale);
     this.colorScale = createColorScaleTexture(this.context, name);
     this.config.colorScale = name;
+    this.bindGroupsDirty = true;
+  }
+
+  /**
+   * Set a custom color scale from color stops
+   * @param stops - Array of color stops with position (0-1) and color (RGBA 0-1)
+   */
+  setCustomColorScale(stops: ColorStop[]): void {
+    // Defer destruction of old texture to avoid GPU race condition
+    this.scheduleDestruction(this.colorScale);
+    this.colorScale = createCustomColorScaleTexture(this.context, stops, 256, "custom");
+    this.config.colorScale = "custom" as ColorScaleName;
     this.bindGroupsDirty = true;
   }
 

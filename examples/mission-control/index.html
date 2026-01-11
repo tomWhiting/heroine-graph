@@ -345,6 +345,32 @@
         color: var(--text);
       }
 
+      /* Color gradient inputs */
+      .color-gradient-inputs {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .color-gradient-inputs input[type="color"] {
+        width: 32px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+        background: transparent;
+      }
+
+      .color-gradient-inputs input[type="color"]::-webkit-color-swatch-wrapper {
+        padding: 2px;
+      }
+
+      .color-gradient-inputs input[type="color"]::-webkit-color-swatch {
+        border-radius: 2px;
+        border: none;
+      }
+
       /* Range slider */
       input[type="range"] {
         width: 100%;
@@ -638,7 +664,18 @@
                 <option value="blues">Blues</option>
                 <option value="reds">Reds</option>
                 <option value="greens">Greens</option>
+                <option value="custom">Custom...</option>
               </select>
+            </div>
+            <div class="control-row custom-colors" id="heatmap-custom-colors" style="display: none;">
+              <div class="control-label">
+                <span>Custom Gradient</span>
+              </div>
+              <div class="color-gradient-inputs">
+                <input type="color" id="heatmap-color-start" value="#000000" title="Low">
+                <input type="color" id="heatmap-color-mid" value="#ff6600" title="Mid">
+                <input type="color" id="heatmap-color-end" value="#ffff00" title="High">
+              </div>
             </div>
             <div class="control-row">
               <div class="control-label">

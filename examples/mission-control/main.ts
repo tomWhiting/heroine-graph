@@ -843,11 +843,51 @@ async function main(): Promise<void> {
   });
 
   $select("heatmap-colorscale").addEventListener("change", (e) => {
-    if (!$input("heatmap-enabled").checked) return;
-    state.graph?.setHeatmapConfig({
-      colorScale: (e.target as HTMLSelectElement).value as any,
-    });
+    const value = (e.target as HTMLSelectElement).value;
+    const customColorsRow = $("heatmap-custom-colors");
+
+    // Show/hide custom colors row
+    if (value === "custom") {
+      customColorsRow.style.display = "";
+      // Apply custom colors immediately
+      applyCustomHeatmapColors();
+    } else {
+      customColorsRow.style.display = "none";
+      if ($input("heatmap-enabled").checked) {
+        state.graph?.setHeatmapConfig({
+          colorScale: value as any,
+        });
+      }
+    }
   });
+
+  // Custom color inputs
+  function applyCustomHeatmapColors(): void {
+    if (!state.graph || !$input("heatmap-enabled").checked) return;
+
+    // Helper to convert hex to RGBA (0-1)
+    const hexToRgba = (hex: string): [number, number, number, number] => {
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      return [r, g, b, 1.0];
+    };
+
+    const startColor = hexToRgba($input("heatmap-color-start").value);
+    const midColor = hexToRgba($input("heatmap-color-mid").value);
+    const endColor = hexToRgba($input("heatmap-color-end").value);
+
+    state.graph.setCustomHeatmapColorScale([
+      { position: 0, color: startColor },
+      { position: 0.5, color: midColor },
+      { position: 1, color: endColor },
+    ]);
+    console.log("Applied custom heatmap colors");
+  }
+
+  $input("heatmap-color-start").addEventListener("input", applyCustomHeatmapColors);
+  $input("heatmap-color-mid").addEventListener("input", applyCustomHeatmapColors);
+  $input("heatmap-color-end").addEventListener("input", applyCustomHeatmapColors);
 
   // Heatmap data source (stream → heatmap binding)
   // This is now INDEPENDENT - it auto-creates streams when needed
