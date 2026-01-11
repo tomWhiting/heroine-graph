@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a comprehensive visualization enhancement system for heroine-graph that adds configurable diagnostic channels for data-driven heat visualization, a multi-layer rendering system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and overrides, dual-layer PWM edge flow animation matching Cosmograph, curved edges using conic Bezier curves, node border configuration, per-item styling API via Float32Arrays, and layer visibility toggles.
+Build a comprehensive visualization enhancement system for heroine-graph that adds configurable value streams for data-driven heat visualization (streams feed layers like heatmap/contours/metaballs - no library-side aggregation), a multi-layer rendering system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and overrides, dual-layer PWM edge flow animation matching Cosmograph, curved edges using conic Bezier curves, node border configuration, per-item styling API via Float32Arrays, and layer visibility toggles.
 
 ## Technical Context
 
@@ -81,9 +81,14 @@ packages/core/
 │   │       └── contour.wgsl        # NEW: Marching squares shader
 │   ├── layers/
 │   │   ├── mod.ts                  # Layer system exports
-│   │   ├── layer_manager.ts        # NEW: Multi-layer rendering coordinator
-│   │   ├── visualization_layer.ts  # NEW: Layer definition and filtering
-│   │   └── diagnostic_channel.ts   # NEW: Data channel with aggregation
+│   │   ├── layer_manager.ts        # Multi-layer rendering coordinator
+│   │   ├── visualization_layer.ts  # Layer definition and filtering
+│   │   └── heatmap/                # Existing heatmap (extend with stream data source)
+│   ├── streams/
+│   │   ├── mod.ts                  # Stream system exports
+│   │   ├── types.ts                # ValueStreamConfig, ColorStop, BlendMode
+│   │   ├── value_stream.ts         # Single stream: stores node→value mappings
+│   │   └── stream_manager.ts       # Manages multiple streams, blending
 │   └── styling/
 │       ├── mod.ts                  # NEW: Styling system exports
 │       ├── type_styles.ts          # NEW: Type-based style resolution
@@ -96,7 +101,8 @@ packages/core/
 
 tests/
 └── visualization/
-    ├── diagnostic_channel.test.ts  # NEW: Channel aggregation tests
+    ├── value_stream.test.ts        # NEW: Stream data storage tests (no aggregation)
+    ├── stream_to_layer.test.ts     # NEW: Stream → layer binding tests
     ├── layer_system.test.ts        # NEW: Layer filtering tests
     ├── type_styling.test.ts        # NEW: Style precedence tests
     └── contour.test.ts             # NEW: Marching squares tests
@@ -162,18 +168,19 @@ fn conicParametricCurve(A: vec2f, B: vec2f, CP: vec2f, t: f32, w: f32) -> vec2f 
 - Validation: array length must match node/edge count × values per item
 - Fallback: NaN or undefined values use global defaults
 
-### R4: Diagnostic Channel Aggregation
+### R4: Value Stream System (No Aggregation)
 
-**Decision**: Support sum, max, avg, min aggregation modes with hierarchical propagation
+**Decision**: Value streams are a "dumb pipe" - store node-to-value mappings that visualization layers consume. NO library-side aggregation.
 
-**Rationale**: Different use cases need different aggregation. Error counts should sum; severity should max.
+**Rationale**: Per spec clarification (Session 2026-01-12): "Library is a 'dumb pipe': values in → colors out → blend → render." User computes aggregates in their application code.
 
 **Key Implementation Details**:
-- Channel definition: `{ id, color/colorScale, aggregation, blendMode }`
-- Data push: `setChannelData(channelId, [{nodeId, value}])`
-- Aggregation runs automatically when parent relationships are defined
-- Cycle detection: if cycle found, use direct value only (no infinite loop)
-- Multiple channels blend via configurable blend modes (additive, multiply, overlay)
+- Stream definition: `{ id, colorScale: { domain, stops }, blendMode, opacity }`
+- Data push: `setStreamValues(streamId, [{nodeIndex, value}])` - pre-computed values only
+- Streams feed INTO layers (heatmap, contours, metaballs) as data sources
+- Layer renders heat/intensity at node positions based on stream values
+- Multiple streams blend via configurable blend modes (additive, multiply, max, replace)
+- NO hierarchical propagation - user handles folder/parent aggregation externally
 
 ### R5: Marching Squares for Contours
 
@@ -216,10 +223,11 @@ See [contracts/](./contracts/) directory for TypeScript interfaces.
 
 1. **HeroineGraph API** (`api/graph.ts`):
    - Add `setNodeColors()`, `setNodeSizes()`, `setEdgeColors()`, `setEdgeWidths()`, `setEdgeCurvatures()`
-   - Add `defineChannel()`, `setChannelData()`, `removeChannel()`
+   - Add `defineValueStream()`, `setStreamValues()`, `removeValueStream()` (no aggregation)
    - Add `defineLayer()`, `setLayerVisible()`, `getLayerVisibility()`, `removeLayer()`
    - Add `setNodeTypeStyles()`, `setEdgeTypeStyles()`
    - Add `setNodeBorder()` configuration
+   - Layers can bind to streams: `setHeatmapDataSource(streamId)`, `setContourDataSource(streamId)`
 
 2. **Render Loop** (`renderer/render_loop.ts`):
    - Layer-aware rendering: iterate layers in zOrder
@@ -229,8 +237,9 @@ See [contracts/](./contracts/) directory for TypeScript interfaces.
 3. **GPU Buffers**:
    - New: `nodeColorBuffer`, `nodeSizeBuffer` (per-item styling)
    - New: `edgeColorBuffer`, `edgeWidthBuffer`, `edgeCurvatureBuffer`
-   - New: `channelDataBuffer` (diagnostic values)
    - Existing: extend uniform buffers for flow animation
+   - Streams: CPU-side storage (node-to-value maps), converted to density when layers render
+   - Layers (heatmap/contour): generate their own GPU textures from stream data + node positions
 
 ## Implementation Phases
 
@@ -246,11 +255,12 @@ See [contracts/](./contracts/) directory for TypeScript interfaces.
 - Create style resolver with precedence logic
 - Build Float32Arrays from type mappings automatically
 
-### Phase 3: Diagnostic Channel System (P1)
-- Implement `defineChannel()`, `setChannelData()` API
-- Implement aggregation logic (sum, max, avg, min)
-- Implement hierarchical propagation with cycle detection
-- Implement multi-channel blending
+### Phase 3: Value Stream System (P1)
+- Implement `defineValueStream()`, `setStreamValues()` API
+- ValueStream class stores node-to-value mappings (no aggregation)
+- StreamManager handles multiple streams with blending
+- Connect streams to layers (heatmap, contours, metaballs) as data sources
+- Layers render heat/intensity at node positions based on stream values
 
 ### Phase 4: Dual-Layer PWM Edge Flow (P2)
 - Enhance edge fragment shader with full Cosmograph PWM

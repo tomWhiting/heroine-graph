@@ -30,6 +30,8 @@ struct HeatmapUniforms {
 
 @group(1) @binding(0) var<storage, read> positions_x: array<f32>;
 @group(1) @binding(1) var<storage, read> positions_y: array<f32>;
+// Per-node intensity values from value stream (optional - defaults to 1.0 for all nodes)
+@group(1) @binding(2) var<storage, read> node_intensities: array<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -102,10 +104,18 @@ fn vs_main(
 
     let final_pos = center_clip + offset_clip;
 
+    // Get per-node intensity from stream data
+    // When using default buffer (single 1.0), all nodes safely read index 0
+    // When using stream data, each node gets its own intensity value
+    let buffer_len = arrayLength(&node_intensities);
+    let intensity_index = select(0u, instance_index, buffer_len > 1u);
+    let node_intensity = node_intensities[intensity_index];
+
     var output: VertexOutput;
     output.position = vec4<f32>(final_pos, 0.0, 1.0);
     output.uv = uv;
-    output.intensity = heatmap.intensity;
+    // Final intensity = per-node value × global multiplier
+    output.intensity = node_intensity * heatmap.intensity;
 
     return output;
 }

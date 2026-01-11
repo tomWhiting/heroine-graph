@@ -87,48 +87,54 @@
 
 ---
 
-## Phase 4: User Story 2 - Diagnostic Channel System (Priority: P1) 🎯 MVP
+## Phase 4: User Story 2 - Value Stream System (Priority: P1) 🎯 MVP
 
-**Goal**: Enable defining custom diagnostic channels with aggregation for heat visualization
+**Goal**: Enable defining value streams that feed data to visualization layers (heatmap, contours, metaballs)
 
-**Independent Test**: Define channel, push data for specific nodes, verify visual heat corresponds to data values
+**Independent Test**: Define stream, push data for specific nodes, configure heatmap layer to use stream, verify heat intensity at node positions corresponds to stream values
+
+**Key Concept**: Value streams are a "dumb pipe" - they store node-to-value mappings that layers consume. NO aggregation is performed by the library (user computes any aggregates in their application code). The stream values drive heat intensity at node positions in the heatmap/contour/metaball layers.
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Create `DiagnosticChannel` class in `packages/core/src/layers/diagnostic_channel.ts`
-  - Properties: id, name, color, colorScale, aggregation, blendMode, enabled
-  - Methods: `setData()`, `getAggregatedValue()`, `clear()`
-- [ ] T020 [US2] Implement aggregation logic in `packages/core/src/layers/diagnostic_channel.ts`
-  - Support 'sum', 'max', 'avg', 'min' aggregation modes
-  - Hierarchical propagation using parent relationships
-  - Cycle detection: log warning, use direct value only
-- [ ] T021 [US2] Create `ChannelManager` class in `packages/core/src/layers/channel_manager.ts`
-  - Store multiple channels by ID
-  - Methods: `defineChannel()`, `setChannelData()`, `removeChannel()`, `getChannelValues()`
-- [ ] T022 [US2] Create color scale utilities in `packages/core/src/styling/color_scales.ts`
-  - `applyColorScale(value, scale)` - map value to color
-  - `parseColorString(str)` - convert CSS color to RGBA
-  - Support d3-scale integration
-- [ ] T023 [US2] Add `defineChannel(config)` method in `packages/core/src/api/graph.ts`
-  - Validate config (unique ID, valid aggregation type)
-  - Create and store DiagnosticChannel
-- [ ] T024 [P] [US2] Add `setChannelData(channelId, data)` method in `packages/core/src/api/graph.ts`
-  - Validate channelId exists
-  - Push data to channel, trigger aggregation
-  - Update node colors based on channel heat
-- [ ] T025 [P] [US2] Add `removeChannel(channelId)` method in `packages/core/src/api/graph.ts`
-  - Remove channel, reset affected node colors
-- [ ] T026 [US2] Implement multi-channel blending in `packages/core/src/layers/channel_manager.ts`
-  - Blend modes: 'additive', 'multiply', 'overlay'
-  - Combine multiple active channel colors
-- [ ] T027 [US2] Create channelDataBuffer for GPU in `packages/core/src/renderer/buffers/`
-  - Layout: nodeCount × maxChannels floats
-  - Upload aggregated values for shader access
-- [ ] T028 [US2] Update Mission Control example `examples/mission-control/main.ts`
-  - Add "Diagnostic Channels" panel
-  - Demo channel definition and data push
+- [x] T019 [US2] Create `ValueStream` class in `packages/core/src/streams/value_stream.ts`
+  - Properties: id, name, colorScale (domain/range), blendMode, enabled, opacity
+  - Methods: `setData()`, `setBulkData()`, `getValue(nodeIndex)`, `getAllColors()`, `clear()`
+  - NO aggregation logic - accepts pre-computed values only
+- [x] T020 [US2] Create `StreamManager` class in `packages/core/src/streams/stream_manager.ts`
+  - Store multiple streams by ID
+  - Methods: `defineStream()`, `setStreamData()`, `removeStream()`, `getStreamInfo()`
+  - `computeBlendedColors()` for multi-stream blending
+- [x] T021 [US2] Create color scale utilities in `packages/core/src/streams/types.ts`
+  - `ValueColorScale` type with domain/stops
+  - `createColorScaleFromPreset()`, `createGradientScale()`
+  - VALUE_COLOR_PRESETS: error (red), warning (yellow), success (green), activity (blue), importance (purple), heat
+- [x] T022 [US2] Add `defineValueStream(config)` method in `packages/core/src/api/graph.ts`
+  - Validate config (unique ID)
+  - Create and store ValueStream via StreamManager
+- [x] T023 [P] [US2] Add `setStreamValues(streamId, data)` method in `packages/core/src/api/graph.ts`
+  - Validate streamId exists
+  - Push data to stream (no aggregation)
+- [x] T024 [P] [US2] Add `setStreamBulkValues(streamId, data)` method for efficient large updates
+- [x] T025 [P] [US2] Add `removeValueStream(streamId)`, `enableValueStream()`, `disableValueStream()` methods
+- [x] T026 [US2] Export stream types from `packages/core/mod.ts`
+  - ValueStreamConfig, StreamDataPoint, StreamBulkData, StreamInfo, BlendMode, ValueColorScale
+- [ ] T027 [US2] Connect streams to HeatmapLayer as data source
+  - HeatmapLayer.setDataSource(streamId | 'density') - use stream values for intensity
+  - When stream is source: intensity at (x,y) based on node positions + stream values
+  - Default 'density' mode: current behavior (node count per area)
+- [ ] T028 [US2] Connect streams to ContourLayer as data source
+  - ContourLayer.setDataSource(streamId) - contours around stream value thresholds
+- [ ] T029 [US2] Connect streams to MetaballLayer as data source (optional)
+  - MetaballLayer.setDataSource(streamId) - blob intensity from stream values
+- [ ] T030 [US2] Update Mission Control example `examples/mission-control/main.ts`
+  - Add "Value Streams" panel with stream definition
+  - Demo stream → layer binding (e.g., "errors" stream → heatmap)
+  - Show nodes colored by type, heatmap showing stream values
 
-**Checkpoint**: Diagnostic channel system fully functional (FR-006 through FR-010)
+**Checkpoint**: Value stream system fully functional (FR-006 through FR-010)
+
+**Note**: Per spec clarification (Session 2026-01-12): "Library is a 'dumb pipe': values in → colors out → blend → render." NO built-in aggregation.
 
 ---
 

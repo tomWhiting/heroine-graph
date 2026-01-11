@@ -51,6 +51,12 @@ export interface HeatmapRenderContext {
   positionsY: GPUBuffer;
   /** Number of nodes */
   nodeCount: number;
+  /**
+   * Optional per-node intensity buffer (Float32Array values).
+   * If provided, each node's splat uses this intensity value.
+   * If null, all nodes use the uniform intensity from config.
+   */
+  nodeIntensities?: GPUBuffer | null;
 }
 
 /**
@@ -163,6 +169,23 @@ export class HeatmapLayer implements Layer {
   }
 
   /**
+   * Set the data source for per-node intensity values.
+   * @param source - 'density' for uniform intensity, or a stream ID
+   */
+  setDataSource(source: string): void {
+    if (source === this.config.dataSource) return;
+    this.config.dataSource = source;
+    this.bindGroupsDirty = true;
+  }
+
+  /**
+   * Get the current data source
+   */
+  getDataSource(): string {
+    return this.config.dataSource;
+  }
+
+  /**
    * Render the heatmap layer
    */
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
@@ -247,6 +270,7 @@ export class HeatmapLayer implements Layer {
       this.renderContext.viewportUniformBuffer,
       this.renderContext.positionsX,
       this.renderContext.positionsY,
+      this.renderContext.nodeIntensities,
     );
 
     this.uniformsBindGroup = uniformsBindGroup;

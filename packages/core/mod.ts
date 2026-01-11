@@ -452,3 +452,26 @@ export type {
   HeatmapUniforms,
   Layer as VisualizationLayer,
 } from "./src/layers/mod.ts";
+
+// =============================================================================
+// Value Streams
+// =============================================================================
+
+export {
+  createColorScaleFromPreset,
+  createGradientScale,
+  createStreamManager,
+  StreamManager,
+  VALUE_COLOR_PRESETS,
+  ValueStream,
+} from "./src/streams/mod.ts";
+export type {
+  BlendMode,
+  ColorStop as StreamColorStop,
+  StreamBulkData,
+  StreamDataPoint,
+  StreamInfo,
+  StreamManagerConfig,
+  ValueColorScale,
+  ValueStreamConfig,
+} from "./src/streams/mod.ts";

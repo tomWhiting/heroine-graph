@@ -631,6 +631,17 @@
             </div>
             <div class="control-row">
               <div class="control-label">
+                <span>Data Source</span>
+              </div>
+              <select id="heatmap-datasource">
+                <option value="density">Density (uniform)</option>
+                <option value="errors">Errors Stream</option>
+                <option value="activity">Activity Stream</option>
+                <option value="importance">Importance Stream</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
                 <span>Radius</span>
                 <span class="control-value" id="heatmap-radius-val">50</span>
               </div>
@@ -760,6 +771,122 @@
                 <span class="control-value" id="labels-max-val">100</span>
               </div>
               <input type="range" id="labels-max" min="10" max="500" step="10" value="100">
+            </div>
+          </div>
+
+          <!-- Node Styling -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(135deg, #4facfe, #fa709a, #a18cd1)"
+                ></span>
+                Node Styling
+              </span>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="style-by-type" style="width: 100%">Color by Type</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="style-by-role" style="width: 100%">Size by Role</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="style-highlight-leads" style="width: 100%">Highlight Leaders</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="style-random-colors" style="width: 100%">Random Colors</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="style-reset" style="width: 100%">Reset to Default</button>
+            </div>
+          </div>
+
+          <!-- Edge Styling -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(135deg, #a18cd1, #4facfe)"
+                ></span>
+                Edge Styling
+              </span>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="edge-color-by-type" style="width: 100%">Color by Type</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="edge-width-by-type" style="width: 100%">Width by Type</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="edge-highlight-services" style="width: 100%">Highlight Service Deps</button>
+            </div>
+            <div class="control-row">
+              <label class="slider-label">
+                <span>Edge Opacity</span>
+                <span id="edge-opacity-val">0.40</span>
+              </label>
+              <input type="range" id="edge-opacity" min="0.05" max="1" step="0.05" value="0.4">
+            </div>
+            <div class="control-row">
+              <label class="slider-label">
+                <span>Edge Width Scale</span>
+                <span id="edge-width-scale-val">1.0</span>
+              </label>
+              <input type="range" id="edge-width-scale" min="0.25" max="4" step="0.25" value="1">
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="edge-reset" style="width: 100%">Reset Edges</button>
+            </div>
+          </div>
+
+          <!-- Value Streams -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(135deg, #ff6b6b, #fee140, #4facfe)"
+                ></span>
+                Value Streams
+              </span>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Demo Streams</span>
+              </div>
+              <select id="stream-demo-select">
+                <option value="none">None</option>
+                <option value="errors">Errors (Red)</option>
+                <option value="activity">Activity (Blue)</option>
+                <option value="importance">Importance (Purple)</option>
+                <option value="multi">Multi-Stream Demo</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Stream Opacity</span>
+                <span class="control-value" id="stream-opacity-val">0.80</span>
+              </div>
+              <input type="range" id="stream-opacity" min="0.1" max="1" step="0.05" value="0.8">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Blend Mode</span>
+              </div>
+              <select id="stream-blend-mode">
+                <option value="additive">Additive</option>
+                <option value="max">Max</option>
+                <option value="multiply">Multiply</option>
+                <option value="replace">Replace</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="stream-randomize" style="width: 100%">Randomize Values</button>
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="stream-clear" style="width: 100%">Clear Streams</button>
             </div>
           </div>
 

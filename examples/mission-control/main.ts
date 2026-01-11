@@ -33,123 +33,343 @@ interface AppState {
 // ============================================================================
 
 /**
- * Generate a random color in hex format
+ * Convert HSL to RGB (0-1 range)
+ * @param h Hue (0-1)
+ * @param s Saturation (0-1)
+ * @param l Lightness (0-1)
+ * @returns [r, g, b] each in 0-1 range
  */
-function randomColor(): string {
-  const hue = Math.random() * 360;
-  const saturation = 60 + Math.random() * 30;
-  const lightness = 50 + Math.random() * 20;
-  return hslToHex(hue, saturation, lightness);
-}
-
-/**
- * Convert HSL to hex color
- */
-function hslToHex(h: number, s: number, l: number): string {
-  s /= 100;
-  l /= 100;
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   const a = s * Math.min(l, 1 - l);
   const f = (n: number) => {
-    const k = (n + h / 30) % 12;
-    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-    return Math.round(255 * color).toString(16).padStart(2, "0");
+    const k = (n + h * 12) % 12;
+    return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
   };
-  return `#${f(0)}${f(8)}${f(4)}`;
+  return [f(0), f(8), f(4)];
 }
 
+// ============================================================================
+// Structured Graph Generator - Tech Company Knowledge Graph
+// ============================================================================
+
+/** Node type definitions with visual properties */
+const NODE_TYPES = {
+  person: {
+    color: "#4facfe", // Blue
+    radius: { min: 4, max: 8 },
+    roles: ["Engineer", "Designer", "PM", "Data Scientist", "DevOps", "Manager", "Director", "VP"],
+  },
+  team: {
+    color: "#00f2fe", // Cyan
+    radius: { min: 10, max: 14 },
+    names: ["Platform", "Frontend", "Backend", "Data", "ML", "Infra", "Security", "Mobile", "Growth", "Core"],
+  },
+  project: {
+    color: "#fa709a", // Pink
+    radius: { min: 6, max: 10 },
+    prefixes: ["Project", "Initiative", "Feature", "Sprint"],
+    statuses: ["active", "planning", "completed", "on-hold"],
+  },
+  document: {
+    color: "#fee140", // Yellow
+    radius: { min: 3, max: 5 },
+    types: ["RFC", "Spec", "Design Doc", "Runbook", "Postmortem", "README"],
+  },
+  service: {
+    color: "#a18cd1", // Purple
+    radius: { min: 7, max: 12 },
+    prefixes: ["api-", "svc-", "worker-", "gateway-", "cache-", "db-"],
+    tiers: ["tier-1", "tier-2", "tier-3"],
+  },
+} as const;
+
 /**
- * Generate random graph data with clusters
+ * Generate structured graph data modeling a tech company
+ * Distribution roughly: 60% people, 5% teams, 15% projects, 15% documents, 5% services
  */
 function generateRandomGraph(nodeCount: number): GraphInput {
-  const nodes: {
+  // Pre-allocate arrays with known sizes for better performance
+  const counts = {
+    team: Math.max(3, Math.floor(nodeCount * 0.05)),
+    service: Math.max(5, Math.floor(nodeCount * 0.05)),
+    project: Math.floor(nodeCount * 0.15),
+    document: Math.floor(nodeCount * 0.15),
+    person: 0,
+  };
+  counts.person = nodeCount - counts.team - counts.service - counts.project - counts.document;
+
+  const nodes: Array<{
     id: string;
     x: number;
     y: number;
     radius: number;
     color: string;
     metadata: Record<string, unknown>;
-  }[] = [];
-  const edges: { source: string; target: string; width: number; color: string }[] = [];
-
-  // Create clusters for more interesting layouts
-  const clusterCount = Math.max(3, Math.floor(Math.sqrt(nodeCount) / 5));
-  const nodesPerCluster = Math.ceil(nodeCount / clusterCount);
-
-  // Generate cluster centers
-  const clusterCenters: { x: number; y: number; color: string }[] = [];
-  for (let i = 0; i < clusterCount; i++) {
-    const angle = (i / clusterCount) * Math.PI * 2;
-    const radius = 200 + Math.random() * 100;
-    clusterCenters.push({
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-      color: randomColor(),
-    });
-  }
-
-  // Generate nodes in clusters
-  for (let i = 0; i < nodeCount; i++) {
-    const clusterIdx = i % clusterCount;
-    const cluster = clusterCenters[clusterIdx];
-
-    // Random offset within cluster
-    const spread = 50 + Math.sqrt(nodesPerCluster) * 5;
-    const offsetAngle = Math.random() * Math.PI * 2;
-    const offsetRadius = Math.random() * spread;
-
-    nodes.push({
-      id: `n${i}`,
-      x: cluster.x + Math.cos(offsetAngle) * offsetRadius,
-      y: cluster.y + Math.sin(offsetAngle) * offsetRadius,
-      radius: 3 + Math.random() * 4,
-      color: cluster.color,
-      metadata: {
-        label: `Node ${i}`,
-        cluster: clusterIdx,
-      },
-    });
-  }
-
-  // Generate edges - more within clusters, fewer between
-  const edgeCount = Math.floor(nodeCount * 1.5);
+  }> = [];
+  const edges: Array<{ source: string; target: string; width: number; color: string }> = [];
   const edgeSet = new Set<string>();
 
-  for (let i = 0; i < edgeCount; i++) {
-    let sourceIdx: number, targetIdx: number;
+  // Track nodes by type - essential for type-based filtering/styling
+  const nodesByType: Record<string, string[]> = {
+    person: [],
+    team: [],
+    project: [],
+    document: [],
+    service: [],
+  };
 
-    // 70% chance of intra-cluster edge
-    if (Math.random() < 0.7) {
-      const clusterIdx = Math.floor(Math.random() * clusterCount);
-      const clusterStart = clusterIdx * nodesPerCluster;
-      const clusterEnd = Math.min((clusterIdx + 1) * nodesPerCluster, nodeCount);
-      const clusterSize = clusterEnd - clusterStart;
+  // Layout constants
+  const layoutRadius = 150 + Math.sqrt(nodeCount) * 8;
+  const teamPositions: { x: number; y: number }[] = [];
 
-      if (clusterSize < 2) continue;
+  // Pre-compute which projects belong to which team (avoid O(n²) in person loop)
+  const teamProjectIndices: number[][] = [];
+  for (let t = 0; t < counts.team; t++) {
+    const indices: number[] = [];
+    for (let p = t; p < counts.project; p += counts.team) {
+      indices.push(p);
+    }
+    teamProjectIndices[t] = indices;
+  }
 
-      sourceIdx = clusterStart + Math.floor(Math.random() * clusterSize);
-      targetIdx = clusterStart + Math.floor(Math.random() * clusterSize);
-    } else {
-      // Inter-cluster edge
-      sourceIdx = Math.floor(Math.random() * nodeCount);
-      targetIdx = Math.floor(Math.random() * nodeCount);
+  // Helper to add an edge with deduplication
+  const addEdge = (src: string, tgt: string, color: string, width: number) => {
+    const key = src < tgt ? `${src}-${tgt}` : `${tgt}-${src}`;
+    if (edgeSet.has(key) || src === tgt) return;
+    edgeSet.add(key);
+    edges.push({ source: src, target: tgt, width, color });
+  };
+
+  // Helper to get random radius for a type
+  const getRadius = (type: keyof typeof NODE_TYPES) => {
+    const r = NODE_TYPES[type].radius;
+    return r.min + Math.random() * (r.max - r.min);
+  };
+
+  // 1. Generate teams (cluster centers)
+  const teamDef = NODE_TYPES.team;
+  for (let i = 0; i < counts.team; i++) {
+    const angle = (i / counts.team) * Math.PI * 2;
+    const dist = layoutRadius * (0.6 + Math.random() * 0.4);
+    const x = Math.cos(angle) * dist;
+    const y = Math.sin(angle) * dist;
+    teamPositions.push({ x, y });
+
+    const id = `team-${i}`;
+    nodes.push({
+      id,
+      x,
+      y,
+      radius: getRadius("team"),
+      color: teamDef.color,
+      metadata: {
+        type: "team",
+        name: teamDef.names[i % teamDef.names.length],
+        size: 0, // Will be updated after people are generated
+        budget: Math.floor(Math.random() * 10000000) + 500000,
+        headcount: 0,
+        costCenter: `CC-${1000 + i}`,
+      },
+    });
+    nodesByType.team.push(id);
+  }
+
+  // 2. Generate services (near center, interconnected)
+  const serviceDef = NODE_TYPES.service;
+  for (let i = 0; i < counts.service; i++) {
+    const angle = (i / counts.service) * Math.PI * 2 + Math.random() * 0.3;
+    const dist = layoutRadius * 0.3 * (0.5 + Math.random() * 0.5);
+
+    const id = `svc-${i}`;
+    const tier = serviceDef.tiers[Math.floor(Math.random() * serviceDef.tiers.length)];
+    nodes.push({
+      id,
+      x: Math.cos(angle) * dist,
+      y: Math.sin(angle) * dist,
+      radius: getRadius("service"),
+      color: serviceDef.color,
+      metadata: {
+        type: "service",
+        name: `${serviceDef.prefixes[i % serviceDef.prefixes.length]}${i}`,
+        tier,
+        uptime: 99 + Math.random() * 0.99,
+        latencyP99: Math.floor(Math.random() * 500) + 10,
+        requestsPerSec: Math.floor(Math.random() * 10000),
+        errorRate: Math.random() * 0.05,
+        owner: `team-${i % counts.team}`,
+        language: ["Go", "Rust", "Python", "TypeScript", "Java"][Math.floor(Math.random() * 5)],
+        lastDeployed: Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000,
+      },
+    });
+    nodesByType.service.push(id);
+
+    // Service dependencies (1-3 per service)
+    if (i > 0) {
+      const depCount = 1 + Math.floor(Math.random() * 3);
+      for (let d = 0; d < depCount; d++) {
+        const targetIdx = Math.floor(Math.random() * i);
+        addEdge(`svc-${i}`, `svc-${targetIdx}`, "#a18cd166", 1.5);
+      }
+    }
+  }
+
+  // Store project positions for document placement
+  const projectPositions: { x: number; y: number }[] = [];
+
+  // 3. Generate projects (distributed across teams)
+  const projectDef = NODE_TYPES.project;
+  for (let i = 0; i < counts.project; i++) {
+    const teamIdx = i % counts.team;
+    const teamPos = teamPositions[teamIdx];
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 30 + Math.random() * 40;
+    const x = teamPos.x + Math.cos(angle) * dist;
+    const y = teamPos.y + Math.sin(angle) * dist;
+
+    projectPositions.push({ x, y });
+
+    const id = `proj-${i}`;
+    const status = projectDef.statuses[Math.floor(Math.random() * projectDef.statuses.length)];
+    nodes.push({
+      id,
+      x,
+      y,
+      radius: getRadius("project"),
+      color: projectDef.color,
+      metadata: {
+        type: "project",
+        name: `${projectDef.prefixes[Math.floor(Math.random() * projectDef.prefixes.length)]} ${String.fromCharCode(65 + (i % 26))}${Math.floor(i / 26) || ""}`,
+        status,
+        team: `team-${teamIdx}`,
+        priority: Math.floor(Math.random() * 5) + 1,
+        startDate: Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000,
+        dueDate: Date.now() + Math.random() * 180 * 24 * 60 * 60 * 1000,
+        completionPercent: status === "completed" ? 100 : Math.floor(Math.random() * 95),
+        riskLevel: ["low", "medium", "high", "critical"][Math.floor(Math.random() * 4)],
+        storyPoints: Math.floor(Math.random() * 100) + 5,
+      },
+    });
+    nodesByType.project.push(id);
+
+    // Projects use 1-3 services
+    const serviceCount = 1 + Math.floor(Math.random() * 3);
+    for (let s = 0; s < serviceCount; s++) {
+      const svcIdx = Math.floor(Math.random() * counts.service);
+      addEdge(id, `svc-${svcIdx}`, "#a18cd144", 1.2);
+    }
+  }
+
+  // 4. Generate documents (attached to projects)
+  const docDef = NODE_TYPES.document;
+  for (let i = 0; i < counts.document; i++) {
+    const projectIdx = i % counts.project;
+    const pos = projectPositions[projectIdx];
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 15 + Math.random() * 20;
+
+    const id = `doc-${i}`;
+    const docType = docDef.types[Math.floor(Math.random() * docDef.types.length)];
+    nodes.push({
+      id,
+      x: pos.x + Math.cos(angle) * dist,
+      y: pos.y + Math.sin(angle) * dist,
+      radius: getRadius("document"),
+      color: docDef.color,
+      metadata: {
+        type: "document",
+        name: `${docType}-${i}`,
+        docType,
+        project: `proj-${projectIdx}`,
+        lastUpdated: Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000,
+        version: `${Math.floor(Math.random() * 5) + 1}.${Math.floor(Math.random() * 10)}`,
+        wordCount: Math.floor(Math.random() * 5000) + 200,
+        status: ["draft", "review", "approved", "archived"][Math.floor(Math.random() * 4)],
+        confidentiality: ["public", "internal", "confidential", "restricted"][Math.floor(Math.random() * 4)],
+      },
+    });
+    nodesByType.document.push(id);
+
+    // Link document to its project
+    addEdge(id, `proj-${projectIdx}`, "#fee14033", 0.6);
+  }
+
+  // Track team sizes as we add people
+  const teamSizes = new Array(counts.team).fill(0);
+
+  // 5. Generate people (the bulk - distributed across teams)
+  const personDef = NODE_TYPES.person;
+  for (let i = 0; i < counts.person; i++) {
+    const teamIdx = i % counts.team;
+    const teamPos = teamPositions[teamIdx];
+    teamSizes[teamIdx]++;
+
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 20 + Math.random() * 60;
+    const role = personDef.roles[Math.floor(Math.random() * personDef.roles.length)];
+    const isLead = role.includes("Manager") || role.includes("Director") || role.includes("VP");
+
+    const id = `person-${i}`;
+    nodes.push({
+      id,
+      x: teamPos.x + Math.cos(angle) * dist,
+      y: teamPos.y + Math.sin(angle) * dist,
+      radius: isLead ? getRadius("person") * 1.3 : getRadius("person"),
+      color: personDef.color,
+      metadata: {
+        type: "person",
+        name: `Person ${i}`,
+        role,
+        team: `team-${teamIdx}`,
+        isLead,
+        tenure: Math.floor(Math.random() * 8) + 1,
+        level: ["IC1", "IC2", "IC3", "IC4", "IC5", "M1", "M2", "D1", "VP"][Math.floor(Math.random() * 9)],
+        location: ["SF", "NYC", "London", "Berlin", "Tokyo", "Sydney", "Remote"][Math.floor(Math.random() * 7)],
+        startDate: Date.now() - (Math.floor(Math.random() * 8) + 1) * 365 * 24 * 60 * 60 * 1000,
+        email: `person${i}@company.com`,
+        slackId: `U${String(i).padStart(8, "0")}`,
+        reportsTo: isLead ? null : `person-${Math.max(0, i - Math.floor(Math.random() * 10) - 1)}`,
+      },
+    });
+    nodesByType.person.push(id);
+
+    // Person belongs to team
+    addEdge(id, `team-${teamIdx}`, "#4facfe44", 1.5);
+
+    // Person works on 1-2 projects (using pre-computed team project indices)
+    const teamProjs = teamProjectIndices[teamIdx];
+    const projectCount = 1 + Math.floor(Math.random() * 2);
+    for (let p = 0; p < projectCount; p++) {
+      let projIdx: number;
+      if (Math.random() < 0.8 && teamProjs.length > 0) {
+        projIdx = teamProjs[Math.floor(Math.random() * teamProjs.length)];
+      } else {
+        projIdx = Math.floor(Math.random() * counts.project);
+      }
+      addEdge(id, `proj-${projIdx}`, "#fa709a44", 1.0);
     }
 
-    if (sourceIdx === targetIdx) continue;
+    // Some people author documents (20%)
+    if (Math.random() < 0.2) {
+      const docIdx = Math.floor(Math.random() * counts.document);
+      addEdge(id, `doc-${docIdx}`, "#fee14044", 0.8);
+    }
 
-    const edgeKey = sourceIdx < targetIdx
-      ? `${sourceIdx}-${targetIdx}`
-      : `${targetIdx}-${sourceIdx}`;
-
-    if (edgeSet.has(edgeKey)) continue;
-    edgeSet.add(edgeKey);
-
-    edges.push({
-      source: `n${sourceIdx}`,
-      target: `n${targetIdx}`,
-      width: 0.5 + Math.random() * 1,
-      color: "#ffffff22",
-    });
+    // Collaboration edges (15%)
+    if (Math.random() < 0.15 && i > 0) {
+      const collaboratorIdx = Math.floor(Math.random() * i);
+      addEdge(id, `person-${collaboratorIdx}`, "#4facfe22", 0.5);
+    }
   }
+
+  // Update team sizes in metadata
+  for (let i = 0; i < counts.team; i++) {
+    nodes[i].metadata.size = teamSizes[i];
+    nodes[i].metadata.headcount = teamSizes[i];
+  }
+
+  console.log(`Generated graph: ${counts.person} people, ${counts.team} teams, ${counts.project} projects, ${counts.document} documents, ${counts.service} services`);
+  console.log(`Total: ${nodes.length} nodes, ${edges.length} edges`);
+  console.log(`Nodes by type:`, Object.fromEntries(Object.entries(nodesByType).map(([k, v]) => [k, v.length])));
 
   return { nodes, edges };
 }
@@ -283,23 +503,32 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Merge with existing data
+    // Build a map from old IDs to new IDs for remapping edges
+    const idMap = new Map<string, string>();
     const existingNodeCount = state.graphData.nodes.length;
 
-    // Remap new node IDs to avoid collisions
-    const remappedNodes = newData.nodes.map((node, i) => ({
-      ...node,
-      id: `n${existingNodeCount + i}`,
-      metadata: {
-        ...node.metadata as Record<string, unknown>,
-        label: `Node ${existingNodeCount + i}`,
-      },
-    }));
+    // Remap new node IDs to avoid collisions - use a batch prefix
+    const batchId = Date.now();
+    const remappedNodes = newData.nodes.map((node, i) => {
+      const oldId = String(node.id);
+      const newId = `b${batchId}_${oldId}`;
+      idMap.set(oldId, newId);
+      return {
+        ...node,
+        id: newId,
+        metadata: {
+          ...node.metadata as Record<string, unknown>,
+          originalId: node.id,
+          batchIndex: existingNodeCount + i,
+        },
+      };
+    });
 
+    // Remap edges to use new IDs
     const remappedEdges = newData.edges.map((edge) => ({
       ...edge,
-      source: `n${existingNodeCount + parseInt(String(edge.source).slice(1), 10)}`,
-      target: `n${existingNodeCount + parseInt(String(edge.target).slice(1), 10)}`,
+      source: idMap.get(String(edge.source)) ?? edge.source,
+      target: idMap.get(String(edge.target)) ?? edge.target,
     }));
 
     // Combine existing and new data
@@ -343,9 +572,15 @@ async function main(): Promise<void> {
 
   // Add node button handlers - ADD nodes to existing graph
   document.querySelectorAll(".node-btn[data-count]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const count = parseInt((btn as HTMLElement).dataset.count || "100", 10);
-      addNodes(count);
+      console.log(`Adding ${count} nodes...`);
+      try {
+        await addNodes(count);
+        console.log(`Added ${count} nodes successfully`);
+      } catch (err) {
+        console.error(`Failed to add ${count} nodes:`, err);
+      }
     });
   });
 
@@ -411,6 +646,13 @@ async function main(): Promise<void> {
     state.graph?.setHeatmapConfig({
       colorScale: (e.target as HTMLSelectElement).value as any,
     });
+  });
+
+  // Heatmap data source (stream → heatmap binding)
+  $select("heatmap-datasource").addEventListener("change", (e) => {
+    if (!$input("heatmap-enabled").checked) return;
+    const source = (e.target as HTMLSelectElement).value;
+    state.graph?.setHeatmapDataSource(source);
   });
 
   function setupSlider(
@@ -734,6 +976,488 @@ async function main(): Promise<void> {
   $("sim-stop").addEventListener("click", () => state.graph?.stopSimulation());
   $("sim-start").addEventListener("click", () => state.graph?.startSimulation());
   $("sim-restart").addEventListener("click", () => state.graph?.restartSimulation());
+
+  // ========================================================================
+  // Per-Item Styling Controls
+  // ========================================================================
+
+  // Type colors mapping (hex to RGB 0-1)
+  const TYPE_COLORS: Record<string, [number, number, number]> = {
+    person: [0.31, 0.67, 1.0], // #4facfe - Blue
+    team: [0.0, 0.95, 1.0], // #00f2fe - Cyan
+    project: [0.98, 0.44, 0.60], // #fa709a - Pink
+    document: [1.0, 0.88, 0.25], // #fee140 - Yellow
+    service: [0.63, 0.55, 0.82], // #a18cd1 - Purple
+  };
+
+  // Color by node type
+  $("style-by-type").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.nodeCount === 0) return;
+
+    const colors = new Float32Array(state.nodeCount * 4);
+    for (let i = 0; i < state.nodeCount; i++) {
+      const nodeType = state.graphData.nodes[i]?.metadata?.type as string;
+      const [r, g, b] = TYPE_COLORS[nodeType] ?? [0.5, 0.5, 0.5];
+      colors[i * 4 + 0] = r;
+      colors[i * 4 + 1] = g;
+      colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = 1.0;
+    }
+    state.graph.setNodeColors(colors);
+    console.log("Colored nodes by type");
+  });
+
+  // Size by role importance
+  $("style-by-role").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.nodeCount === 0) return;
+
+    const sizes = new Float32Array(state.nodeCount);
+    for (let i = 0; i < state.nodeCount; i++) {
+      const meta = state.graphData.nodes[i]?.metadata;
+      const type = meta?.type as string;
+
+      // Size based on type and role
+      if (type === "team") {
+        sizes[i] = 12; // Teams are large
+      } else if (type === "service") {
+        const tier = meta?.tier as string;
+        sizes[i] = tier === "tier-1" ? 14 : tier === "tier-2" ? 10 : 7;
+      } else if (type === "project") {
+        const priority = (meta?.priority as number) ?? 3;
+        sizes[i] = 6 + (5 - priority) * 1.5; // P1 = 12, P5 = 6
+      } else if (type === "person") {
+        const isLead = meta?.isLead as boolean;
+        sizes[i] = isLead ? 8 : 5;
+      } else if (type === "document") {
+        sizes[i] = 3;
+      } else {
+        sizes[i] = 5;
+      }
+    }
+    state.graph.setNodeSizes(sizes);
+    console.log("Sized nodes by role importance");
+  });
+
+  // Highlight leaders/important nodes
+  $("style-highlight-leads").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.nodeCount === 0) return;
+
+    const colors = new Float32Array(state.nodeCount * 4);
+    const sizes = new Float32Array(state.nodeCount);
+
+    for (let i = 0; i < state.nodeCount; i++) {
+      const meta = state.graphData.nodes[i]?.metadata;
+      const type = meta?.type as string;
+      const isLead = meta?.isLead as boolean;
+      const tier = meta?.tier as string;
+
+      // Highlight important nodes
+      const isImportant =
+        type === "team" ||
+        (type === "person" && isLead) ||
+        (type === "service" && tier === "tier-1");
+
+      if (isImportant) {
+        // Bright gold/orange for important nodes
+        colors[i * 4 + 0] = 1.0;
+        colors[i * 4 + 1] = 0.8;
+        colors[i * 4 + 2] = 0.2;
+        colors[i * 4 + 3] = 1.0;
+        sizes[i] = 12;
+      } else {
+        // Dim gray for others
+        colors[i * 4 + 0] = 0.3;
+        colors[i * 4 + 1] = 0.3;
+        colors[i * 4 + 2] = 0.35;
+        colors[i * 4 + 3] = 0.6;
+        sizes[i] = 3;
+      }
+    }
+    state.graph.setNodeColors(colors);
+    state.graph.setNodeSizes(sizes);
+    console.log("Highlighted leaders and important nodes");
+  });
+
+  // Random colors (for fun/testing)
+  $("style-random-colors").addEventListener("click", () => {
+    if (!state.graph || state.nodeCount === 0) return;
+
+    const colors = new Float32Array(state.nodeCount * 4);
+    for (let i = 0; i < state.nodeCount; i++) {
+      const hue = Math.random();
+      const sat = 0.7 + Math.random() * 0.3;
+      const light = 0.5 + Math.random() * 0.2;
+      const [r, g, b] = hslToRgb(hue, sat, light);
+      colors[i * 4 + 0] = r;
+      colors[i * 4 + 1] = g;
+      colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = 1.0;
+    }
+    state.graph.setNodeColors(colors);
+    console.log(`Randomized colors for ${state.nodeCount} nodes`);
+  });
+
+  // Reset styling (reload current graph)
+  $("style-reset").addEventListener("click", async () => {
+    if (!state.graphData) return;
+    await state.graph?.load(state.graphData);
+    console.log("Reset styling to defaults");
+  });
+
+  // ========================================================================
+  // Edge Styling Controls
+  // ========================================================================
+
+  // Edge type colors - based on relationship types
+  const EDGE_TYPE_COLORS: Record<string, [number, number, number]> = {
+    "person-team": [0.31, 0.67, 1.0], // Blue - team membership
+    "person-project": [0.98, 0.44, 0.60], // Pink - project work
+    "person-document": [1.0, 0.88, 0.25], // Yellow - authorship
+    "person-person": [0.31, 0.67, 1.0], // Blue dim - collaboration
+    "service-service": [0.63, 0.55, 0.82], // Purple - dependencies
+    "project-service": [0.63, 0.55, 0.82], // Purple dim - service usage
+    "document-project": [1.0, 0.88, 0.25], // Yellow dim - doc attachment
+  };
+
+  // Helper to determine edge type from source/target IDs
+  function getEdgeType(source: string, target: string): string {
+    const srcType = source.split("-")[0];
+    const tgtType = target.split("-")[0];
+    // Normalize order (alphabetical)
+    const types = [srcType, tgtType].sort();
+    return `${types[0]}-${types[1]}`;
+  }
+
+  // Color edges by type
+  $("edge-color-by-type").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+
+    const colors = new Float32Array(state.edgeCount * 4);
+    for (let i = 0; i < state.edgeCount; i++) {
+      const edge = state.graphData.edges[i];
+      const edgeType = getEdgeType(String(edge.source), String(edge.target));
+      const [r, g, b] = EDGE_TYPE_COLORS[edgeType] ?? [0.5, 0.5, 0.5];
+      colors[i * 4 + 0] = r;
+      colors[i * 4 + 1] = g;
+      colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = parseFloat($input("edge-opacity").value);
+    }
+    state.graph.setEdgeColors(colors);
+    console.log("Colored edges by type");
+  });
+
+  // Width by edge type (importance-based)
+  $("edge-width-by-type").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+
+    const baseScale = parseFloat($input("edge-width-scale").value);
+    const widths = new Float32Array(state.edgeCount);
+
+    for (let i = 0; i < state.edgeCount; i++) {
+      const edge = state.graphData.edges[i];
+      const edgeType = getEdgeType(String(edge.source), String(edge.target));
+
+      // Assign width based on relationship type importance
+      let width: number;
+      switch (edgeType) {
+        case "service-service":
+          width = 2.5; // Critical infrastructure dependencies
+          break;
+        case "person-team":
+          width = 2.0; // Team membership
+          break;
+        case "project-service":
+          width = 1.8; // Project dependencies
+          break;
+        case "person-project":
+          width = 1.5; // Work assignments
+          break;
+        case "document-project":
+          width = 1.0; // Documentation links
+          break;
+        case "person-document":
+          width = 0.8; // Authorship
+          break;
+        case "person-person":
+          width = 0.6; // Collaboration (subtle)
+          break;
+        default:
+          width = 1.0;
+      }
+      widths[i] = width * baseScale;
+    }
+    state.graph.setEdgeWidths(widths);
+    console.log("Set edge widths by type");
+  });
+
+  // Highlight service dependencies
+  $("edge-highlight-services").addEventListener("click", () => {
+    if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+
+    const colors = new Float32Array(state.edgeCount * 4);
+    const widths = new Float32Array(state.edgeCount);
+    const baseScale = parseFloat($input("edge-width-scale").value);
+
+    for (let i = 0; i < state.edgeCount; i++) {
+      const edge = state.graphData.edges[i];
+      const edgeType = getEdgeType(String(edge.source), String(edge.target));
+      const isServiceEdge = edgeType === "service-service" || edgeType === "project-service";
+
+      if (isServiceEdge) {
+        // Bright cyan for service edges
+        colors[i * 4 + 0] = 0.0;
+        colors[i * 4 + 1] = 1.0;
+        colors[i * 4 + 2] = 1.0;
+        colors[i * 4 + 3] = 0.9;
+        widths[i] = 3.0 * baseScale;
+      } else {
+        // Dim gray for non-service edges
+        colors[i * 4 + 0] = 0.3;
+        colors[i * 4 + 1] = 0.3;
+        colors[i * 4 + 2] = 0.3;
+        colors[i * 4 + 3] = 0.15;
+        widths[i] = 0.5 * baseScale;
+      }
+    }
+    state.graph.setEdgeColors(colors);
+    state.graph.setEdgeWidths(widths);
+    console.log("Highlighted service dependencies");
+  });
+
+  // Edge opacity slider - apply to all edges
+  setupSlider(
+    "edge-opacity",
+    "edge-opacity-val",
+    (v) => {
+      if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+      const colors = new Float32Array(state.edgeCount * 4);
+      for (let i = 0; i < state.edgeCount; i++) {
+        const edge = state.graphData.edges[i];
+        // Parse existing color or use default
+        const existingColor = edge.color;
+        let r = 0.5, g = 0.5, b = 0.5;
+        if (existingColor && existingColor.startsWith("#")) {
+          // Parse hex color (could be #rgb, #rgba, #rrggbb, #rrggbbaa)
+          const hex = existingColor.slice(1);
+          if (hex.length >= 6) {
+            r = parseInt(hex.slice(0, 2), 16) / 255;
+            g = parseInt(hex.slice(2, 4), 16) / 255;
+            b = parseInt(hex.slice(4, 6), 16) / 255;
+          }
+        }
+        colors[i * 4 + 0] = r;
+        colors[i * 4 + 1] = g;
+        colors[i * 4 + 2] = b;
+        colors[i * 4 + 3] = v;
+      }
+      state.graph.setEdgeColors(colors);
+    },
+    (v) => v.toFixed(2),
+  );
+
+  // Edge width scale slider - scale all widths
+  setupSlider(
+    "edge-width-scale",
+    "edge-width-scale-val",
+    (v) => {
+      if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+      const widths = new Float32Array(state.edgeCount);
+      for (let i = 0; i < state.edgeCount; i++) {
+        const edge = state.graphData.edges[i];
+        const baseWidth = edge.width ?? 1.0;
+        widths[i] = baseWidth * v;
+      }
+      state.graph.setEdgeWidths(widths);
+    },
+    (v) => v.toFixed(1),
+  );
+
+  // Reset edge styling
+  $("edge-reset").addEventListener("click", async () => {
+    if (!state.graphData) return;
+    // Reload restores all original styling including edges
+    await state.graph?.load(state.graphData);
+    // Reset slider values
+    $input("edge-opacity").value = "0.4";
+    $("edge-opacity-val").textContent = "0.40";
+    $input("edge-width-scale").value = "1";
+    $("edge-width-scale-val").textContent = "1.0";
+    console.log("Reset edge styling to defaults");
+  });
+
+  // ========================================================================
+  // Value Stream Controls
+  // ========================================================================
+
+  // Color scale presets for different stream types
+  const STREAM_PRESETS = {
+    errors: {
+      id: "errors",
+      name: "Error Count",
+      colorScale: {
+        domain: [0, 10] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] as [number, number, number, number] },
+          { position: 0.7, color: [1, 0.2, 0.1, 0.7] as [number, number, number, number] },
+          { position: 1, color: [1, 0.1, 0.05, 1] as [number, number, number, number] },
+        ],
+      },
+    },
+    activity: {
+      id: "activity",
+      name: "Activity Level",
+      colorScale: {
+        domain: [0, 1] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.5, color: [0.2, 0.5, 0.9, 0.5] as [number, number, number, number] },
+          { position: 1, color: [0.3, 0.7, 1, 1] as [number, number, number, number] },
+        ],
+      },
+    },
+    importance: {
+      id: "importance",
+      name: "Importance Score",
+      colorScale: {
+        domain: [0, 100] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.5, color: [0.5, 0.3, 0.8, 0.5] as [number, number, number, number] },
+          { position: 1, color: [0.7, 0.4, 1, 1] as [number, number, number, number] },
+        ],
+      },
+    },
+  };
+
+  // Track current active streams
+  let activeStreams: string[] = [];
+
+  // Generate random stream values for demo
+  function generateStreamData(streamId: string, nodeCount: number): Array<{ nodeIndex: number; value: number }> {
+    const data: Array<{ nodeIndex: number; value: number }> = [];
+    const preset = STREAM_PRESETS[streamId as keyof typeof STREAM_PRESETS];
+    if (!preset) return data;
+
+    const [min, max] = preset.colorScale.domain;
+    const range = max - min;
+
+    // Assign values to ~30% of nodes randomly
+    for (let i = 0; i < nodeCount; i++) {
+      if (Math.random() < 0.3) {
+        // Skew toward lower values for more realistic distribution
+        const value = min + Math.pow(Math.random(), 2) * range;
+        data.push({ nodeIndex: i, value });
+      }
+    }
+    return data;
+  }
+
+  // Demo stream selector
+  $select("stream-demo-select").addEventListener("change", (e) => {
+    const demo = (e.target as HTMLSelectElement).value;
+    if (!state.graph || state.nodeCount === 0) return;
+
+    // Clear existing streams
+    state.graph.clearAllValueStreams();
+    activeStreams = [];
+
+    if (demo === "none") {
+      // Reload to reset colors
+      if (state.graphData) {
+        state.graph.load(state.graphData);
+      }
+      console.log("Cleared all value streams");
+      return;
+    }
+
+    const opacity = parseFloat($input("stream-opacity").value);
+    const blendMode = $select("stream-blend-mode").value as "additive" | "max" | "multiply" | "replace";
+
+    if (demo === "multi") {
+      // Multi-stream demo: errors + activity
+      for (const key of ["errors", "activity"] as const) {
+        const preset = STREAM_PRESETS[key];
+        state.graph.defineValueStream({
+          ...preset,
+          blendMode,
+          opacity,
+        });
+        const data = generateStreamData(key, state.nodeCount);
+        state.graph.setStreamValues(key, data);
+        activeStreams.push(key);
+      }
+      console.log(`Enabled multi-stream demo: errors + activity (${state.nodeCount} nodes)`);
+    } else {
+      // Single stream demo
+      const preset = STREAM_PRESETS[demo as keyof typeof STREAM_PRESETS];
+      if (preset) {
+        state.graph.defineValueStream({
+          ...preset,
+          blendMode,
+          opacity,
+        });
+        const data = generateStreamData(demo, state.nodeCount);
+        state.graph.setStreamValues(demo, data);
+        activeStreams.push(demo);
+        console.log(`Enabled ${demo} stream with ${data.length} values`);
+      }
+    }
+  });
+
+  // Stream opacity slider - updates existing streams without regenerating data
+  setupSlider(
+    "stream-opacity",
+    "stream-opacity-val",
+    (opacity) => {
+      if (!state.graph || activeStreams.length === 0) return;
+      // Update opacity on all active streams
+      for (const streamId of activeStreams) {
+        state.graph.setStreamOpacity(streamId, opacity);
+      }
+    },
+    (v) => v.toFixed(2),
+  );
+
+  // Blend mode selector - updates existing streams without regenerating data
+  $select("stream-blend-mode").addEventListener("change", (e) => {
+    if (!state.graph || activeStreams.length === 0) return;
+    const blendMode = (e.target as HTMLSelectElement).value as "additive" | "max" | "multiply" | "replace";
+    // Update blend mode on all active streams
+    for (const streamId of activeStreams) {
+      state.graph.setStreamBlendMode(streamId, blendMode);
+    }
+    console.log(`Changed blend mode to ${blendMode}`);
+  });
+
+  // Randomize values button
+  $("stream-randomize").addEventListener("click", () => {
+    if (!state.graph || state.nodeCount === 0 || activeStreams.length === 0) {
+      console.log("No active streams to randomize");
+      return;
+    }
+
+    for (const streamId of activeStreams) {
+      const data = generateStreamData(streamId, state.nodeCount);
+      state.graph.setStreamValues(streamId, data);
+    }
+    console.log(`Randomized values for ${activeStreams.length} stream(s)`);
+  });
+
+  // Clear streams button
+  $("stream-clear").addEventListener("click", async () => {
+    if (!state.graph) return;
+
+    state.graph.clearAllValueStreams();
+    activeStreams = [];
+    $select("stream-demo-select").value = "none";
+
+    // Reload to reset colors
+    if (state.graphData) {
+      await state.graph.load(state.graphData);
+    }
+    console.log("Cleared all value streams");
+  });
 
   // ========================================================================
   // Load Initial Data

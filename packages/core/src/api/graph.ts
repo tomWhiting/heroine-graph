@@ -114,6 +114,14 @@ import {
   getAlgorithmRegistry,
   initializeBuiltinAlgorithms,
 } from "../simulation/algorithms/mod.ts";
+import {
+  createStreamManager,
+  type StreamBulkData,
+  type StreamDataPoint,
+  type StreamInfo,
+  type StreamManager,
+  type ValueStreamConfig,
+} from "../streams/mod.ts";
 
 /**
  * WASM engine interface for spatial queries.
@@ -231,6 +239,12 @@ export class HeroineGraph {
   // Layer system
   private layerManager: LayerManager;
 
+  // Value stream system
+  private streamManager: StreamManager;
+
+  // Heatmap stream intensity buffer (per-node values from stream)
+  private heatmapIntensityBuffer: GPUBuffer | null = null;
+
   constructor(config: HeroineGraphConfig) {
     this.gpuContext = config.gpuContext;
     this.wasmEngine = config.wasmEngine as WasmEngine | null;
@@ -317,6 +331,9 @@ export class HeroineGraph {
 
     // Initialize layer manager
     this.layerManager = createLayerManager();
+
+    // Initialize stream manager for value streams
+    this.streamManager = createStreamManager();
 
     // Note: render loop starts on first load() call, not here
     // This prevents rendering before canvas has valid dimensions
@@ -1249,6 +1266,40 @@ export class HeroineGraph {
   }
 
   /**
+   * Set heatmap data source.
+   *
+   * @param source - 'density' for uniform intensity (all nodes contribute equally),
+   *                 or a stream ID to use stream values as per-node intensity
+   *
+   * @example
+   * ```typescript
+   * // Use uniform density (default)
+   * graph.setHeatmapDataSource('density');
+   *
+   * // Use error stream values - nodes with more errors contribute more to heatmap
+   * graph.setHeatmapDataSource('errors');
+   * ```
+   */
+  setHeatmapDataSource(source: string): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (layer) {
+      layer.setDataSource(source);
+      // Rebuild intensity buffer on next render
+      this.updateLayerRenderContext();
+    }
+  }
+
+  /**
+   * Get heatmap data source.
+   *
+   * @returns Current data source ('density' or stream ID)
+   */
+  getHeatmapDataSource(): string | null {
+    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    return layer?.getDataSource() ?? null;
+  }
+
+  /**
    * Get info about all layers.
    */
   getLayers(): LayerInfo[] {
@@ -1269,16 +1320,66 @@ export class HeroineGraph {
   private updateLayerRenderContext(): void {
     if (!this.simBuffers || !this.state.loaded) return;
 
-    const heatmapContext: HeatmapRenderContext = {
-      viewportUniformBuffer: this.viewportUniformBuffer.buffer,
-      positionsX: this.simBuffers.positionsX,
-      positionsY: this.simBuffers.positionsY,
-      nodeCount: this.state.nodeCount,
-    };
-
     // Update heatmap layer if it exists
     const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
     if (heatmapLayer) {
+      // Check if heatmap is using a stream for per-node intensity
+      const dataSource = heatmapLayer.getDataSource();
+      let nodeIntensities: GPUBuffer | null = null;
+
+      if (dataSource !== "density" && this.streamManager.hasStream(dataSource)) {
+        // Get stream values and create intensity buffer
+        const stream = this.streamManager.getStream(dataSource);
+        if (stream) {
+          // Get normalized values from stream (domain mapped to 0-1)
+          const intensities = new Float32Array(this.state.nodeCount);
+
+          // Get domain for normalization
+          const colorScale = stream.getColorScale();
+          const domain = colorScale.domain;
+          const domainMin = domain[0];
+          const domainRange = domain[1] - domainMin;
+
+          // Fill intensity array from stream data
+          for (let i = 0; i < this.state.nodeCount; i++) {
+            const value = stream.getValue(i);
+            if (value !== undefined && domainRange > 0) {
+              // Normalize to 0-1 range based on domain
+              intensities[i] = Math.max(0, Math.min(1, (value - domainMin) / domainRange));
+            } else {
+              // Nodes without values don't contribute (intensity = 0)
+              intensities[i] = 0;
+            }
+          }
+
+          // Create or update GPU buffer
+          const { device } = this.gpuContext;
+          const requiredSize = this.state.nodeCount * 4; // 1 f32 per node
+
+          // Recreate buffer if size changed
+          if (!this.heatmapIntensityBuffer || this.heatmapIntensityBuffer.size < requiredSize) {
+            this.heatmapIntensityBuffer?.destroy();
+            this.heatmapIntensityBuffer = device.createBuffer({
+              label: "Heatmap Stream Intensity Buffer",
+              size: requiredSize,
+              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+          }
+
+          // Write intensity data
+          device.queue.writeBuffer(this.heatmapIntensityBuffer, 0, intensities);
+          nodeIntensities = this.heatmapIntensityBuffer;
+        }
+      }
+
+      const heatmapContext: HeatmapRenderContext = {
+        viewportUniformBuffer: this.viewportUniformBuffer.buffer,
+        positionsX: this.simBuffers.positionsX,
+        positionsY: this.simBuffers.positionsY,
+        nodeCount: this.state.nodeCount,
+        nodeIntensities,
+      };
+
       heatmapLayer.setRenderContext(heatmapContext);
     }
 
@@ -1600,6 +1701,454 @@ export class HeroineGraph {
    */
   getFlowPresets(): EdgeFlowPreset[] {
     return Object.keys(EDGE_FLOW_PRESETS) as EdgeFlowPreset[];
+  }
+
+  // ==========================================================================
+  // Public API - Per-Item Styling
+  // ==========================================================================
+
+  /**
+   * Set colors for individual nodes.
+   *
+   * @param colors Float32Array with 4 values (RGBA) per node.
+   *               Length must equal nodeCount × 4.
+   *               Values should be in range 0-1.
+   * @throws HeroineGraphError if array length doesn't match nodeCount × 4
+   *
+   * @example
+   * ```typescript
+   * const colors = new Float32Array(nodeCount * 4);
+   * for (let i = 0; i < nodeCount; i++) {
+   *   colors[i * 4 + 0] = Math.random(); // R
+   *   colors[i * 4 + 1] = Math.random(); // G
+   *   colors[i * 4 + 2] = Math.random(); // B
+   *   colors[i * 4 + 3] = 1.0;           // A
+   * }
+   * graph.setNodeColors(colors);
+   * ```
+   */
+  setNodeColors(colors: Float32Array): void {
+    if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot set node colors: graph not loaded",
+      );
+    }
+
+    const expected = this.state.nodeCount * 4;
+    if (colors.length !== expected) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Expected ${expected} values for ${this.state.nodeCount} nodes (4 per node), got ${colors.length}`,
+      );
+    }
+
+    const { device } = this.gpuContext;
+    const nodeAttrs = this.state.parsedGraph.nodeAttributes;
+
+    // Update CPU-side array and GPU buffer
+    // Node attrs layout: [radius, r, g, b, selected, hovered] per node
+    for (let i = 0; i < this.state.nodeCount; i++) {
+      const colorBase = i * 4;
+      const attrBase = i * 6;
+
+      // Skip NaN values (keep existing color)
+      const r = colors[colorBase];
+      const g = colors[colorBase + 1];
+      const b = colors[colorBase + 2];
+      // Alpha (colors[colorBase + 3]) is currently ignored - shader uses RGB only
+
+      if (!Number.isNaN(r)) nodeAttrs[attrBase + 1] = r;
+      if (!Number.isNaN(g)) nodeAttrs[attrBase + 2] = g;
+      if (!Number.isNaN(b)) nodeAttrs[attrBase + 3] = b;
+    }
+
+    // Upload entire buffer to GPU
+    device.queue.writeBuffer(
+      this.buffers.nodeAttributes,
+      0,
+      toArrayBuffer(nodeAttrs),
+    );
+  }
+
+  /**
+   * Set sizes (radii) for individual nodes.
+   *
+   * @param sizes Float32Array with 1 value per node.
+   *              Length must equal nodeCount.
+   *              Values are in graph units.
+   * @throws HeroineGraphError if array length doesn't match nodeCount
+   *
+   * @example
+   * ```typescript
+   * const sizes = new Float32Array(nodeCount);
+   * for (let i = 0; i < nodeCount; i++) {
+   *   sizes[i] = 5 + Math.random() * 10; // Random sizes 5-15
+   * }
+   * graph.setNodeSizes(sizes);
+   * ```
+   */
+  setNodeSizes(sizes: Float32Array): void {
+    if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot set node sizes: graph not loaded",
+      );
+    }
+
+    const expected = this.state.nodeCount;
+    if (sizes.length !== expected) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Expected ${expected} values for ${this.state.nodeCount} nodes (1 per node), got ${sizes.length}`,
+      );
+    }
+
+    const { device } = this.gpuContext;
+    const nodeAttrs = this.state.parsedGraph.nodeAttributes;
+
+    // Update CPU-side array
+    // Node attrs layout: [radius, r, g, b, selected, hovered] per node
+    for (let i = 0; i < this.state.nodeCount; i++) {
+      const size = sizes[i];
+      if (!Number.isNaN(size) && size > 0) {
+        nodeAttrs[i * 6] = size; // radius is at offset 0
+      }
+    }
+
+    // Upload entire buffer to GPU
+    device.queue.writeBuffer(
+      this.buffers.nodeAttributes,
+      0,
+      toArrayBuffer(nodeAttrs),
+    );
+  }
+
+  /**
+   * Set colors for individual edges.
+   *
+   * @param colors Float32Array with 4 values (RGBA) per edge.
+   *               Length must equal edgeCount × 4.
+   *               Values should be in range 0-1.
+   * @throws HeroineGraphError if array length doesn't match edgeCount × 4
+   *
+   * @example
+   * ```typescript
+   * const colors = new Float32Array(edgeCount * 4);
+   * for (let i = 0; i < edgeCount; i++) {
+   *   colors[i * 4 + 0] = 0.5; // R
+   *   colors[i * 4 + 1] = 0.5; // G
+   *   colors[i * 4 + 2] = 0.5; // B
+   *   colors[i * 4 + 3] = 0.6; // A (opacity)
+   * }
+   * graph.setEdgeColors(colors);
+   * ```
+   */
+  setEdgeColors(colors: Float32Array): void {
+    if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot set edge colors: graph not loaded",
+      );
+    }
+
+    const expected = this.state.edgeCount * 4;
+    if (colors.length !== expected) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Expected ${expected} values for ${this.state.edgeCount} edges (4 per edge), got ${colors.length}`,
+      );
+    }
+
+    const { device } = this.gpuContext;
+    const edgeAttrs = this.state.parsedGraph.edgeAttributes;
+
+    // Update CPU-side array and GPU buffer
+    // Edge attrs layout: [width, r, g, b, selected, hovered] per edge
+    for (let i = 0; i < this.state.edgeCount; i++) {
+      const colorBase = i * 4;
+      const attrBase = i * 6;
+
+      const r = colors[colorBase];
+      const g = colors[colorBase + 1];
+      const b = colors[colorBase + 2];
+      // Alpha (colors[colorBase + 3]) is currently ignored - shader uses RGB only
+
+      if (!Number.isNaN(r)) edgeAttrs[attrBase + 1] = r;
+      if (!Number.isNaN(g)) edgeAttrs[attrBase + 2] = g;
+      if (!Number.isNaN(b)) edgeAttrs[attrBase + 3] = b;
+    }
+
+    // Upload entire buffer to GPU
+    device.queue.writeBuffer(
+      this.buffers.edgeAttributes,
+      0,
+      toArrayBuffer(edgeAttrs),
+    );
+  }
+
+  /**
+   * Set widths for individual edges.
+   *
+   * @param widths Float32Array with 1 value per edge.
+   *               Length must equal edgeCount.
+   *               Values are in pixels.
+   * @throws HeroineGraphError if array length doesn't match edgeCount
+   *
+   * @example
+   * ```typescript
+   * const widths = new Float32Array(edgeCount);
+   * for (let i = 0; i < edgeCount; i++) {
+   *   widths[i] = 1 + Math.random() * 3; // Random widths 1-4px
+   * }
+   * graph.setEdgeWidths(widths);
+   * ```
+   */
+  setEdgeWidths(widths: Float32Array): void {
+    if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot set edge widths: graph not loaded",
+      );
+    }
+
+    const expected = this.state.edgeCount;
+    if (widths.length !== expected) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Expected ${expected} values for ${this.state.edgeCount} edges (1 per edge), got ${widths.length}`,
+      );
+    }
+
+    const { device } = this.gpuContext;
+    const edgeAttrs = this.state.parsedGraph.edgeAttributes;
+
+    // Update CPU-side array
+    // Edge attrs layout: [width, r, g, b, selected, hovered] per edge
+    for (let i = 0; i < this.state.edgeCount; i++) {
+      const width = widths[i];
+      if (!Number.isNaN(width) && width > 0) {
+        edgeAttrs[i * 6] = width; // width is at offset 0
+      }
+    }
+
+    // Upload entire buffer to GPU
+    device.queue.writeBuffer(
+      this.buffers.edgeAttributes,
+      0,
+      toArrayBuffer(edgeAttrs),
+    );
+  }
+
+  // ==========================================================================
+  // Public API - Value Streams
+  // ==========================================================================
+
+  /**
+   * Define a new value stream for visualizing numeric data as heat colors.
+   *
+   * Value streams map numeric values to colors using a configurable color scale.
+   * Multiple streams can be active and their colors are blended together.
+   *
+   * @param config - Stream configuration
+   * @returns The created stream's ID
+   * @throws Error if stream ID already exists or max streams exceeded
+   *
+   * @example
+   * ```typescript
+   * // Define an error stream with red gradient
+   * graph.defineValueStream({
+   *   id: 'errors',
+   *   colorScale: {
+   *     domain: [0, 10],
+   *     stops: [
+   *       { position: 0, color: [0, 0, 0, 0] },        // transparent at 0
+   *       { position: 0.5, color: [0.8, 0.2, 0.1, 0.5] }, // semi-transparent red
+   *       { position: 1, color: [1, 0, 0, 1] }         // solid red at max
+   *     ]
+   *   },
+   *   blendMode: 'additive'
+   * });
+   * ```
+   */
+  defineValueStream(config: ValueStreamConfig): string {
+    this.streamManager.defineStream(config);
+    return config.id;
+  }
+
+  /**
+   * Set values for nodes in a stream.
+   *
+   * @param streamId - Stream ID
+   * @param data - Array of node index/value pairs
+   *
+   * @example
+   * ```typescript
+   * graph.setStreamValues('errors', [
+   *   { nodeIndex: 0, value: 5 },
+   *   { nodeIndex: 1, value: 10 },
+   *   { nodeIndex: 5, value: 3 }
+   * ]);
+   * ```
+   */
+  setStreamValues(streamId: string, data: StreamDataPoint[]): void {
+    this.streamManager.setStreamData(streamId, data);
+    this.applyStreamColors();
+  }
+
+  /**
+   * Set bulk values for nodes in a stream (more efficient for large updates).
+   *
+   * @param streamId - Stream ID
+   * @param data - Bulk data with indices and values arrays
+   *
+   * @example
+   * ```typescript
+   * graph.setStreamBulkValues('activity', {
+   *   indices: new Int32Array([0, 1, 2, 3, 4]),
+   *   values: new Float32Array([0.5, 0.8, 0.3, 1.0, 0.2])
+   * });
+   * ```
+   */
+  setStreamBulkValues(streamId: string, data: StreamBulkData): void {
+    this.streamManager.setStreamBulkData(streamId, data);
+    this.applyStreamColors();
+  }
+
+  /**
+   * Clear all values from a stream.
+   *
+   * @param streamId - Stream ID
+   */
+  clearStreamValues(streamId: string): void {
+    this.streamManager.clearStreamData(streamId);
+    this.applyStreamColors();
+  }
+
+  /**
+   * Remove a value stream entirely.
+   *
+   * @param streamId - Stream ID to remove
+   * @returns true if stream was found and removed
+   */
+  removeValueStream(streamId: string): boolean {
+    const removed = this.streamManager.removeStream(streamId);
+    if (removed) {
+      this.applyStreamColors();
+    }
+    return removed;
+  }
+
+  /**
+   * Enable a value stream.
+   *
+   * @param streamId - Stream ID
+   */
+  enableValueStream(streamId: string): void {
+    this.streamManager.enableStream(streamId);
+    this.applyStreamColors();
+  }
+
+  /**
+   * Disable a value stream (keeps data, just hides visualization).
+   *
+   * @param streamId - Stream ID
+   */
+  disableValueStream(streamId: string): void {
+    this.streamManager.disableStream(streamId);
+    this.applyStreamColors();
+  }
+
+  /**
+   * Toggle a value stream's enabled state.
+   *
+   * @param streamId - Stream ID
+   * @returns New enabled state
+   */
+  toggleValueStream(streamId: string): boolean {
+    const result = this.streamManager.toggleStream(streamId);
+    this.applyStreamColors();
+    return result;
+  }
+
+  /**
+   * Get info about all defined value streams.
+   *
+   * @returns Array of stream information
+   */
+  getValueStreams(): StreamInfo[] {
+    return this.streamManager.getStreamInfo();
+  }
+
+  /**
+   * Check if a value stream exists.
+   *
+   * @param streamId - Stream ID
+   */
+  hasValueStream(streamId: string): boolean {
+    return this.streamManager.hasStream(streamId);
+  }
+
+  /**
+   * Set opacity for a value stream.
+   *
+   * @param streamId - Stream ID
+   * @param opacity - Opacity value (0-1)
+   */
+  setStreamOpacity(streamId: string, opacity: number): void {
+    const stream = this.streamManager.getStream(streamId);
+    if (stream) {
+      stream.setOpacity(opacity);
+      this.streamManager.invalidateCache();
+      this.applyStreamColors();
+    }
+  }
+
+  /**
+   * Set blend mode for a value stream.
+   *
+   * @param streamId - Stream ID
+   * @param blendMode - Blend mode ('additive', 'multiply', 'max', 'replace')
+   */
+  setStreamBlendMode(streamId: string, blendMode: "additive" | "multiply" | "max" | "replace"): void {
+    const stream = this.streamManager.getStream(streamId);
+    if (stream) {
+      stream.setBlendMode(blendMode);
+      this.streamManager.invalidateCache();
+      this.applyStreamColors();
+    }
+  }
+
+  /**
+   * Clear all value streams.
+   */
+  clearAllValueStreams(): void {
+    this.streamManager.clear();
+    this.applyStreamColors();
+  }
+
+  /**
+   * Apply computed stream colors to nodes.
+   * Called internally after stream data changes.
+   */
+  private applyStreamColors(): void {
+    if (!this.state.loaded || this.state.nodeCount === 0) return;
+
+    // Get blended colors from all active streams
+    const colors = this.streamManager.computeBlendedColors(this.state.nodeCount);
+
+    // Only apply if there are actual colors (any non-zero alpha)
+    let hasColors = false;
+    for (let i = 3; i < colors.length; i += 4) {
+      if (colors[i] > 0) {
+        hasColors = true;
+        break;
+      }
+    }
+
+    if (hasColors) {
+      this.setNodeColors(colors);
+    }
   }
 
   // ==========================================================================
@@ -2255,6 +2804,13 @@ export class HeroineGraph {
 
     // Destroy layer manager and all layers
     this.layerManager.destroy();
+
+    // Destroy stream manager
+    this.streamManager.destroy();
+
+    // Destroy heatmap intensity buffer
+    this.heatmapIntensityBuffer?.destroy();
+    this.heatmapIntensityBuffer = null;
 
     // Destroy viewport uniform buffer
     this.viewportUniformBuffer.destroy();

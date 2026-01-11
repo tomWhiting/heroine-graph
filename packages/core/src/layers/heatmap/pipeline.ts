@@ -67,6 +67,7 @@ export interface HeatmapPipeline {
     viewportUniformBuffer: GPUBuffer,
     positionsX: GPUBuffer,
     positionsY: GPUBuffer,
+    intensities?: GPUBuffer | null,
   ) => { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup };
   /** Create colormap bind group */
   createColormapBindGroup: (
@@ -140,7 +141,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
     ],
   });
 
-  // Group 1: Position buffers
+  // Group 1: Position buffers (and optional per-node intensities)
   const positionLayout = device.createBindGroupLayout({
     label: "Heatmap Position Layout",
     entries: [
@@ -151,6 +152,11 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
       },
       {
         binding: 1,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 2,
         visibility: GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
@@ -296,6 +302,15 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
   ]);
   device.queue.writeBuffer(heatmapUniformBuffer, 0, uniformData);
 
+  // Create a default intensity buffer (single value = 1.0) for when no per-node intensities provided
+  // This is a minimal buffer that the shader can safely read from
+  const defaultIntensityBuffer = device.createBuffer({
+    label: "Heatmap Default Intensity Buffer",
+    size: 4, // Single f32
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(defaultIntensityBuffer, 0, new Float32Array([1.0]));
+
   const colormapData = new Float32Array([
     DEFAULT_COLORMAP_UNIFORMS.minDensity,
     DEFAULT_COLORMAP_UNIFORMS.maxDensity,
@@ -323,6 +338,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
     viewportUniformBuffer: GPUBuffer,
     positionsX: GPUBuffer,
     positionsY: GPUBuffer,
+    intensities?: GPUBuffer | null,
   ): { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup } {
     const uniformsBindGroup = device.createBindGroup({
       label: "Heatmap Uniforms Bind Group",
@@ -333,12 +349,16 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
       ],
     });
 
+    // Use provided intensities buffer or fall back to default (all 1.0)
+    const intensityBuffer = intensities ?? defaultIntensityBuffer;
+
     const positionBindGroup = device.createBindGroup({
       label: "Heatmap Position Bind Group",
       layout: positionLayout,
       entries: [
         { binding: 0, resource: { buffer: positionsX } },
         { binding: 1, resource: { buffer: positionsY } },
+        { binding: 2, resource: { buffer: intensityBuffer } },
       ],
     });
 
@@ -365,6 +385,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
   function destroy(): void {
     heatmapUniformBuffer.destroy();
     colormapUniformBuffer.destroy();
+    defaultIntensityBuffer.destroy();
   }
 
   return {
