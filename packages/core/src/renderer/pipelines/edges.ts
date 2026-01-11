@@ -8,6 +8,12 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
+import type { EdgeFlowConfig } from "../../types.ts";
+import {
+  DEFAULT_EDGE_FLOW_CONFIG,
+  EDGE_FLOW_UNIFORM_SIZE,
+  writeEdgeFlowUniforms,
+} from "../edge_flow.ts";
 
 // Import shader source (bundled as text by esbuild)
 import EDGE_VERT_WGSL from "../shaders/edge.vert.wgsl";
@@ -44,6 +50,12 @@ export interface EdgeRenderPipeline {
   viewportBindGroupLayout: GPUBindGroupLayout;
   /** Bind group layout for edge data */
   edgeBindGroupLayout: GPUBindGroupLayout;
+  /** Bind group layout for flow uniforms */
+  flowBindGroupLayout: GPUBindGroupLayout;
+  /** Flow uniform buffer */
+  flowUniformBuffer: GPUBuffer;
+  /** Flow uniform bind group */
+  flowBindGroup: GPUBindGroup;
   /** Shader module */
   shaderModule: GPUShaderModule;
   /** Pipeline configuration */
@@ -113,10 +125,43 @@ export function createEdgeRenderPipeline(
     ],
   });
 
+  // Flow uniform bind group layout (group 2)
+  const flowBindGroupLayout = device.createBindGroupLayout({
+    label: "Edge Pipeline - Flow Uniforms",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  // Create flow uniform buffer
+  const flowUniformBuffer = device.createBuffer({
+    label: "Edge Flow Uniforms",
+    size: EDGE_FLOW_UNIFORM_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  // Create flow bind group
+  const flowBindGroup = device.createBindGroup({
+    label: "Edge Flow Bind Group",
+    layout: flowBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: flowUniformBuffer } },
+    ],
+  });
+
+  // Initialize flow uniforms with defaults
+  const flowData = new ArrayBuffer(EDGE_FLOW_UNIFORM_SIZE);
+  writeEdgeFlowUniforms(flowData, DEFAULT_EDGE_FLOW_CONFIG, 0.0);
+  device.queue.writeBuffer(flowUniformBuffer, 0, flowData);
+
   // Create pipeline layout
   const pipelineLayout = device.createPipelineLayout({
     label: "Edge Pipeline Layout",
-    bindGroupLayouts: [viewportBindGroupLayout, edgeBindGroupLayout],
+    bindGroupLayouts: [viewportBindGroupLayout, edgeBindGroupLayout, flowBindGroupLayout],
   });
 
   // Create render pipeline
@@ -163,6 +208,9 @@ export function createEdgeRenderPipeline(
     pipeline,
     viewportBindGroupLayout,
     edgeBindGroupLayout,
+    flowBindGroupLayout,
+    flowUniformBuffer,
+    flowBindGroup,
     shaderModule,
     config: finalConfig,
   };
@@ -220,6 +268,25 @@ export function createEdgeViewportBindGroup(
 }
 
 /**
+ * Update edge flow uniforms
+ *
+ * @param device - GPU device
+ * @param pipeline - Edge render pipeline
+ * @param config - Flow configuration
+ * @param time - Current animation time in seconds
+ */
+export function updateEdgeFlowUniforms(
+  device: GPUDevice,
+  pipeline: EdgeRenderPipeline,
+  config: EdgeFlowConfig,
+  time: number,
+): void {
+  const data = new ArrayBuffer(EDGE_FLOW_UNIFORM_SIZE);
+  writeEdgeFlowUniforms(data, config, time);
+  device.queue.writeBuffer(pipeline.flowUniformBuffer, 0, data);
+}
+
+/**
  * Records edge rendering commands
  *
  * @param pass - Render pass encoder
@@ -240,6 +307,7 @@ export function renderEdges(
   pass.setPipeline(pipeline.pipeline);
   pass.setBindGroup(0, viewportBindGroup);
   pass.setBindGroup(1, edgeBindGroup);
+  pass.setBindGroup(2, pipeline.flowBindGroup);
 
   // 6 vertices per quad (2 triangles), 1 instance per edge
   pass.draw(6, edgeCount);
@@ -250,6 +318,7 @@ export function renderEdges(
  *
  * @param pipeline - Edge render pipeline to destroy
  */
-export function destroyEdgeRenderPipeline(_pipeline: EdgeRenderPipeline): void {
-  // WebGPU resources are garbage collected
+export function destroyEdgeRenderPipeline(pipeline: EdgeRenderPipeline): void {
+  // Clean up the flow uniform buffer
+  pipeline.flowUniformBuffer.destroy();
 }

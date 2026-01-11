@@ -569,6 +569,107 @@ async function main(): Promise<void> {
   );
 
   // ========================================================================
+  // Edge Flow Controls
+  // ========================================================================
+
+  // Flow enable/disable toggle
+  $input("flow-enabled").addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    if (enabled) {
+      const preset = $select("flow-preset").value;
+      if (preset !== "none") {
+        state.graph?.setEdgeFlowPreset(preset as any);
+      } else {
+        // Enable with current slider values
+        state.graph?.setEdgeFlowConfig({
+          layer1: {
+            enabled: true,
+            pulseWidth: parseFloat($input("flow-width").value),
+            pulseCount: parseInt($input("flow-count").value, 10),
+            speed: parseFloat($input("flow-speed").value),
+            waveShape: "sine",
+            brightness: parseFloat($input("flow-brightness").value),
+            fade: 0.3,
+            color: null,
+          },
+        });
+      }
+    } else {
+      state.graph?.disableEdgeFlow();
+    }
+  });
+
+  // Flow preset selector
+  $select("flow-preset").addEventListener("change", (e) => {
+    const preset = (e.target as HTMLSelectElement).value;
+    if (preset === "none") {
+      state.graph?.disableEdgeFlow();
+      $input("flow-enabled").checked = false;
+    } else {
+      state.graph?.setEdgeFlowPreset(preset as any);
+      $input("flow-enabled").checked = true;
+
+      // Update sliders to match preset values
+      const config = state.graph?.getEdgeFlowConfig();
+      if (config) {
+        $input("flow-width").value = config.layer1.pulseWidth.toString();
+        $("flow-width-val").textContent = config.layer1.pulseWidth.toFixed(2);
+        $input("flow-count").value = config.layer1.pulseCount.toString();
+        $("flow-count-val").textContent = config.layer1.pulseCount.toString();
+        $input("flow-speed").value = config.layer1.speed.toString();
+        $("flow-speed-val").textContent = config.layer1.speed.toFixed(2);
+        $input("flow-brightness").value = config.layer1.brightness.toString();
+        $("flow-brightness-val").textContent = config.layer1.brightness.toFixed(1);
+      }
+    }
+  });
+
+  // Flow parameter sliders
+  function updateFlowFromSliders(): void {
+    if (!$input("flow-enabled").checked) return;
+
+    state.graph?.setEdgeFlowConfig({
+      layer1: {
+        enabled: true,
+        pulseWidth: parseFloat($input("flow-width").value),
+        pulseCount: parseInt($input("flow-count").value, 10),
+        speed: parseFloat($input("flow-speed").value),
+        waveShape: "sine",
+        brightness: parseFloat($input("flow-brightness").value),
+        fade: 0.3,
+        color: null,
+      },
+    });
+  }
+
+  setupSlider(
+    "flow-width",
+    "flow-width-val",
+    () => updateFlowFromSliders(),
+    (v) => v.toFixed(2),
+  );
+
+  setupSlider(
+    "flow-count",
+    "flow-count-val",
+    () => updateFlowFromSliders(),
+  );
+
+  setupSlider(
+    "flow-speed",
+    "flow-speed-val",
+    () => updateFlowFromSliders(),
+    (v) => v.toFixed(2),
+  );
+
+  setupSlider(
+    "flow-brightness",
+    "flow-brightness-val",
+    () => updateFlowFromSliders(),
+    (v) => v.toFixed(1),
+  );
+
+  // ========================================================================
   // Force Configuration
   // ========================================================================
 
@@ -576,7 +677,7 @@ async function main(): Promise<void> {
   const algorithmSelect = $("force-algorithm") as HTMLSelectElement;
   const algorithmVal = $("force-algorithm-val");
   algorithmSelect.addEventListener("change", () => {
-    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2";
+    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density";
     try {
       state.graph?.setForceAlgorithm(type);
       const algorithms = state.graph?.getAvailableAlgorithms() ?? [];

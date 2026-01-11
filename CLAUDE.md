@@ -63,3 +63,12 @@ tests/          # Test files
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+
+## Active Technologies
+- Rust 1.75+ (edition 2024), TypeScript 5.x for bindings (003-graph-algorithms-wasm)
+- N/A (in-memory graph already in GraphEngine) (003-graph-algorithms-wasm)
+- TypeScript 5.x (Deno 2.x), WGSL shaders (WebGPU) + WebGPU API, d3-scale/d3-color (TS), existing heroine-graph core (002-visualization-layers)
+- N/A (in-memory GPU buffers only) (002-visualization-layers)
+
+## Recent Changes
+- 003-graph-algorithms-wasm: Added Rust 1.75+ (edition 2024), TypeScript 5.x for bindings

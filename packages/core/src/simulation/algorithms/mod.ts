@@ -11,6 +11,7 @@ import { getAlgorithmRegistry as _getRegistry } from "./registry.ts";
 import { createN2Algorithm as _createN2 } from "./n2.ts";
 import { createBarnesHutAlgorithm as _createBarnesHut } from "./barnes-hut.ts";
 import { createForceAtlas2Algorithm as _createForceAtlas2 } from "./force-atlas2.ts";
+import { createDensityFieldAlgorithm as _createDensityField } from "./density-field.ts";
 
 // Types
 export type {
@@ -35,6 +36,7 @@ export {
 export { createN2Algorithm, N2ForceAlgorithm } from "./n2.ts";
 export { BarnesHutForceAlgorithm, createBarnesHutAlgorithm } from "./barnes-hut.ts";
 export { createForceAtlas2Algorithm, ForceAtlas2Algorithm } from "./force-atlas2.ts";
+export { createDensityFieldAlgorithm, DensityFieldAlgorithm } from "./density-field.ts";
 
 /**
  * Initialize the global algorithm registry with built-in algorithms
@@ -57,5 +59,8 @@ export function initializeBuiltinAlgorithms(): void {
     registry.register(_createForceAtlas2());
   }
 
-  // TODO: Register Density-based when implemented
+  // Register Density Field algorithm
+  if (!registry.has("density")) {
+    registry.register(_createDensityField());
+  }
 }

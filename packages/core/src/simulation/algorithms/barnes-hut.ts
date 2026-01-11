@@ -103,13 +103,8 @@ interface BarnesHutBindGroups extends AlgorithmBindGroups {
 export class BarnesHutForceAlgorithm implements ForceAlgorithm {
   readonly info = BARNES_HUT_ALGORITHM_INFO;
 
-  // Store references for use in recordRepulsionPass
-  private device: GPUDevice | null = null;
-  private buffers: BarnesHutBuffers | null = null;
-
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
-    this.device = device; // Store for recordRepulsionPass
 
     // Create shader modules
     const buildModule = device.createShaderModule({
@@ -248,7 +243,6 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       treeSizes,
       treeCount,
     );
-    this.buffers = buffers; // Store for recordRepulsionPass
     return buffers;
   }
 

@@ -9,6 +9,7 @@
 
 import type {
   BoundingBox,
+  EdgeFlowConfig,
   EdgeId,
   EventHandler,
   EventMap,
@@ -41,7 +42,13 @@ import {
   createEdgeRenderPipeline,
   type EdgeRenderPipeline,
   renderEdges,
+  updateEdgeFlowUniforms,
 } from "../renderer/pipelines/edges.ts";
+import {
+  DEFAULT_EDGE_FLOW_CONFIG,
+  type EdgeFlowPreset,
+  EDGE_FLOW_PRESETS,
+} from "../renderer/edge_flow.ts";
 import { createRenderLoop, type FrameStats, type RenderLoop } from "../renderer/render_loop.ts";
 import { createSimulationController, type SimulationController } from "../simulation/controller.ts";
 import {
@@ -176,6 +183,10 @@ export class HeroineGraph {
   private simulationController: SimulationController;
   private forceConfig: FullForceConfig;
 
+  // Edge flow animation
+  private flowConfig: EdgeFlowConfig;
+  private flowStartTime: number = 0;
+
   // Pipelines
   private nodePipeline: NodeRenderPipeline | null = null;
   private edgePipeline: EdgeRenderPipeline | null = null;
@@ -264,6 +275,10 @@ export class HeroineGraph {
 
     // Initialize force configuration
     this.forceConfig = { ...DEFAULT_FORCE_CONFIG };
+
+    // Initialize edge flow configuration (disabled by default)
+    this.flowConfig = { ...DEFAULT_EDGE_FLOW_CONFIG };
+    this.flowStartTime = performance.now();
 
     // Initialize force algorithm registry and default algorithm
     initializeBuiltinAlgorithms();
@@ -528,6 +543,10 @@ export class HeroineGraph {
       this.edgeBindGroup &&
       this.state.edgeCount > 0
     ) {
+      // Update flow animation time
+      const flowTime = (performance.now() - this.flowStartTime) / 1000.0;
+      updateEdgeFlowUniforms(device, this.edgePipeline, this.flowConfig, flowTime);
+
       renderEdges(
         renderPass,
         this.edgePipeline,
@@ -1519,6 +1538,68 @@ export class HeroineGraph {
     if (layer) {
       layer.setLabels(labels);
     }
+  }
+
+  // ==========================================================================
+  // Public API - Edge Flow Animation
+  // ==========================================================================
+
+  /**
+   * Enable edge flow animation with a preset.
+   * @param preset Preset name: "particles", "waves", "dataStream", "sparks", "warning", "dualLayer", "energy"
+   */
+  setEdgeFlowPreset(preset: EdgeFlowPreset): void {
+    const config = EDGE_FLOW_PRESETS[preset];
+    if (!config) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Unknown flow preset: ${preset}. Available: ${Object.keys(EDGE_FLOW_PRESETS).join(", ")}`,
+      );
+    }
+    this.flowConfig = config;
+  }
+
+  /**
+   * Set custom edge flow configuration.
+   * @param config Partial configuration to merge with current config
+   */
+  setEdgeFlowConfig(config: Partial<EdgeFlowConfig>): void {
+    this.flowConfig = {
+      layer1: config.layer1 ?? this.flowConfig.layer1,
+      layer2: config.layer2 ?? this.flowConfig.layer2,
+    };
+  }
+
+  /**
+   * Get current edge flow configuration.
+   * @returns A copy of the current flow configuration
+   */
+  getEdgeFlowConfig(): EdgeFlowConfig {
+    return {
+      layer1: { ...this.flowConfig.layer1 },
+      layer2: { ...this.flowConfig.layer2 },
+    };
+  }
+
+  /**
+   * Disable edge flow animation.
+   */
+  disableEdgeFlow(): void {
+    this.flowConfig = { ...DEFAULT_EDGE_FLOW_CONFIG };
+  }
+
+  /**
+   * Check if edge flow is enabled.
+   */
+  isEdgeFlowEnabled(): boolean {
+    return this.flowConfig.layer1.enabled || this.flowConfig.layer2.enabled;
+  }
+
+  /**
+   * Get available flow preset names.
+   */
+  getFlowPresets(): EdgeFlowPreset[] {
+    return Object.keys(EDGE_FLOW_PRESETS) as EdgeFlowPreset[];
   }
 
   // ==========================================================================

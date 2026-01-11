@@ -18,6 +18,10 @@ export type {
   ContourLayerConfig,
   Edge,
   EdgeClickEvent,
+  // Edge flow types
+  EdgeFlowConfig,
+  EdgeFlowLayerConfig,
+  EdgeFlowWaveShape,
   EdgeHoverEnterEvent,
   EdgeHoverLeaveEvent,
   EdgeId,
@@ -207,6 +211,16 @@ export {
   renderEdges,
 } from "./src/renderer/pipelines/edges.ts";
 export type { EdgePipelineConfig, EdgeRenderPipeline } from "./src/renderer/pipelines/edges.ts";
+
+export {
+  createEdgeFlowConfig,
+  DEFAULT_EDGE_FLOW_CONFIG,
+  DISABLED_FLOW_LAYER,
+  EDGE_FLOW_PRESETS,
+  getFlowPreset,
+  waveShapeToFloat,
+} from "./src/renderer/edge_flow.ts";
+export type { EdgeFlowPreset } from "./src/renderer/edge_flow.ts";
 
 // =============================================================================
 // Render Loop

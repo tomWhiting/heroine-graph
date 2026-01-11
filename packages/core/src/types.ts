@@ -301,6 +301,41 @@ export interface GraphConfig {
 }
 
 // =============================================================================
+// Edge Flow Types
+// =============================================================================
+
+/** Wave shape for flow animation */
+export type EdgeFlowWaveShape = "square" | "triangle" | "sine";
+
+/** Single layer of edge flow animation */
+export interface EdgeFlowLayerConfig {
+  /** Whether this layer is enabled */
+  readonly enabled: boolean;
+  /** Width of each pulse (0.005 - 0.8, normalized) */
+  readonly pulseWidth: number;
+  /** Number of pulses along each edge (1 - 8) */
+  readonly pulseCount: number;
+  /** Animation speed multiplier (0.01 - 2.0) */
+  readonly speed: number;
+  /** Wave shape: square (hard edges), triangle (linear), sine (smooth) */
+  readonly waveShape: EdgeFlowWaveShape;
+  /** Brightness multiplier (1.0 - 5.0) */
+  readonly brightness: number;
+  /** Trail fade amount (0.0 - 1.0, 0 = no trail) */
+  readonly fade: number;
+  /** Optional color override (null = use edge color) */
+  readonly color: readonly [number, number, number, number] | null;
+}
+
+/** Complete edge flow configuration (dual-layer) */
+export interface EdgeFlowConfig {
+  /** Primary flow layer */
+  readonly layer1: EdgeFlowLayerConfig;
+  /** Secondary flow layer (sparks, highlights) */
+  readonly layer2: EdgeFlowLayerConfig;
+}
+
+// =============================================================================
 // Input Types (for creating/loading graphs)
 // =============================================================================
 
