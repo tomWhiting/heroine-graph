@@ -122,6 +122,12 @@ import {
   type StreamManager,
   type ValueStreamConfig,
 } from "../streams/mod.ts";
+import {
+  createTypeStyleManager,
+  type EdgeTypeStyleMap,
+  type NodeTypeStyleMap,
+  type TypeStyleManager,
+} from "../styling/mod.ts";
 
 /**
  * WASM engine interface for spatial queries.
@@ -242,6 +248,9 @@ export class HeroineGraph {
   // Value stream system
   private streamManager: StreamManager;
 
+  // Type-based styling system
+  private typeStyleManager: TypeStyleManager;
+
   // Heatmap stream intensity buffer (per-node values from stream)
   private heatmapIntensityBuffer: GPUBuffer | null = null;
 
@@ -334,6 +343,9 @@ export class HeroineGraph {
 
     // Initialize stream manager for value streams
     this.streamManager = createStreamManager();
+
+    // Initialize type-based styling manager
+    this.typeStyleManager = createTypeStyleManager();
 
     // Note: render loop starts on first load() call, not here
     // This prevents rendering before canvas has valid dimensions
@@ -2149,6 +2161,146 @@ export class HeroineGraph {
   clearAllValueStreams(): void {
     this.streamManager.clear();
     this.applyStreamColors();
+  }
+
+  // ============================================================================
+  // Type-Based Styling API
+  // ============================================================================
+
+  /**
+   * Set visual styles for node types.
+   *
+   * @param styles - Map of type names to node styles
+   *
+   * @example
+   * ```typescript
+   * graph.setNodeTypeStyles({
+   *   person: { color: '#4CAF50', size: 1.2 },
+   *   company: { color: '#2196F3', size: 1.5 },
+   *   document: { color: '#FF9800', size: 0.8 }
+   * });
+   * ```
+   */
+  setNodeTypeStyles(styles: NodeTypeStyleMap): void {
+    this.typeStyleManager.setNodeTypeStyles(styles);
+    this.applyTypeStyles();
+  }
+
+  /**
+   * Set visual styles for edge types.
+   *
+   * @param styles - Map of type names to edge styles
+   *
+   * @example
+   * ```typescript
+   * graph.setEdgeTypeStyles({
+   *   friendship: { color: '#4CAF50', width: 2.0 },
+   *   collaboration: { color: '#2196F3', width: 1.5, opacity: 0.8 },
+   *   dependency: { color: '#FF5722', width: 1.0 }
+   * });
+   * ```
+   */
+  setEdgeTypeStyles(styles: EdgeTypeStyleMap): void {
+    this.typeStyleManager.setEdgeTypeStyles(styles);
+    this.applyTypeStyles();
+  }
+
+  /**
+   * Get all defined node type names.
+   *
+   * @returns Array of node type names
+   */
+  getNodeTypes(): string[] {
+    return this.typeStyleManager.getNodeTypes();
+  }
+
+  /**
+   * Get all defined edge type names.
+   *
+   * @returns Array of edge type names
+   */
+  getEdgeTypes(): string[] {
+    return this.typeStyleManager.getEdgeTypes();
+  }
+
+  /**
+   * Clear all type-based styles.
+   */
+  clearTypeStyles(): void {
+    this.typeStyleManager.clear();
+    this.applyTypeStyles();
+  }
+
+  /**
+   * Apply type-based styles to nodes and edges.
+   * Called internally after type style changes.
+   */
+  private applyTypeStyles(): void {
+    if (!this.state.loaded || !this.state.parsedGraph) return;
+
+    const parsed = this.state.parsedGraph;
+    const { device } = this.gpuContext;
+
+    // Update node attributes buffer with type-based colors and sizes
+    if (this.buffers && this.typeStyleManager.hasNodeStyles()) {
+      const nodeCount = this.state.nodeCount;
+      const nodeAttributes = new Float32Array(nodeCount * 8); // 8 floats per node
+
+      for (let i = 0; i < nodeCount; i++) {
+        const nodeType = parsed.nodeTypes?.[i];
+        const style = this.typeStyleManager.resolveNodeStyle(nodeType);
+
+        const baseOffset = i * 8;
+        // Copy original radius (from parsed graph or default)
+        const originalRadius = parsed.nodeAttributes[i * 8 + 0] || 8.0;
+        nodeAttributes[baseOffset + 0] = originalRadius * style.size;
+        // Color (RGBA)
+        nodeAttributes[baseOffset + 1] = style.color[0];
+        nodeAttributes[baseOffset + 2] = style.color[1];
+        nodeAttributes[baseOffset + 3] = style.color[2];
+        nodeAttributes[baseOffset + 4] = style.color[3];
+        // Copy remaining attributes (border color, border width, flags)
+        nodeAttributes[baseOffset + 5] = parsed.nodeAttributes[i * 8 + 5] || 0;
+        nodeAttributes[baseOffset + 6] = parsed.nodeAttributes[i * 8 + 6] || 0;
+        nodeAttributes[baseOffset + 7] = parsed.nodeAttributes[i * 8 + 7] || 0;
+      }
+
+      device.queue.writeBuffer(
+        this.buffers.nodeAttributes,
+        0,
+        nodeAttributes.buffer,
+      );
+    }
+
+    // Update edge attributes buffer with type-based colors and widths
+    if (this.buffers && this.typeStyleManager.hasEdgeStyles()) {
+      const edgeCount = this.state.edgeCount;
+      const edgeAttributes = new Float32Array(edgeCount * 8); // 8 floats per edge
+
+      for (let i = 0; i < edgeCount; i++) {
+        const edgeType = parsed.edgeTypes?.[i];
+        const style = this.typeStyleManager.resolveEdgeStyle(edgeType);
+
+        const baseOffset = i * 8;
+        // Width
+        edgeAttributes[baseOffset + 0] = style.width;
+        // Color (RGBA)
+        edgeAttributes[baseOffset + 1] = style.color[0];
+        edgeAttributes[baseOffset + 2] = style.color[1];
+        edgeAttributes[baseOffset + 3] = style.color[2];
+        edgeAttributes[baseOffset + 4] = style.color[3];
+        // Remaining slots (reserved)
+        edgeAttributes[baseOffset + 5] = 0;
+        edgeAttributes[baseOffset + 6] = 0;
+        edgeAttributes[baseOffset + 7] = 0;
+      }
+
+      device.queue.writeBuffer(
+        this.buffers.edgeAttributes,
+        0,
+        edgeAttributes.buffer,
+      );
+    }
   }
 
   /**

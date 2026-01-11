@@ -549,31 +549,46 @@ async function main(): Promise<void> {
         return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
       };
 
-      // Convert to GraphInput format
+      // Convert to GraphInput format - note: don't set colors here, use type-based styling
       const graphData: GraphInput = {
         nodes: codebase.nodes.map((node) => {
           // Store metrics by node index
           state.codebaseMetrics!.set(node.id, node.metrics);
 
-          // Get type color and convert to hex
-          const typeStyle = codebase.typeStyles[node.type];
-          const color = typeStyle?.color || [0.5, 0.5, 0.5, 1.0];
-
           return {
             id: node.id,
             label: node.label,
-            type: node.type,
-            color: rgbaToHex(color),
+            type: node.type, // Type will be used for type-based styling
           };
         }),
         edges: codebase.edges.map((edge) => ({
           source: edge.source,
           target: edge.target,
-          type: edge.type,
+          type: edge.type, // Type will be used for type-based styling
         })),
       };
 
       await state.graph.load(graphData);
+
+      // Apply type-based styling from the codebase data
+      // This demonstrates the setNodeTypeStyles() and setEdgeTypeStyles() APIs
+      const nodeStyles: Record<string, { color: string; size?: number }> = {};
+      for (const [typeName, style] of Object.entries(codebase.typeStyles)) {
+        nodeStyles[typeName] = {
+          color: rgbaToHex(style.color),
+          size: 1.0, // Default size multiplier
+        };
+      }
+      state.graph.setNodeTypeStyles(nodeStyles);
+
+      const edgeStyles: Record<string, { color: string; width?: number; opacity?: number }> = {};
+      for (const [typeName, style] of Object.entries(codebase.edgeTypeStyles)) {
+        edgeStyles[typeName] = {
+          color: rgbaToHex(style.color),
+          opacity: style.color[3] || 0.5,
+        };
+      }
+      state.graph.setEdgeTypeStyles(edgeStyles);
 
       state.graphData = graphData;
       state.nodeCount = graphData.nodes.length;

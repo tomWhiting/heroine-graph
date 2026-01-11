@@ -55,6 +55,11 @@ export interface ParsedGraph {
   nodeMetadata: Map<number, Record<string, unknown>>;
   /** Original edge metadata (for lookup) */
   edgeMetadata: Map<number, Record<string, unknown>>;
+
+  /** Node types (for type-based styling) */
+  nodeTypes?: string[] | undefined;
+  /** Edge types (for type-based styling) */
+  edgeTypes?: string[] | undefined;
 }
 
 /**
@@ -151,6 +156,12 @@ export function parseGraphInput(
   const nodeMetadata = new Map<number, Record<string, unknown>>();
   const edgeMetadata = new Map<number, Record<string, unknown>>();
 
+  // Type storage (for type-based styling)
+  const nodeTypes: string[] = new Array(nodeCount);
+  const edgeTypes: string[] = new Array(edgeCount);
+  let hasNodeTypes = false;
+  let hasEdgeTypes = false;
+
   // Parse nodes
   for (let i = 0; i < nodeCount; i++) {
     const node = nodes[i];
@@ -174,6 +185,13 @@ export function parseGraphInput(
     const nodeMetadataValue = node["metadata"] as Record<string, unknown> | undefined;
     if (nodeMetadataValue) {
       nodeMetadata.set(idx, nodeMetadataValue);
+    }
+
+    // Extract type for type-based styling
+    const nodeType = node["type"] as string | undefined;
+    if (nodeType) {
+      nodeTypes[idx] = nodeType;
+      hasNodeTypes = true;
     }
   }
 
@@ -222,6 +240,13 @@ export function parseGraphInput(
     if (edgeMetadataValue) {
       edgeMetadata.set(idx, edgeMetadataValue);
     }
+
+    // Extract type for type-based styling
+    const edgeType = edge["type"] as string | undefined;
+    if (edgeType) {
+      edgeTypes[idx] = edgeType;
+      hasEdgeTypes = true;
+    }
   }
 
   return {
@@ -237,6 +262,9 @@ export function parseGraphInput(
     edgeAttributes,
     nodeMetadata,
     edgeMetadata,
+    // Only include types if any were found
+    nodeTypes: hasNodeTypes ? nodeTypes : undefined,
+    edgeTypes: hasEdgeTypes ? edgeTypes : undefined,
   };
 }
 

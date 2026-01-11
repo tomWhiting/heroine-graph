@@ -475,3 +475,17 @@ export type {
   ValueColorScale,
   ValueStreamConfig,
 } from "./src/streams/mod.ts";
+
+// =============================================================================
+// Type-Based Styling
+// =============================================================================
+
+export { createTypeStyleManager, TypeStyleManager } from "./src/styling/mod.ts";
+export type {
+  EdgeTypeStyle,
+  EdgeTypeStyleMap,
+  NodeTypeStyle,
+  NodeTypeStyleMap,
+  ResolvedEdgeStyle,
+  ResolvedNodeStyle,
+} from "./src/styling/mod.ts";
