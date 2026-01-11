@@ -17,6 +17,35 @@ import {
 // Types
 // ============================================================================
 
+interface NodeMetrics {
+  errors: number;
+  warnings: number;
+  complexity: number;
+  lines: number;
+}
+
+interface CodebaseNode {
+  id: number;
+  label: string;
+  type: string;
+  metrics: NodeMetrics;
+}
+
+interface CodebaseEdge {
+  source: number;
+  target: number;
+  type: string;
+}
+
+interface CodebaseData {
+  name: string;
+  description: string;
+  nodes: CodebaseNode[];
+  edges: CodebaseEdge[];
+  typeStyles: Record<string, { color: number[]; label: string }>;
+  edgeTypeStyles: Record<string, { color: number[]; label: string }>;
+}
+
 interface AppState {
   graph: HeroineGraph | null;
   graphData: GraphInput | null;
@@ -26,6 +55,9 @@ interface AppState {
   lastFrameTime: number;
   frameCount: number;
   fps: number;
+  // Codebase-specific data
+  codebaseData: CodebaseData | null;
+  codebaseMetrics: Map<number, NodeMetrics> | null;
 }
 
 // ============================================================================
@@ -410,6 +442,8 @@ async function main(): Promise<void> {
     lastFrameTime: performance.now(),
     frameCount: 0,
     fps: 0,
+    codebaseData: null,
+    codebaseMetrics: null,
   };
 
   // Check WebGPU support
@@ -486,6 +520,161 @@ async function main(): Promise<void> {
     if ($input("labels-enabled").checked) {
       updateLabels();
     }
+
+    // Clear codebase data when loading random data
+    state.codebaseData = null;
+    state.codebaseMetrics = null;
+  }
+
+  /**
+   * Load the codebase dataset with real metrics
+   */
+  async function loadCodebase(): Promise<void> {
+    if (!state.graph) return;
+
+    try {
+      // Fetch the codebase JSON
+      const response = await fetch("./data/codebase.json");
+      const codebase: CodebaseData = await response.json();
+
+      // Store for later use with streams
+      state.codebaseData = codebase;
+      state.codebaseMetrics = new Map();
+
+      // Helper to convert RGBA (0-1) to hex string
+      const rgbaToHex = (rgba: number[]): string => {
+        const r = Math.round((rgba[0] || 0) * 255);
+        const g = Math.round((rgba[1] || 0) * 255);
+        const b = Math.round((rgba[2] || 0) * 255);
+        return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+      };
+
+      // Convert to GraphInput format
+      const graphData: GraphInput = {
+        nodes: codebase.nodes.map((node) => {
+          // Store metrics by node index
+          state.codebaseMetrics!.set(node.id, node.metrics);
+
+          // Get type color and convert to hex
+          const typeStyle = codebase.typeStyles[node.type];
+          const color = typeStyle?.color || [0.5, 0.5, 0.5, 1.0];
+
+          return {
+            id: node.id,
+            label: node.label,
+            type: node.type,
+            color: rgbaToHex(color),
+          };
+        }),
+        edges: codebase.edges.map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          type: edge.type,
+        })),
+      };
+
+      await state.graph.load(graphData);
+
+      state.graphData = graphData;
+      state.nodeCount = graphData.nodes.length;
+      state.edgeCount = graphData.edges.length;
+
+      $("stat-nodes").textContent = formatNumber(state.nodeCount);
+      $("stat-edges").textContent = formatNumber(state.edgeCount);
+
+      // Update labels if enabled
+      if ($input("labels-enabled").checked) {
+        updateLabels();
+      }
+
+      // Auto-setup streams for the metrics
+      setupCodebaseStreams();
+
+      console.log(`Loaded codebase: ${codebase.name} (${state.nodeCount} files, ${state.edgeCount} dependencies)`);
+    } catch (err) {
+      console.error("Failed to load codebase:", err);
+    }
+  }
+
+  /**
+   * Setup value streams from codebase metrics (errors, warnings, complexity, lines)
+   */
+  function setupCodebaseStreams(): void {
+    if (!state.graph || !state.codebaseMetrics) return;
+
+    // Define stream presets for each metric type
+    const metricStreams = {
+      errors: {
+        id: "errors",
+        name: "Errors",
+        domain: [0, 5] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] as [number, number, number, number] },
+          { position: 0.7, color: [1, 0.2, 0.1, 0.7] as [number, number, number, number] },
+          { position: 1, color: [1, 0.1, 0.05, 1] as [number, number, number, number] },
+        ],
+      },
+      warnings: {
+        id: "warnings",
+        name: "Warnings",
+        domain: [0, 10] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.3, color: [0.8, 0.7, 0.1, 0.3] as [number, number, number, number] },
+          { position: 0.7, color: [1, 0.8, 0.2, 0.6] as [number, number, number, number] },
+          { position: 1, color: [1, 0.9, 0.3, 1] as [number, number, number, number] },
+        ],
+      },
+      complexity: {
+        id: "complexity",
+        name: "Complexity",
+        domain: [0, 30] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.3, color: [0.2, 0.5, 0.8, 0.3] as [number, number, number, number] },
+          { position: 0.6, color: [0.5, 0.3, 0.8, 0.6] as [number, number, number, number] },
+          { position: 1, color: [0.8, 0.2, 0.9, 1] as [number, number, number, number] },
+        ],
+      },
+      lines: {
+        id: "lines",
+        name: "Lines of Code",
+        domain: [0, 350] as [number, number],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
+          { position: 0.3, color: [0.2, 0.6, 0.3, 0.3] as [number, number, number, number] },
+          { position: 0.6, color: [0.3, 0.7, 0.4, 0.6] as [number, number, number, number] },
+          { position: 1, color: [0.4, 0.9, 0.5, 1] as [number, number, number, number] },
+        ],
+      },
+    };
+
+    // Define all streams
+    for (const [key, config] of Object.entries(metricStreams)) {
+      state.graph.defineValueStream({
+        id: config.id,
+        name: config.name,
+        colorScale: {
+          domain: config.domain,
+          stops: config.stops,
+        },
+        blendMode: "additive",
+        opacity: 1.0,
+      });
+
+      // Set values from codebase metrics
+      const data: Array<{ nodeIndex: number; value: number }> = [];
+      for (const [nodeIndex, metrics] of state.codebaseMetrics) {
+        const value = metrics[key as keyof NodeMetrics];
+        if (value > 0) {
+          data.push({ nodeIndex, value });
+        }
+      }
+      state.graph.setStreamValues(config.id, data);
+    }
+
+    console.log("Codebase streams initialized: errors, warnings, complexity, lines");
   }
 
   /**
@@ -590,8 +779,20 @@ async function main(): Promise<void> {
     state.graph.load({ nodes: [], edges: [] });
     state.nodeCount = 0;
     state.edgeCount = 0;
+    state.codebaseData = null;
+    state.codebaseMetrics = null;
     $("stat-nodes").textContent = "0";
     $("stat-edges").textContent = "0";
+  });
+
+  // Load codebase button
+  $("load-codebase-btn").addEventListener("click", async () => {
+    console.log("Loading codebase dataset...");
+    try {
+      await loadCodebase();
+    } catch (err) {
+      console.error("Failed to load codebase:", err);
+    }
   });
 
   // ========================================================================
@@ -649,10 +850,94 @@ async function main(): Promise<void> {
   });
 
   // Heatmap data source (stream → heatmap binding)
+  // This is now INDEPENDENT - it auto-creates streams when needed
   $select("heatmap-datasource").addEventListener("change", (e) => {
     if (!$input("heatmap-enabled").checked) return;
     const source = (e.target as HTMLSelectElement).value;
+
+    if (source === "density") {
+      // Uniform density mode - no stream needed
+      state.graph?.setHeatmapDataSource(source);
+      console.log("Heatmap using uniform density");
+      return;
+    }
+
+    // Check if we have codebase data (streams already set up)
+    if (state.codebaseData && state.codebaseMetrics) {
+      // Streams were set up by loadCodebase()
+      state.graph?.setHeatmapDataSource(source);
+      console.log(`Heatmap using codebase stream: ${source}`);
+      return;
+    }
+
+    // For synthetic data, auto-create the stream if it doesn't exist
+    if (state.graph && !state.graph.hasValueStream(source)) {
+      const streamConfigs: Record<string, { domain: [number, number]; stops: Array<{ position: number; color: [number, number, number, number] }> }> = {
+        errors: {
+          domain: [0, 10],
+          stops: [
+            { position: 0, color: [0, 0, 0, 0] },
+            { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] },
+            { position: 0.7, color: [1, 0.2, 0.1, 0.7] },
+            { position: 1, color: [1, 0.1, 0.05, 1] },
+          ],
+        },
+        warnings: {
+          domain: [0, 10],
+          stops: [
+            { position: 0, color: [0, 0, 0, 0] },
+            { position: 0.3, color: [0.8, 0.7, 0.1, 0.3] },
+            { position: 0.7, color: [1, 0.8, 0.2, 0.6] },
+            { position: 1, color: [1, 0.9, 0.3, 1] },
+          ],
+        },
+        complexity: {
+          domain: [0, 30],
+          stops: [
+            { position: 0, color: [0, 0, 0, 0] },
+            { position: 0.3, color: [0.2, 0.5, 0.8, 0.3] },
+            { position: 0.6, color: [0.5, 0.3, 0.8, 0.6] },
+            { position: 1, color: [0.8, 0.2, 0.9, 1] },
+          ],
+        },
+        lines: {
+          domain: [0, 500],
+          stops: [
+            { position: 0, color: [0, 0, 0, 0] },
+            { position: 0.3, color: [0.2, 0.6, 0.3, 0.3] },
+            { position: 0.6, color: [0.3, 0.7, 0.4, 0.6] },
+            { position: 1, color: [0.4, 0.9, 0.5, 1] },
+          ],
+        },
+      };
+
+      const config = streamConfigs[source];
+      if (config) {
+        // Define the stream
+        state.graph.defineValueStream({
+          id: source,
+          name: source.charAt(0).toUpperCase() + source.slice(1),
+          colorScale: config,
+          blendMode: "additive",
+          opacity: 1.0,
+        });
+
+        // Generate random data for ~30% of nodes
+        const data: Array<{ nodeIndex: number; value: number }> = [];
+        const [min, max] = config.domain;
+        for (let i = 0; i < state.nodeCount; i++) {
+          if (Math.random() < 0.3) {
+            const value = min + Math.pow(Math.random(), 2) * (max - min);
+            data.push({ nodeIndex: i, value });
+          }
+        }
+        state.graph.setStreamValues(source, data);
+        console.log(`Auto-created ${source} stream with ${data.length} random values`);
+      }
+    }
+
     state.graph?.setHeatmapDataSource(source);
+    console.log(`Heatmap using stream: ${source}`);
   });
 
   function setupSlider(

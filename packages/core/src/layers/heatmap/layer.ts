@@ -79,6 +79,9 @@ export class HeatmapLayer implements Layer {
   private colormapBindGroup: GPUBindGroup | null = null;
   private bindGroupsDirty = true;
 
+  // Deferred destruction queue (to avoid destroying textures still in use by GPU)
+  private pendingDestruction: { resource: ColorScaleTexture; framesRemaining: number }[] = [];
+
   constructor(
     id: string,
     context: GPUContext,
@@ -141,7 +144,8 @@ export class HeatmapLayer implements Layer {
 
     // Recreate color scale if changed
     if (config.colorScale && config.colorScale !== prevColorScale) {
-      this.colorScale.destroy();
+      // Defer destruction of old texture to avoid GPU race condition
+      this.scheduleDestruction(this.colorScale);
       this.colorScale = createColorScaleTexture(this.context, config.colorScale);
       this.bindGroupsDirty = true;
     }
@@ -162,10 +166,36 @@ export class HeatmapLayer implements Layer {
   setColorScale(name: ColorScaleName): void {
     if (name === this.config.colorScale) return;
 
-    this.colorScale.destroy();
+    // Defer destruction of old texture to avoid GPU race condition
+    this.scheduleDestruction(this.colorScale);
     this.colorScale = createColorScaleTexture(this.context, name);
     this.config.colorScale = name;
     this.bindGroupsDirty = true;
+  }
+
+  /**
+   * Schedule a color scale texture for deferred destruction.
+   * This prevents "destroyed texture used in submit" errors when
+   * the GPU is still executing commands that reference the texture.
+   */
+  private scheduleDestruction(resource: ColorScaleTexture): void {
+    // Wait 3 frames to ensure GPU is done with the resource
+    this.pendingDestruction.push({ resource, framesRemaining: 3 });
+  }
+
+  /**
+   * Process deferred destruction queue.
+   * Called at the start of each render to clean up old resources.
+   */
+  private processPendingDestruction(): void {
+    for (let i = this.pendingDestruction.length - 1; i >= 0; i--) {
+      const item = this.pendingDestruction[i];
+      item.framesRemaining--;
+      if (item.framesRemaining <= 0) {
+        item.resource.destroy();
+        this.pendingDestruction.splice(i, 1);
+      }
+    }
   }
 
   /**
@@ -189,6 +219,9 @@ export class HeatmapLayer implements Layer {
    * Render the heatmap layer
    */
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+    // Always process deferred destruction, even when disabled
+    this.processPendingDestruction();
+
     if (!this.config.enabled || !this.renderContext) {
       return;
     }
@@ -322,6 +355,12 @@ export class HeatmapLayer implements Layer {
     this.densityTexture.destroy();
     this.colorScale.destroy();
     this.pipeline.destroy();
+
+    // Clean up any pending destruction items
+    for (const item of this.pendingDestruction) {
+      item.resource.destroy();
+    }
+    this.pendingDestruction = [];
   }
 }
 

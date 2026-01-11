@@ -1994,6 +1994,7 @@ export class HeroineGraph {
   setStreamValues(streamId: string, data: StreamDataPoint[]): void {
     this.streamManager.setStreamData(streamId, data);
     this.applyStreamColors();
+    this.updateHeatmapIfUsingStream(streamId);
   }
 
   /**
@@ -2013,6 +2014,7 @@ export class HeroineGraph {
   setStreamBulkValues(streamId: string, data: StreamBulkData): void {
     this.streamManager.setStreamBulkData(streamId, data);
     this.applyStreamColors();
+    this.updateHeatmapIfUsingStream(streamId);
   }
 
   /**
@@ -2023,6 +2025,7 @@ export class HeroineGraph {
   clearStreamValues(streamId: string): void {
     this.streamManager.clearStreamData(streamId);
     this.applyStreamColors();
+    this.updateHeatmapIfUsingStream(streamId);
   }
 
   /**
@@ -2148,6 +2151,17 @@ export class HeroineGraph {
 
     if (hasColors) {
       this.setNodeColors(colors);
+    }
+  }
+
+  /**
+   * Update heatmap render context if it's using the specified stream.
+   * Called internally when stream data changes to ensure heatmap reflects updates.
+   */
+  private updateHeatmapIfUsingStream(streamId: string): void {
+    const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (heatmapLayer && heatmapLayer.getDataSource() === streamId) {
+      this.updateLayerRenderContext();
     }
   }
 

@@ -162,6 +162,16 @@
         background: rgba(244, 67, 54, 0.1);
       }
 
+      .node-btn.codebase {
+        border-color: var(--accent);
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .node-btn.codebase:hover {
+        background: rgba(0, 200, 255, 0.15);
+      }
+
       /* Drawer toggle */
       #drawer-toggle {
         position: fixed;
@@ -569,6 +579,7 @@
 
     <!-- Node count buttons -->
     <div id="node-buttons">
+      <button class="node-btn codebase" id="load-codebase-btn">Codebase</button>
       <button class="node-btn" data-count="100">+ 100</button>
       <button class="node-btn" data-count="1000">+ 1K</button>
       <button class="node-btn" data-count="10000">+ 10K</button>
@@ -635,9 +646,10 @@
               </div>
               <select id="heatmap-datasource">
                 <option value="density">Density (uniform)</option>
-                <option value="errors">Errors Stream</option>
-                <option value="activity">Activity Stream</option>
-                <option value="importance">Importance Stream</option>
+                <option value="errors">Errors</option>
+                <option value="warnings">Warnings</option>
+                <option value="complexity">Complexity</option>
+                <option value="lines">Lines of Code</option>
               </select>
             </div>
             <div class="control-row">

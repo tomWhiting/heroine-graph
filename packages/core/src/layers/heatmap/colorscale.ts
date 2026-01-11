@@ -32,9 +32,12 @@ export type ColorScaleName =
   | "plasma"
   | "inferno"
   | "magma"
+  | "cividis"
   | "turbo"
   | "hot"
   | "cool"
+  | "spectral"
+  | "coolwarm"
   | "blues"
   | "greens"
   | "reds"
@@ -88,6 +91,13 @@ export const COLOR_SCALES: Record<ColorScaleName, ColorStop[]> = {
     { position: 0.75, color: [0.973, 0.462, 0.498, 1.0] },
     { position: 1.0, color: [0.987, 0.991, 0.750, 1.0] },
   ],
+  cividis: [
+    { position: 0.0, color: [0.0, 0.135, 0.304, 1.0] },
+    { position: 0.25, color: [0.255, 0.306, 0.420, 1.0] },
+    { position: 0.5, color: [0.475, 0.478, 0.471, 1.0] },
+    { position: 0.75, color: [0.757, 0.694, 0.424, 1.0] },
+    { position: 1.0, color: [0.996, 0.910, 0.212, 1.0] },
+  ],
   turbo: [
     { position: 0.0, color: [0.190, 0.072, 0.232, 1.0] },
     { position: 0.2, color: [0.085, 0.532, 0.829, 1.0] },
@@ -105,6 +115,22 @@ export const COLOR_SCALES: Record<ColorScaleName, ColorStop[]> = {
   cool: [
     { position: 0.0, color: [0.0, 1.0, 1.0, 1.0] },
     { position: 1.0, color: [1.0, 0.0, 1.0, 1.0] },
+  ],
+  spectral: [
+    { position: 0.0, color: [0.620, 0.004, 0.259, 1.0] },
+    { position: 0.2, color: [0.957, 0.427, 0.263, 1.0] },
+    { position: 0.4, color: [0.996, 0.878, 0.545, 1.0] },
+    { position: 0.5, color: [1.0, 1.0, 0.749, 1.0] },
+    { position: 0.6, color: [0.902, 0.961, 0.596, 1.0] },
+    { position: 0.8, color: [0.400, 0.761, 0.647, 1.0] },
+    { position: 1.0, color: [0.369, 0.310, 0.635, 1.0] },
+  ],
+  coolwarm: [
+    { position: 0.0, color: [0.230, 0.299, 0.754, 1.0] },
+    { position: 0.25, color: [0.553, 0.627, 0.903, 1.0] },
+    { position: 0.5, color: [0.866, 0.866, 0.866, 1.0] },
+    { position: 0.75, color: [0.914, 0.596, 0.478, 1.0] },
+    { position: 1.0, color: [0.706, 0.016, 0.150, 1.0] },
   ],
   blues: [
     { position: 0.0, color: [0.969, 0.984, 1.0, 1.0] },

@@ -1,0 +1,189 @@
+{
+  "name": "example-frontend-app",
+  "description": "A realistic frontend codebase dataset with errors, warnings, and complexity metrics",
+  "nodes": [
+    { "id": 0, "label": "src/index.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 1, "complexity": 5, "lines": 45 }},
+    { "id": 1, "label": "src/App.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 2, "complexity": 12, "lines": 120 }},
+    { "id": 2, "label": "src/main.css", "type": "css", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 85 }},
+
+    { "id": 3, "label": "src/components/Header.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 65 }},
+    { "id": 4, "label": "src/components/Footer.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 1, "complexity": 4, "lines": 35 }},
+    { "id": 5, "label": "src/components/Sidebar.tsx", "type": "tsx", "metrics": { "errors": 2, "warnings": 3, "complexity": 18, "lines": 180 }},
+    { "id": 6, "label": "src/components/Modal.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 10, "lines": 95 }},
+    { "id": 7, "label": "src/components/Button.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 3, "lines": 28 }},
+    { "id": 8, "label": "src/components/Input.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 1, "complexity": 6, "lines": 52 }},
+    { "id": 9, "label": "src/components/Card.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 5, "lines": 40 }},
+    { "id": 10, "label": "src/components/Table.tsx", "type": "tsx", "metrics": { "errors": 1, "warnings": 4, "complexity": 22, "lines": 210 }},
+
+    { "id": 11, "label": "src/pages/Home.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 2, "complexity": 15, "lines": 145 }},
+    { "id": 12, "label": "src/pages/Dashboard.tsx", "type": "tsx", "metrics": { "errors": 3, "warnings": 5, "complexity": 28, "lines": 320 }},
+    { "id": 13, "label": "src/pages/Settings.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 1, "complexity": 12, "lines": 110 }},
+    { "id": 14, "label": "src/pages/Profile.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 9, "lines": 85 }},
+    { "id": 15, "label": "src/pages/Login.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 75 }},
+    { "id": 16, "label": "src/pages/NotFound.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 2, "lines": 18 }},
+
+    { "id": 17, "label": "src/hooks/useAuth.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 10, "lines": 88 }},
+    { "id": 18, "label": "src/hooks/useApi.ts", "type": "ts", "metrics": { "errors": 1, "warnings": 2, "complexity": 14, "lines": 125 }},
+    { "id": 19, "label": "src/hooks/useLocalStorage.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 6, "lines": 45 }},
+    { "id": 20, "label": "src/hooks/useDebounce.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 3, "lines": 22 }},
+    { "id": 21, "label": "src/hooks/useTheme.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 1, "complexity": 5, "lines": 38 }},
+
+    { "id": 22, "label": "src/utils/format.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 65 }},
+    { "id": 23, "label": "src/utils/validation.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 2, "complexity": 12, "lines": 95 }},
+    { "id": 24, "label": "src/utils/helpers.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 6, "lines": 50 }},
+    { "id": 25, "label": "src/utils/constants.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 1, "lines": 30 }},
+    { "id": 26, "label": "src/utils/logger.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 1, "complexity": 4, "lines": 35 }},
+
+    { "id": 27, "label": "src/api/client.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 10, "lines": 85 }},
+    { "id": 28, "label": "src/api/auth.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 72 }},
+    { "id": 29, "label": "src/api/users.ts", "type": "ts", "metrics": { "errors": 2, "warnings": 1, "complexity": 12, "lines": 98 }},
+    { "id": 30, "label": "src/api/posts.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 10, "lines": 82 }},
+    { "id": 31, "label": "src/api/comments.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 65 }},
+
+    { "id": 32, "label": "src/store/index.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 5, "lines": 42 }},
+    { "id": 33, "label": "src/store/auth.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 1, "complexity": 9, "lines": 78 }},
+    { "id": 34, "label": "src/store/ui.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 6, "lines": 55 }},
+    { "id": 35, "label": "src/store/data.ts", "type": "ts", "metrics": { "errors": 1, "warnings": 3, "complexity": 16, "lines": 145 }},
+
+    { "id": 36, "label": "src/types/index.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 120 }},
+    { "id": 37, "label": "src/types/api.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 85 }},
+    { "id": 38, "label": "src/types/user.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 45 }},
+
+    { "id": 39, "label": "src/styles/variables.css", "type": "css", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 65 }},
+    { "id": 40, "label": "src/styles/components.css", "type": "css", "metrics": { "errors": 0, "warnings": 2, "complexity": 0, "lines": 180 }},
+    { "id": 41, "label": "src/styles/pages.css", "type": "css", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 120 }},
+
+    { "id": 42, "label": "package.json", "type": "json", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 45 }},
+    { "id": 43, "label": "tsconfig.json", "type": "json", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 28 }},
+    { "id": 44, "label": "vite.config.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 4, "lines": 35 }},
+    { "id": 45, "label": ".eslintrc.json", "type": "json", "metrics": { "errors": 0, "warnings": 0, "complexity": 0, "lines": 22 }},
+
+    { "id": 46, "label": "tests/App.test.tsx", "type": "tsx", "metrics": { "errors": 0, "warnings": 0, "complexity": 6, "lines": 55 }},
+    { "id": 47, "label": "tests/utils.test.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 8, "lines": 75 }},
+    { "id": 48, "label": "tests/hooks.test.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 1, "complexity": 10, "lines": 95 }},
+    { "id": 49, "label": "tests/api.test.ts", "type": "ts", "metrics": { "errors": 0, "warnings": 0, "complexity": 12, "lines": 110 }}
+  ],
+  "edges": [
+    { "source": 0, "target": 1, "type": "import" },
+    { "source": 0, "target": 2, "type": "import" },
+
+    { "source": 1, "target": 3, "type": "import" },
+    { "source": 1, "target": 4, "type": "import" },
+    { "source": 1, "target": 5, "type": "import" },
+    { "source": 1, "target": 11, "type": "import" },
+    { "source": 1, "target": 32, "type": "import" },
+    { "source": 1, "target": 17, "type": "import" },
+
+    { "source": 3, "target": 7, "type": "import" },
+    { "source": 3, "target": 21, "type": "import" },
+
+    { "source": 5, "target": 7, "type": "import" },
+    { "source": 5, "target": 8, "type": "import" },
+    { "source": 5, "target": 34, "type": "import" },
+    { "source": 5, "target": 25, "type": "import" },
+
+    { "source": 6, "target": 7, "type": "import" },
+    { "source": 6, "target": 34, "type": "import" },
+
+    { "source": 10, "target": 7, "type": "import" },
+    { "source": 10, "target": 22, "type": "import" },
+    { "source": 10, "target": 36, "type": "import" },
+
+    { "source": 11, "target": 3, "type": "import" },
+    { "source": 11, "target": 9, "type": "import" },
+    { "source": 11, "target": 18, "type": "import" },
+    { "source": 11, "target": 35, "type": "import" },
+
+    { "source": 12, "target": 3, "type": "import" },
+    { "source": 12, "target": 5, "type": "import" },
+    { "source": 12, "target": 6, "type": "import" },
+    { "source": 12, "target": 10, "type": "import" },
+    { "source": 12, "target": 18, "type": "import" },
+    { "source": 12, "target": 35, "type": "import" },
+    { "source": 12, "target": 17, "type": "import" },
+
+    { "source": 13, "target": 7, "type": "import" },
+    { "source": 13, "target": 8, "type": "import" },
+    { "source": 13, "target": 19, "type": "import" },
+    { "source": 13, "target": 33, "type": "import" },
+
+    { "source": 14, "target": 9, "type": "import" },
+    { "source": 14, "target": 18, "type": "import" },
+    { "source": 14, "target": 29, "type": "import" },
+
+    { "source": 15, "target": 7, "type": "import" },
+    { "source": 15, "target": 8, "type": "import" },
+    { "source": 15, "target": 23, "type": "import" },
+    { "source": 15, "target": 28, "type": "import" },
+    { "source": 15, "target": 33, "type": "import" },
+
+    { "source": 17, "target": 27, "type": "import" },
+    { "source": 17, "target": 28, "type": "import" },
+    { "source": 17, "target": 19, "type": "import" },
+    { "source": 17, "target": 36, "type": "import" },
+
+    { "source": 18, "target": 27, "type": "import" },
+    { "source": 18, "target": 20, "type": "import" },
+    { "source": 18, "target": 26, "type": "import" },
+    { "source": 18, "target": 37, "type": "import" },
+
+    { "source": 21, "target": 19, "type": "import" },
+    { "source": 21, "target": 25, "type": "import" },
+
+    { "source": 23, "target": 24, "type": "import" },
+    { "source": 23, "target": 25, "type": "import" },
+
+    { "source": 27, "target": 25, "type": "import" },
+    { "source": 27, "target": 26, "type": "import" },
+    { "source": 27, "target": 37, "type": "import" },
+
+    { "source": 28, "target": 27, "type": "import" },
+    { "source": 28, "target": 38, "type": "import" },
+
+    { "source": 29, "target": 27, "type": "import" },
+    { "source": 29, "target": 38, "type": "import" },
+
+    { "source": 30, "target": 27, "type": "import" },
+    { "source": 30, "target": 37, "type": "import" },
+
+    { "source": 31, "target": 27, "type": "import" },
+    { "source": 31, "target": 37, "type": "import" },
+
+    { "source": 32, "target": 33, "type": "import" },
+    { "source": 32, "target": 34, "type": "import" },
+    { "source": 32, "target": 35, "type": "import" },
+
+    { "source": 33, "target": 28, "type": "import" },
+    { "source": 33, "target": 36, "type": "import" },
+
+    { "source": 35, "target": 29, "type": "import" },
+    { "source": 35, "target": 30, "type": "import" },
+    { "source": 35, "target": 31, "type": "import" },
+    { "source": 35, "target": 36, "type": "import" },
+
+    { "source": 44, "target": 42, "type": "config" },
+    { "source": 44, "target": 43, "type": "config" },
+
+    { "source": 46, "target": 1, "type": "test" },
+    { "source": 47, "target": 22, "type": "test" },
+    { "source": 47, "target": 23, "type": "test" },
+    { "source": 47, "target": 24, "type": "test" },
+    { "source": 48, "target": 17, "type": "test" },
+    { "source": 48, "target": 18, "type": "test" },
+    { "source": 48, "target": 19, "type": "test" },
+    { "source": 49, "target": 27, "type": "test" },
+    { "source": 49, "target": 28, "type": "test" },
+    { "source": 49, "target": 29, "type": "test" }
+  ],
+  "typeStyles": {
+    "tsx": { "color": [0.38, 0.72, 0.98, 1.0], "label": "React Component" },
+    "ts": { "color": [0.18, 0.54, 0.84, 1.0], "label": "TypeScript" },
+    "css": { "color": [0.93, 0.42, 0.65, 1.0], "label": "Stylesheet" },
+    "json": { "color": [0.95, 0.77, 0.28, 1.0], "label": "Config" }
+  },
+  "edgeTypeStyles": {
+    "import": { "color": [0.5, 0.5, 0.5, 0.4], "label": "Import" },
+    "test": { "color": [0.2, 0.8, 0.4, 0.5], "label": "Tests" },
+    "config": { "color": [0.9, 0.6, 0.2, 0.5], "label": "Config Reference" }
+  }
+}
