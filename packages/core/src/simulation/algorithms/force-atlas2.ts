@@ -114,11 +114,9 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       layout: pipelines.repulsion.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: buffers.uniformBuffer } },
-        { binding: 1, resource: { buffer: context.positionsX } },
-        { binding: 2, resource: { buffer: context.positionsY } },
-        { binding: 3, resource: { buffer: context.forcesX } },
-        { binding: 4, resource: { buffer: context.forcesY } },
-        { binding: 5, resource: { buffer: buffers.degreesBuffer } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: buffers.degreesBuffer } },
       ],
     });
 

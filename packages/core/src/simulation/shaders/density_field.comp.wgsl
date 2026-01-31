@@ -6,6 +6,7 @@
 // Phase 3: Compute gradient and apply forces
 //
 // Uses a 2D grid stored as a 1D buffer for simplicity.
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct DensityUniforms {
     node_count: u32,
@@ -23,20 +24,18 @@ struct DensityUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: DensityUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
-@group(0) @binding(5) var<storage, read_write> density_grid: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
+@group(0) @binding(3) var<storage, read_write> density_grid: array<atomic<u32>>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const DENSITY_SCALE: f32 = 1000.0;  // Scale for atomic integer accumulation
 
 // Convert world position to grid cell
 fn world_to_grid(pos: vec2<f32>) -> vec2<i32> {
-    let normalized = (pos - vec2<f32>(uniforms.bounds_min_x, uniforms.bounds_min_y)) /
-                     (vec2<f32>(uniforms.bounds_max_x - uniforms.bounds_min_x,
-                                uniforms.bounds_max_y - uniforms.bounds_min_y));
+    let bounds_min = vec2<f32>(uniforms.bounds_min_x, uniforms.bounds_min_y);
+    let bounds_max = vec2<f32>(uniforms.bounds_max_x, uniforms.bounds_max_y);
+    let normalized = (pos - bounds_min) / (bounds_max - bounds_min);
     return vec2<i32>(
         clamp(i32(normalized.x * f32(uniforms.grid_width)), 0, i32(uniforms.grid_width) - 1),
         clamp(i32(normalized.y * f32(uniforms.grid_height)), 0, i32(uniforms.grid_height) - 1)
@@ -86,7 +85,7 @@ fn accumulate_density(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos = vec2<f32>(positions_x[node_idx], positions_y[node_idx]);
+    let pos = positions[node_idx];
     let center_cell = world_to_grid(pos);
 
     // Splat to nearby cells with Gaussian falloff
@@ -127,7 +126,7 @@ fn apply_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos = vec2<f32>(positions_x[node_idx], positions_y[node_idx]);
+    let pos = positions[node_idx];
     let cell = world_to_grid(pos);
 
     // Compute gradient using central differences
@@ -144,6 +143,5 @@ fn apply_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let force = -gradient * uniforms.repulsion_strength;
 
     // Accumulate force
-    forces_x[node_idx] += force.x;
-    forces_y[node_idx] += force.y;
+    forces[node_idx] += force;
 }

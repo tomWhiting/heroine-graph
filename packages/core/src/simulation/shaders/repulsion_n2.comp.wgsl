@@ -1,5 +1,7 @@
 // N^2 Repulsion Force Compute Shader
 // Simple all-pairs repulsion calculation for small graphs
+//
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct RepulsionUniforms {
     node_count: u32,
@@ -10,13 +12,11 @@ struct RepulsionUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: RepulsionUniforms;
 
-// Node positions (read only)
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Node positions (read only) - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Force accumulators (read-write)
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
+// Force accumulators (read-write) - vec2<f32> per node
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -26,10 +26,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let node_x = positions_x[node_idx];
-    let node_y = positions_y[node_idx];
-    var force_x = 0.0;
-    var force_y = 0.0;
+    let node_pos = positions[node_idx];
+    var force = vec2<f32>(0.0, 0.0);
 
     // Direct N^2 summation
     for (var i = 0u; i < uniforms.node_count; i++) {
@@ -37,12 +35,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let other_x = positions_x[i];
-        let other_y = positions_y[i];
-        let dx = node_x - other_x;
-        let dy = node_y - other_y;
+        let other_pos = positions[i];
+        let delta = node_pos - other_pos;
 
-        let dist_sq = dx * dx + dy * dy;
+        let dist_sq = dot(delta, delta);
         let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
         let safe_dist_sq = max(dist_sq, min_dist_sq);
         let dist = sqrt(safe_dist_sq);
@@ -50,10 +46,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Coulomb-like repulsion: F = k / r^2
         let force_magnitude = uniforms.repulsion_strength / safe_dist_sq;
 
-        force_x += dx * (force_magnitude / dist);
-        force_y += dy * (force_magnitude / dist);
+        force += delta * (force_magnitude / dist);
     }
 
-    forces_x[node_idx] += force_x;
-    forces_y[node_idx] += force_y;
+    forces[node_idx] += force;
 }

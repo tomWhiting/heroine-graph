@@ -28,10 +28,9 @@ struct HeatmapUniforms {
 @group(0) @binding(0) var<uniform> viewport: ViewportUniforms;
 @group(0) @binding(1) var<uniform> heatmap: HeatmapUniforms;
 
-@group(1) @binding(0) var<storage, read> positions_x: array<f32>;
-@group(1) @binding(1) var<storage, read> positions_y: array<f32>;
+@group(1) @binding(0) var<storage, read> positions: array<vec2<f32>>;
 // Per-node intensity values from value stream (optional - defaults to 1.0 for all nodes)
-@group(1) @binding(2) var<storage, read> node_intensities: array<f32>;
+@group(1) @binding(1) var<storage, read> node_intensities: array<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -57,9 +56,7 @@ fn vs_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOutput {
     // Get node position
-    let node_x = positions_x[instance_index];
-    let node_y = positions_y[instance_index];
-    let node_pos = vec2<f32>(node_x, node_y);
+    let node_pos = positions[instance_index];
 
     // Calculate splat size in screen space
     let screen_radius = heatmap.radius * viewport.scale;

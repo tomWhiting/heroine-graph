@@ -209,15 +209,14 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     });
 
     // === Morton Code Layout ===
-    // Bindings: uniforms, positions_x, positions_y, morton_codes, node_indices
+    // Bindings: uniforms, positions (vec2), morton_codes, node_indices
     const mortonLayout = device.createBindGroupLayout({
       label: "Morton Code Layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
@@ -248,7 +247,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     });
 
     // === Karras Tree Layout ===
-    // Bindings: uniforms, morton_codes, sorted_indices, positions_x, positions_y,
+    // Bindings: uniforms, morton_codes, sorted_indices, positions (vec2),
     //           left_child, right_child, parent, node_com_x, node_com_y,
     //           node_mass, node_size, visit_count
     const treeLayout = device.createBindGroupLayout({
@@ -258,7 +257,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
@@ -266,27 +265,24 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
     // === Traversal Layout ===
-    // Bindings: uniforms, positions_x, positions_y, forces_x, forces_y,
+    // Bindings: uniforms, positions (vec2), forces (vec2),
     //           left_child, right_child, node_com_x, node_com_y, node_mass, node_size
     const traverseLayout = device.createBindGroupLayout({
       label: "Barnes-Hut Traversal Layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -566,10 +562,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       layout: p.mortonLayout,
       entries: [
         { binding: 0, resource: { buffer: b.mortonUniforms } },
-        { binding: 1, resource: { buffer: context.positionsX } },
-        { binding: 2, resource: { buffer: context.positionsY } },
-        { binding: 3, resource: { buffer: b.mortonCodes } },
-        { binding: 4, resource: { buffer: b.nodeIndices } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: b.mortonCodes } },
+        { binding: 3, resource: { buffer: b.nodeIndices } },
       ],
     });
 
@@ -617,16 +612,15 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: b.treeUniforms } },
         { binding: 1, resource: { buffer: b.mortonCodes } },  // Sorted Morton codes
         { binding: 2, resource: { buffer: b.nodeIndices } },  // Sorted particle indices
-        { binding: 3, resource: { buffer: context.positionsX } },
-        { binding: 4, resource: { buffer: context.positionsY } },
-        { binding: 5, resource: { buffer: b.leftChild } },
-        { binding: 6, resource: { buffer: b.rightChild } },
-        { binding: 7, resource: { buffer: b.parent } },
-        { binding: 8, resource: { buffer: b.nodeComX } },
-        { binding: 9, resource: { buffer: b.nodeComY } },
-        { binding: 10, resource: { buffer: b.nodeMass } },
-        { binding: 11, resource: { buffer: b.nodeSize } },
-        { binding: 12, resource: { buffer: b.visitCount } },
+        { binding: 3, resource: { buffer: context.positions } },
+        { binding: 4, resource: { buffer: b.leftChild } },
+        { binding: 5, resource: { buffer: b.rightChild } },
+        { binding: 6, resource: { buffer: b.parent } },
+        { binding: 7, resource: { buffer: b.nodeComX } },
+        { binding: 8, resource: { buffer: b.nodeComY } },
+        { binding: 9, resource: { buffer: b.nodeMass } },
+        { binding: 10, resource: { buffer: b.nodeSize } },
+        { binding: 11, resource: { buffer: b.visitCount } },
       ],
     });
 
@@ -638,16 +632,15 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: b.treeUniforms } },
         { binding: 1, resource: { buffer: b.mortonCodesOut } },  // Sorted Morton codes (Out buffer)
         { binding: 2, resource: { buffer: b.nodeIndicesOut } },  // Sorted particle indices (Out buffer)
-        { binding: 3, resource: { buffer: context.positionsX } },
-        { binding: 4, resource: { buffer: context.positionsY } },
-        { binding: 5, resource: { buffer: b.leftChild } },
-        { binding: 6, resource: { buffer: b.rightChild } },
-        { binding: 7, resource: { buffer: b.parent } },
-        { binding: 8, resource: { buffer: b.nodeComX } },
-        { binding: 9, resource: { buffer: b.nodeComY } },
-        { binding: 10, resource: { buffer: b.nodeMass } },
-        { binding: 11, resource: { buffer: b.nodeSize } },
-        { binding: 12, resource: { buffer: b.visitCount } },
+        { binding: 3, resource: { buffer: context.positions } },
+        { binding: 4, resource: { buffer: b.leftChild } },
+        { binding: 5, resource: { buffer: b.rightChild } },
+        { binding: 6, resource: { buffer: b.parent } },
+        { binding: 7, resource: { buffer: b.nodeComX } },
+        { binding: 8, resource: { buffer: b.nodeComY } },
+        { binding: 9, resource: { buffer: b.nodeMass } },
+        { binding: 10, resource: { buffer: b.nodeSize } },
+        { binding: 11, resource: { buffer: b.visitCount } },
       ],
     });
 
@@ -657,16 +650,14 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       layout: p.traverseLayout,
       entries: [
         { binding: 0, resource: { buffer: b.traverseUniforms } },
-        { binding: 1, resource: { buffer: context.positionsX } },
-        { binding: 2, resource: { buffer: context.positionsY } },
-        { binding: 3, resource: { buffer: context.forcesX } },
-        { binding: 4, resource: { buffer: context.forcesY } },
-        { binding: 5, resource: { buffer: b.leftChild } },
-        { binding: 6, resource: { buffer: b.rightChild } },
-        { binding: 7, resource: { buffer: b.nodeComX } },
-        { binding: 8, resource: { buffer: b.nodeComY } },
-        { binding: 9, resource: { buffer: b.nodeMass } },
-        { binding: 10, resource: { buffer: b.nodeSize } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: b.leftChild } },
+        { binding: 4, resource: { buffer: b.rightChild } },
+        { binding: 5, resource: { buffer: b.nodeComX } },
+        { binding: 6, resource: { buffer: b.nodeComY } },
+        { binding: 7, resource: { buffer: b.nodeMass } },
+        { binding: 8, resource: { buffer: b.nodeSize } },
       ],
     });
 

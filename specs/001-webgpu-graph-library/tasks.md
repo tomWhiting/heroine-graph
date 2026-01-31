@@ -265,32 +265,32 @@ Based on plan.md monorepo structure:
 
 ### Font Atlas for US5
 
-- [ ] T108 [P] [US5] Add MSDF font atlas (Inter) to packages/core/assets/fonts/
-- [ ] T109 [P] [US5] Add font atlas JSON metadata to packages/core/assets/fonts/
-- [ ] T110 [US5] Implement font atlas loader in packages/core/src/layers/labels/atlas.ts
+- [x] T108 [P] [US5] Add MSDF font atlas (Inter) to packages/core/assets/fonts/
+- [x] T109 [P] [US5] Add font atlas JSON metadata to packages/core/assets/fonts/
+- [x] T110 [US5] Implement font atlas loader in packages/core/src/layers/labels/atlas.ts
 
 ### Label Shaders for US5
 
-- [ ] T111 [P] [US5] Write label vertex shader in packages/core/src/layers/labels/shaders/label.vert.wgsl
-- [ ] T112 [US5] Write MSDF fragment shader with median() in packages/core/src/layers/labels/shaders/label.frag.wgsl
+- [x] T111 [P] [US5] Write label vertex shader in packages/core/src/layers/labels/shaders/label.vert.wgsl
+- [x] T112 [US5] Write MSDF fragment shader with median() in packages/core/src/layers/labels/shaders/label.frag.wgsl
 
 ### Label Culling for US5
 
-- [ ] T113 [US5] Implement label priority sorting in packages/core/src/layers/labels/priority.ts
-- [ ] T114 [US5] Implement screen-space collision grid in packages/core/src/layers/labels/collision.ts
-- [ ] T115 [US5] Implement zoom-level thresholds in packages/core/src/layers/labels/lod.ts
-- [ ] T116 [US5] Implement LabelManager orchestration in packages/core/src/layers/labels/manager.ts
+- [x] T113 [US5] Implement label priority sorting in packages/core/src/layers/labels/priority.ts
+- [x] T114 [US5] Implement screen-space collision grid in packages/core/src/layers/labels/collision.ts
+- [x] T115 [US5] Implement zoom-level thresholds in packages/core/src/layers/labels/lod.ts
+- [x] T116 [US5] Implement LabelManager orchestration in packages/core/src/layers/labels/manager.ts
 
 ### Label Layer for US5
 
-- [ ] T117 [US5] Implement LabelsLayer class in packages/core/src/layers/labels/layer.ts
-- [ ] T118 [US5] Implement label instance buffer updates in packages/core/src/layers/labels/instances.ts
-- [ ] T119 [US5] Implement label config (font, size, maxLabels) in packages/core/src/layers/labels/config.ts
+- [x] T117 [US5] Implement LabelsLayer class in packages/core/src/layers/labels/layer.ts
+- [x] T118 [US5] Implement label instance buffer updates in packages/core/src/layers/labels/instances.ts
+- [x] T119 [US5] Implement label config (font, size, maxLabels) in packages/core/src/layers/labels/config.ts
 
 ### Integration for US5
 
-- [ ] T120 [US5] Register LabelsLayer with LayerManager in packages/core/src/layers/manager.ts
-- [ ] T121 [US5] Update layer compositing (labels on top) in packages/core/src/renderer/compositor.ts
+- [x] T120 [US5] Register LabelsLayer with LayerManager in packages/core/src/layers/manager.ts
+- [x] T121 [US5] Update layer compositing (labels on top) in packages/core/src/renderer/compositor.ts
 
 **Checkpoint**: US5 complete - labels render sharply, LOD culling works
 
@@ -304,28 +304,28 @@ Based on plan.md monorepo structure:
 
 ### React Wrapper for US6
 
-- [ ] T122 [P] [US6] Implement HeroineGraph React component in packages/react/src/HeroineGraph.tsx
-- [ ] T123 [P] [US6] Implement useGraph hook in packages/react/src/hooks/useGraph.ts
-- [ ] T124 [P] [US6] Implement useSimulation hook in packages/react/src/hooks/useSimulation.ts
-- [ ] T125 [US6] Create React package exports in packages/react/src/index.ts
+- [x] T122 [P] [US6] Implement HeroineGraph React component in packages/react/src/HeroineGraph.tsx
+- [x] T123 [P] [US6] Implement useGraph hook in packages/react/src/hooks/useGraph.ts
+- [x] T124 [P] [US6] Implement useSimulation hook in packages/react/src/hooks/useSimulation.ts
+- [x] T125 [US6] Create React package exports in packages/react/src/index.ts
 
 ### Vue Wrapper for US6
 
-- [ ] T126 [P] [US6] Implement HeroineGraph Vue component in packages/vue/src/HeroineGraph.vue
-- [ ] T127 [P] [US6] Implement composables (useGraph, useSimulation) in packages/vue/src/composables/
-- [ ] T128 [US6] Create Vue package exports in packages/vue/src/index.ts
+- [x] T126 [P] [US6] Implement HeroineGraph Vue component in packages/vue/src/HeroineGraph.vue
+- [x] T127 [P] [US6] Implement composables (useGraph, useSimulation) in packages/vue/src/composables/
+- [x] T128 [US6] Create Vue package exports in packages/vue/src/index.ts
 
 ### Svelte Wrapper for US6
 
-- [ ] T129 [P] [US6] Implement HeroineGraph Svelte component in packages/svelte/src/HeroineGraph.svelte
-- [ ] T130 [P] [US6] Implement Svelte stores in packages/svelte/src/stores/
-- [ ] T131 [US6] Create Svelte package exports in packages/svelte/src/index.ts
+- [x] T129 [P] [US6] Implement HeroineGraph Svelte component in packages/svelte/src/HeroineGraph.svelte
+- [x] T130 [P] [US6] Implement Svelte stores in packages/svelte/src/stores/
+- [x] T131 [US6] Create Svelte package exports in packages/svelte/src/index.ts
 
 ### Framework Examples for US6
 
-- [ ] T132 [P] [US6] Create React example app in examples/framework-react/
-- [ ] T133 [P] [US6] Create Vue example app in examples/framework-vue/
-- [ ] T134 [P] [US6] Create Svelte example app in examples/framework-svelte/
+- [x] T132 [P] [US6] Create React example app in examples/framework-react/
+- [x] T133 [P] [US6] Create Vue example app in examples/framework-vue/
+- [x] T134 [P] [US6] Create Svelte example app in examples/framework-svelte/
 
 **Checkpoint**: US6 complete - all three framework wrappers functional
 
@@ -337,9 +337,9 @@ Based on plan.md monorepo structure:
 
 ### Examples & Documentation
 
-- [ ] T135 [P] Create basic example in examples/basic/
-- [ ] T136 [P] Create large-graph stress test example in examples/large-graph/
-- [ ] T137 [P] Create interactive demo example in examples/interactive/
+- [x] T135 [P] Create basic example in examples/basic/
+- [x] T136 [P] Create large-graph stress test example in examples/large-graph/
+- [x] T137 [P] Create interactive demo example in examples/interactive/
 - [ ] T138 Validate quickstart.md instructions work end-to-end
 
 ### Performance & Quality
@@ -351,11 +351,11 @@ Based on plan.md monorepo structure:
 
 ### Edge Cases
 
-- [ ] T143 Handle empty graph (0 nodes) gracefully
-- [ ] T144 Handle disconnected components correctly
-- [ ] T145 Handle WebGPU unavailable with clear error message
-- [ ] T146 Handle window resize events
-- [ ] T147 Handle tab visibility change (pause simulation when hidden)
+- [x] T143 Handle empty graph (0 nodes) gracefully
+- [x] T144 Handle disconnected components correctly
+- [x] T145 Handle WebGPU unavailable with clear error message
+- [x] T146 Handle window resize events
+- [x] T147 Handle tab visibility change (pause simulation when hidden)
 
 ### Final Polish
 

@@ -24,17 +24,16 @@ struct QuadtreeUniforms {
 @group(0) @binding(0) var<uniform> uniforms: QuadtreeUniforms;
 
 // Particle positions (original order)
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
 // Quadtree node data
-@group(0) @binding(3) var<storage, read_write> tree_com_x: array<f32>;     // Center of mass X
-@group(0) @binding(4) var<storage, read_write> tree_com_y: array<f32>;     // Center of mass Y
-@group(0) @binding(5) var<storage, read_write> tree_mass: array<f32>;      // Total mass in cell
-@group(0) @binding(6) var<storage, read_write> tree_sizes: array<f32>;     // Cell size at each node
+@group(0) @binding(2) var<storage, read_write> tree_com_x: array<f32>;     // Center of mass X
+@group(0) @binding(3) var<storage, read_write> tree_com_y: array<f32>;     // Center of mass Y
+@group(0) @binding(4) var<storage, read_write> tree_mass: array<f32>;      // Total mass in cell
+@group(0) @binding(5) var<storage, read_write> tree_sizes: array<f32>;     // Cell size at each node
 
 // Atomic counters for aggregation
-@group(0) @binding(7) var<storage, read_write> tree_count: array<atomic<u32>>; // Particle count per cell
+@group(0) @binding(6) var<storage, read_write> tree_count: array<atomic<u32>>; // Particle count per cell
 
 const WORKGROUP_SIZE: u32 = 256u;
 
@@ -113,8 +112,7 @@ fn insert_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos_x = positions_x[particle_idx];
-    let pos_y = positions_y[particle_idx];
+    let pos = positions[particle_idx];
 
     // Traverse tree from root to find leaf cell
     var node_idx = 0u;
@@ -127,7 +125,7 @@ fn insert_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let center_x = cell_min_x + half_size;
         let center_y = cell_min_y + half_size;
 
-        let quadrant = get_quadrant(pos_x, pos_y, center_x, center_y);
+        let quadrant = get_quadrant(pos.x, pos.y, center_x, center_y);
 
         // Move to child
         node_idx = 4u * node_idx + 1u + quadrant;
@@ -195,12 +193,11 @@ fn compute_leaf_com(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var count = 0.0;
 
     for (var i = 0u; i < uniforms.node_count; i++) {
-        let px = positions_x[i];
-        let py = positions_y[i];
+        let p = positions[i];
 
-        if (px >= cell_min_x && px < cell_max_x && py >= cell_min_y && py < cell_max_y) {
-            sum_x += px;
-            sum_y += py;
+        if (p.x >= cell_min_x && p.x < cell_max_x && p.y >= cell_min_y && p.y < cell_max_y) {
+            sum_x += p.x;
+            sum_y += p.y;
             count += 1.0;
         }
     }

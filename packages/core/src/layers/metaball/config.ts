@@ -8,6 +8,13 @@
  */
 
 /**
+ * Data source for metaball intensity
+ * - 'density': All nodes contribute equally (default)
+ * - string: ID of a value stream - nodes contribute based on stream values
+ */
+export type MetaballDataSource = "density" | string;
+
+/**
  * Metaball layer configuration
  */
 export interface MetaballConfig {
@@ -27,6 +34,12 @@ export interface MetaballConfig {
   outlineOnly?: boolean;
   /** Outline width in pixels (when outlineOnly is true) */
   outlineWidth?: number;
+  /**
+   * Data source for per-node intensity.
+   * - 'density' (default): All nodes contribute equally
+   * - streamId: Use values from a value stream (nodes with higher values = larger blobs)
+   */
+  dataSource?: MetaballDataSource;
 }
 
 /**
@@ -41,6 +54,7 @@ export const DEFAULT_METABALL_CONFIG: Required<MetaballConfig> = {
   nodeRadius: 50.0,
   outlineOnly: false,
   outlineWidth: 2.0,
+  dataSource: "density",
 };
 
 /**
@@ -87,34 +101,5 @@ export function validateMetaballConfig(config: MetaballConfig): string[] {
   return errors;
 }
 
-/**
- * Parse CSS color to RGBA values (0-1 range)
- */
-export function parseMetaballColor(
-  color: string,
-): [number, number, number, number] {
-  // Handle hex colors
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    if (hex.length === 3) {
-      const r = parseInt(hex[0] + hex[0], 16) / 255;
-      const g = parseInt(hex[1] + hex[1], 16) / 255;
-      const b = parseInt(hex[2] + hex[2], 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 8) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      const a = parseInt(hex.slice(6, 8), 16) / 255;
-      return [r, g, b, a];
-    }
-  }
-
-  // Default to indigo
-  return [0.388, 0.4, 0.945, 1.0];
-}
+// Re-export parseColor from shared utilities for backwards compatibility
+export { parseColorToRGBA as parseMetaballColor } from "../../utils/color.ts";

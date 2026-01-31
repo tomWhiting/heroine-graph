@@ -58,6 +58,8 @@ interface AppState {
   // Codebase-specific data
   codebaseData: CodebaseData | null;
   codebaseMetrics: Map<number, NodeMetrics> | null;
+  // Current edge styling state (tracks GPU state, not original data)
+  currentEdgeColors: Float32Array | null;
 }
 
 // ============================================================================
@@ -164,12 +166,16 @@ function generateRandomGraph(nodeCount: number): GraphInput {
     teamProjectIndices[t] = indices;
   }
 
+  // Default edge color (neutral gray with transparency)
+  const DEFAULT_EDGE_COLOR = "#80808066";
+
   // Helper to add an edge with deduplication
-  const addEdge = (src: string, tgt: string, color: string, width: number) => {
+  const addEdge = (src: string, tgt: string, _typeColor: string, width: number) => {
     const key = src < tgt ? `${src}-${tgt}` : `${tgt}-${src}`;
     if (edgeSet.has(key) || src === tgt) return;
     edgeSet.add(key);
-    edges.push({ source: src, target: tgt, width, color });
+    // Use default gray color for all edges - "Color by Type" button applies type colors
+    edges.push({ source: src, target: tgt, width, color: DEFAULT_EDGE_COLOR });
   };
 
   // Helper to get random radius for a type
@@ -444,6 +450,7 @@ async function main(): Promise<void> {
     fps: 0,
     codebaseData: null,
     codebaseMetrics: null,
+    currentEdgeColors: null,
   };
 
   // Check WebGPU support
@@ -524,6 +531,21 @@ async function main(): Promise<void> {
     // Clear codebase data when loading random data
     state.codebaseData = null;
     state.codebaseMetrics = null;
+
+    // Initialize edge color tracking with the gray default color
+    // so opacity slider works correctly from the start
+    const trackedColors = new Float32Array(state.edgeCount * 4);
+    const defaultR = 0x80 / 255;  // 0.5 gray from #808080
+    const defaultG = 0x80 / 255;
+    const defaultB = 0x80 / 255;
+    const defaultA = 0x66 / 255;  // ~0.4 alpha from #80808066
+    for (let i = 0; i < state.edgeCount; i++) {
+      trackedColors[i * 4 + 0] = defaultR;
+      trackedColors[i * 4 + 1] = defaultG;
+      trackedColors[i * 4 + 2] = defaultB;
+      trackedColors[i * 4 + 3] = defaultA;
+    }
+    state.currentEdgeColors = trackedColors;
   }
 
   /**
@@ -590,6 +612,29 @@ async function main(): Promise<void> {
       }
       state.graph.setEdgeTypeStyles(edgeStyles);
 
+      // Track the type-based colors so opacity slider works correctly
+      // Compute colors based on edge types and store them
+      const edgeCount = graphData.edges.length;
+      const trackedColors = new Float32Array(edgeCount * 4);
+      for (let i = 0; i < edgeCount; i++) {
+        const edge = graphData.edges[i];
+        const edgeType = edge.type as string | undefined;
+        const typeStyle = edgeType ? codebase.edgeTypeStyles[edgeType] : null;
+        if (typeStyle) {
+          trackedColors[i * 4 + 0] = typeStyle.color[0] || 0.5;
+          trackedColors[i * 4 + 1] = typeStyle.color[1] || 0.5;
+          trackedColors[i * 4 + 2] = typeStyle.color[2] || 0.5;
+          trackedColors[i * 4 + 3] = typeStyle.color[3] || 0.5;
+        } else {
+          // Default gray
+          trackedColors[i * 4 + 0] = 0.5;
+          trackedColors[i * 4 + 1] = 0.5;
+          trackedColors[i * 4 + 2] = 0.5;
+          trackedColors[i * 4 + 3] = 0.5;
+        }
+      }
+      state.currentEdgeColors = trackedColors;
+
       state.graphData = graphData;
       state.nodeCount = graphData.nodes.length;
       state.edgeCount = graphData.edges.length;
@@ -602,94 +647,15 @@ async function main(): Promise<void> {
         updateLabels();
       }
 
-      // Auto-setup streams for the metrics
-      setupCodebaseStreams();
+      // Note: Codebase streams (errors, warnings, complexity, lines) are available
+      // but not auto-created. Use the heatmap data source dropdown or value stream
+      // controls to enable them explicitly.
 
       console.log(`Loaded codebase: ${codebase.name} (${state.nodeCount} files, ${state.edgeCount} dependencies)`);
+      console.log("Tip: Use heatmap data source dropdown to visualize codebase metrics (errors, warnings, etc.)");
     } catch (err) {
       console.error("Failed to load codebase:", err);
     }
-  }
-
-  /**
-   * Setup value streams from codebase metrics (errors, warnings, complexity, lines)
-   */
-  function setupCodebaseStreams(): void {
-    if (!state.graph || !state.codebaseMetrics) return;
-
-    // Define stream presets for each metric type
-    const metricStreams = {
-      errors: {
-        id: "errors",
-        name: "Errors",
-        domain: [0, 5] as [number, number],
-        stops: [
-          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
-          { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] as [number, number, number, number] },
-          { position: 0.7, color: [1, 0.2, 0.1, 0.7] as [number, number, number, number] },
-          { position: 1, color: [1, 0.1, 0.05, 1] as [number, number, number, number] },
-        ],
-      },
-      warnings: {
-        id: "warnings",
-        name: "Warnings",
-        domain: [0, 10] as [number, number],
-        stops: [
-          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
-          { position: 0.3, color: [0.8, 0.7, 0.1, 0.3] as [number, number, number, number] },
-          { position: 0.7, color: [1, 0.8, 0.2, 0.6] as [number, number, number, number] },
-          { position: 1, color: [1, 0.9, 0.3, 1] as [number, number, number, number] },
-        ],
-      },
-      complexity: {
-        id: "complexity",
-        name: "Complexity",
-        domain: [0, 30] as [number, number],
-        stops: [
-          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
-          { position: 0.3, color: [0.2, 0.5, 0.8, 0.3] as [number, number, number, number] },
-          { position: 0.6, color: [0.5, 0.3, 0.8, 0.6] as [number, number, number, number] },
-          { position: 1, color: [0.8, 0.2, 0.9, 1] as [number, number, number, number] },
-        ],
-      },
-      lines: {
-        id: "lines",
-        name: "Lines of Code",
-        domain: [0, 350] as [number, number],
-        stops: [
-          { position: 0, color: [0, 0, 0, 0] as [number, number, number, number] },
-          { position: 0.3, color: [0.2, 0.6, 0.3, 0.3] as [number, number, number, number] },
-          { position: 0.6, color: [0.3, 0.7, 0.4, 0.6] as [number, number, number, number] },
-          { position: 1, color: [0.4, 0.9, 0.5, 1] as [number, number, number, number] },
-        ],
-      },
-    };
-
-    // Define all streams
-    for (const [key, config] of Object.entries(metricStreams)) {
-      state.graph.defineValueStream({
-        id: config.id,
-        name: config.name,
-        colorScale: {
-          domain: config.domain,
-          stops: config.stops,
-        },
-        blendMode: "additive",
-        opacity: 1.0,
-      });
-
-      // Set values from codebase metrics
-      const data: Array<{ nodeIndex: number; value: number }> = [];
-      for (const [nodeIndex, metrics] of state.codebaseMetrics) {
-        const value = metrics[key as keyof NodeMetrics];
-        if (value > 0) {
-          data.push({ nodeIndex, value });
-        }
-      }
-      state.graph.setStreamValues(config.id, data);
-    }
-
-    console.log("Codebase streams initialized: errors, warnings, complexity, lines");
   }
 
   /**
@@ -796,6 +762,7 @@ async function main(): Promise<void> {
     state.edgeCount = 0;
     state.codebaseData = null;
     state.codebaseMetrics = null;
+    state.currentEdgeColors = null;
     $("stat-nodes").textContent = "0";
     $("stat-edges").textContent = "0";
   });
@@ -905,7 +872,7 @@ async function main(): Promise<void> {
   $input("heatmap-color-end").addEventListener("input", applyCustomHeatmapColors);
 
   // Heatmap data source (stream → heatmap binding)
-  // This is now INDEPENDENT - it auto-creates streams when needed
+  // Creates streams on-demand when user selects a data source
   $select("heatmap-datasource").addEventListener("change", (e) => {
     if (!$input("heatmap-enabled").checked) return;
     const source = (e.target as HTMLSelectElement).value;
@@ -917,55 +884,48 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Check if we have codebase data (streams already set up)
-    if (state.codebaseData && state.codebaseMetrics) {
-      // Streams were set up by loadCodebase()
-      state.graph?.setHeatmapDataSource(source);
-      console.log(`Heatmap using codebase stream: ${source}`);
-      return;
-    }
+    // Stream configuration for both codebase and synthetic data
+    const streamConfigs: Record<string, { domain: [number, number]; stops: Array<{ position: number; color: [number, number, number, number] }> }> = {
+      errors: {
+        domain: [0, state.codebaseData ? 5 : 10],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] },
+          { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] },
+          { position: 0.7, color: [1, 0.2, 0.1, 0.7] },
+          { position: 1, color: [1, 0.1, 0.05, 1] },
+        ],
+      },
+      warnings: {
+        domain: [0, 10],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] },
+          { position: 0.3, color: [0.8, 0.7, 0.1, 0.3] },
+          { position: 0.7, color: [1, 0.8, 0.2, 0.6] },
+          { position: 1, color: [1, 0.9, 0.3, 1] },
+        ],
+      },
+      complexity: {
+        domain: [0, 30],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] },
+          { position: 0.3, color: [0.2, 0.5, 0.8, 0.3] },
+          { position: 0.6, color: [0.5, 0.3, 0.8, 0.6] },
+          { position: 1, color: [0.8, 0.2, 0.9, 1] },
+        ],
+      },
+      lines: {
+        domain: [0, state.codebaseData ? 350 : 500],
+        stops: [
+          { position: 0, color: [0, 0, 0, 0] },
+          { position: 0.3, color: [0.2, 0.6, 0.3, 0.3] },
+          { position: 0.6, color: [0.3, 0.7, 0.4, 0.6] },
+          { position: 1, color: [0.4, 0.9, 0.5, 1] },
+        ],
+      },
+    };
 
-    // For synthetic data, auto-create the stream if it doesn't exist
+    // Create stream if it doesn't exist
     if (state.graph && !state.graph.hasValueStream(source)) {
-      const streamConfigs: Record<string, { domain: [number, number]; stops: Array<{ position: number; color: [number, number, number, number] }> }> = {
-        errors: {
-          domain: [0, 10],
-          stops: [
-            { position: 0, color: [0, 0, 0, 0] },
-            { position: 0.3, color: [0.8, 0.3, 0.1, 0.4] },
-            { position: 0.7, color: [1, 0.2, 0.1, 0.7] },
-            { position: 1, color: [1, 0.1, 0.05, 1] },
-          ],
-        },
-        warnings: {
-          domain: [0, 10],
-          stops: [
-            { position: 0, color: [0, 0, 0, 0] },
-            { position: 0.3, color: [0.8, 0.7, 0.1, 0.3] },
-            { position: 0.7, color: [1, 0.8, 0.2, 0.6] },
-            { position: 1, color: [1, 0.9, 0.3, 1] },
-          ],
-        },
-        complexity: {
-          domain: [0, 30],
-          stops: [
-            { position: 0, color: [0, 0, 0, 0] },
-            { position: 0.3, color: [0.2, 0.5, 0.8, 0.3] },
-            { position: 0.6, color: [0.5, 0.3, 0.8, 0.6] },
-            { position: 1, color: [0.8, 0.2, 0.9, 1] },
-          ],
-        },
-        lines: {
-          domain: [0, 500],
-          stops: [
-            { position: 0, color: [0, 0, 0, 0] },
-            { position: 0.3, color: [0.2, 0.6, 0.3, 0.3] },
-            { position: 0.6, color: [0.3, 0.7, 0.4, 0.6] },
-            { position: 1, color: [0.4, 0.9, 0.5, 1] },
-          ],
-        },
-      };
-
       const config = streamConfigs[source];
       if (config) {
         // Define the stream
@@ -977,38 +937,78 @@ async function main(): Promise<void> {
           opacity: 1.0,
         });
 
-        // Generate random data for ~30% of nodes
+        // Populate with real codebase metrics or random synthetic data
         const data: Array<{ nodeIndex: number; value: number }> = [];
-        const [min, max] = config.domain;
-        for (let i = 0; i < state.nodeCount; i++) {
-          if (Math.random() < 0.3) {
-            const value = min + Math.pow(Math.random(), 2) * (max - min);
-            data.push({ nodeIndex: i, value });
+
+        if (state.codebaseMetrics) {
+          // Use real codebase metrics
+          for (const [nodeIndex, metrics] of state.codebaseMetrics) {
+            const value = metrics[source as keyof NodeMetrics];
+            if (value > 0) {
+              data.push({ nodeIndex, value });
+            }
           }
+          console.log(`Created ${source} stream from codebase metrics (${data.length} values)`);
+        } else {
+          // Generate random data for synthetic graphs (~30% of nodes)
+          const [min, max] = config.domain;
+          for (let i = 0; i < state.nodeCount; i++) {
+            if (Math.random() < 0.3) {
+              const value = min + Math.pow(Math.random(), 2) * (max - min);
+              data.push({ nodeIndex: i, value });
+            }
+          }
+          console.log(`Created ${source} stream with ${data.length} random values`);
         }
+
         state.graph.setStreamValues(source, data);
-        console.log(`Auto-created ${source} stream with ${data.length} random values`);
       }
     }
 
     state.graph?.setHeatmapDataSource(source);
-    console.log(`Heatmap using stream: ${source}`);
+    console.log(`Heatmap data source: ${source}`);
   });
+
+  // Debounce helper
+  function debounce<T extends (...args: Parameters<T>) => void>(
+    fn: T,
+    delay: number,
+  ): (...args: Parameters<T>) => void {
+    let timeoutId: number | undefined;
+    return (...args: Parameters<T>) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => fn(...args), delay) as unknown as number;
+    };
+  }
 
   function setupSlider(
     id: string,
     valueId: string,
     callback: (value: number) => void,
     format: (v: number) => string = (v) => v.toString(),
+    debounceMs = 16, // ~60fps, immediate feel with slight debounce
   ): void {
     const input = $input(id);
     const valueEl = $(valueId);
 
+    // Debounce the callback to avoid too many GPU updates
+    const debouncedCallback = debounce(callback, debounceMs);
+
     input.addEventListener("input", () => {
       const value = parseFloat(input.value);
+      // Update display immediately for responsiveness
       valueEl.textContent = format(value);
-      callback(value);
+      // Debounce the actual update
+      debouncedCallback(value);
     });
+  }
+
+  // Helper to set edge colors and track them in state (defined early for use by display settings)
+  function setEdgeColorsWithTracking(colors: Float32Array): void {
+    if (!state.graph) return;
+    state.graph.setEdgeColors(colors);
+    // Track current colors for opacity slider to use
+    state.currentEdgeColors = new Float32Array(colors);
   }
 
   setupSlider(
@@ -1035,21 +1035,20 @@ async function main(): Promise<void> {
   $input("contour-enabled").addEventListener("change", (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
     if (enabled) {
-      // Contours need heatmap's density texture - enable heatmap if not already
+      // Contours require heatmap to be enabled for the density texture
       if (!$input("heatmap-enabled").checked) {
-        // Enable heatmap with minimal opacity so contours work
-        state.graph?.enableHeatmap({
-          colorScale: $select("heatmap-colorscale").value as "viridis",
-          radius: parseFloat($input("heatmap-radius").value),
-          intensity: parseFloat($input("heatmap-intensity").value),
-          opacity: 0.0, // Invisible but generates density texture
-        });
+        console.warn("Contours require heatmap to be enabled first (for density texture)");
+        (e.target as HTMLInputElement).checked = false;
+        return;
       }
 
       const thresholdCount = parseInt($input("contour-thresholds").value, 10);
+      const minThreshold = parseFloat($input("contour-min").value);
+      const maxThreshold = 0.9;
+      const range = maxThreshold - minThreshold;
       const thresholds = Array.from(
         { length: thresholdCount },
-        (_, i) => (i + 1) / (thresholdCount + 1),
+        (_, i) => minThreshold + (range * (i + 1)) / (thresholdCount + 1),
       );
       state.graph?.enableContour({
         strokeWidth: parseFloat($input("contour-width").value),
@@ -1072,14 +1071,35 @@ async function main(): Promise<void> {
     state.graph?.setContourConfig({ strokeColor: (e.target as HTMLInputElement).value });
   });
 
+  // Helper to compute contour thresholds from UI values
+  function getContourThresholds(): number[] {
+    const count = parseInt($input("contour-thresholds").value, 10);
+    const minThreshold = parseFloat($input("contour-min").value);
+    const maxThreshold = 0.9;
+    const range = maxThreshold - minThreshold;
+    return Array.from(
+      { length: count },
+      (_, i) => minThreshold + (range * (i + 1)) / (count + 1),
+    );
+  }
+
   setupSlider(
     "contour-thresholds",
     "contour-thresholds-val",
-    (v) => {
+    () => {
       if (!$input("contour-enabled").checked) return;
-      const thresholds = Array.from({ length: v }, (_, i) => (i + 1) / (v + 1));
-      state.graph?.setContourConfig({ thresholds });
+      state.graph?.setContourConfig({ thresholds: getContourThresholds() });
     },
+  );
+
+  setupSlider(
+    "contour-min",
+    "contour-min-val",
+    () => {
+      if (!$input("contour-enabled").checked) return;
+      state.graph?.setContourConfig({ thresholds: getContourThresholds() });
+    },
+    (v) => v.toFixed(2),
   );
 
   // Metaballs
@@ -1154,6 +1174,56 @@ async function main(): Promise<void> {
   // Edge Flow Controls
   // ========================================================================
 
+  // Helper to get flow color (null if using edge color)
+  function getFlowColor(): [number, number, number, number] | null {
+    if ($input("flow-use-edge-color").checked) return null;
+    const hex = $input("flow-color").value;
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return [r, g, b, 1.0];
+  }
+
+  // Helper to get layer 1 config from UI
+  function getLayer1Config() {
+    return {
+      enabled: true,
+      pulseWidth: parseFloat($input("flow-width").value),
+      pulseCount: parseInt($input("flow-count").value, 10),
+      speed: parseFloat($input("flow-speed").value),
+      waveShape: $select("flow-wave-shape").value as "sine" | "square" | "triangle",
+      brightness: parseFloat($input("flow-brightness").value),
+      fade: parseFloat($input("flow-fade").value),
+      color: getFlowColor(),
+    };
+  }
+
+  // Helper to get layer 2 config from UI
+  // Get Layer 2 flow color (null means use edge color)
+  function getFlow2Color(): [number, number, number, number] | null {
+    if ($input("flow2-use-edge-color").checked) {
+      return null; // Use edge's color
+    }
+    const hex = $input("flow2-color").value;
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return [r, g, b, 1.0];
+  }
+
+  function getLayer2Config() {
+    return {
+      enabled: $input("flow2-enabled").checked,
+      pulseWidth: parseFloat($input("flow2-width").value),
+      pulseCount: parseInt($input("flow2-count").value, 10),
+      speed: parseFloat($input("flow2-speed").value),
+      waveShape: $select("flow2-wave-shape").value as "sine" | "square" | "triangle",
+      brightness: parseFloat($input("flow2-brightness").value),
+      fade: parseFloat($input("flow2-fade").value),
+      color: getFlow2Color(),
+    };
+  }
+
   // Flow enable/disable toggle
   $input("flow-enabled").addEventListener("change", (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
@@ -1164,16 +1234,8 @@ async function main(): Promise<void> {
       } else {
         // Enable with current slider values
         state.graph?.setEdgeFlowConfig({
-          layer1: {
-            enabled: true,
-            pulseWidth: parseFloat($input("flow-width").value),
-            pulseCount: parseInt($input("flow-count").value, 10),
-            speed: parseFloat($input("flow-speed").value),
-            waveShape: "sine",
-            brightness: parseFloat($input("flow-brightness").value),
-            fade: 0.3,
-            color: null,
-          },
+          layer1: getLayer1Config(),
+          layer2: getLayer2Config(), // enabled flag determines if it's active
         });
       }
     } else {
@@ -1194,6 +1256,7 @@ async function main(): Promise<void> {
       // Update sliders to match preset values
       const config = state.graph?.getEdgeFlowConfig();
       if (config) {
+        // Layer 1 controls
         $input("flow-width").value = config.layer1.pulseWidth.toString();
         $("flow-width-val").textContent = config.layer1.pulseWidth.toFixed(2);
         $input("flow-count").value = config.layer1.pulseCount.toString();
@@ -1202,54 +1265,182 @@ async function main(): Promise<void> {
         $("flow-speed-val").textContent = config.layer1.speed.toFixed(2);
         $input("flow-brightness").value = config.layer1.brightness.toString();
         $("flow-brightness-val").textContent = config.layer1.brightness.toFixed(1);
+        $input("flow-fade").value = config.layer1.fade.toString();
+        $("flow-fade-val").textContent = config.layer1.fade.toFixed(2);
+        $select("flow-wave-shape").value = config.layer1.waveShape;
+
+        // Layer 2 controls
+        $input("flow2-enabled").checked = config.layer2.enabled;
+        if (config.layer2.enabled) {
+          $input("flow2-width").value = config.layer2.pulseWidth.toString();
+          $("flow2-width-val").textContent = config.layer2.pulseWidth.toFixed(2);
+          $input("flow2-count").value = config.layer2.pulseCount.toString();
+          $("flow2-count-val").textContent = config.layer2.pulseCount.toString();
+          $input("flow2-speed").value = config.layer2.speed.toString();
+          $("flow2-speed-val").textContent = config.layer2.speed.toFixed(2);
+          $input("flow2-brightness").value = config.layer2.brightness.toString();
+          $("flow2-brightness-val").textContent = config.layer2.brightness.toFixed(1);
+          $input("flow2-fade").value = config.layer2.fade.toString();
+          $("flow2-fade-val").textContent = config.layer2.fade.toFixed(2);
+          $select("flow2-wave-shape").value = config.layer2.waveShape;
+        }
       }
     }
   });
 
-  // Flow parameter sliders
+  // Flow parameter updates
   function updateFlowFromSliders(): void {
     if (!$input("flow-enabled").checked) return;
 
     state.graph?.setEdgeFlowConfig({
-      layer1: {
-        enabled: true,
-        pulseWidth: parseFloat($input("flow-width").value),
-        pulseCount: parseInt($input("flow-count").value, 10),
-        speed: parseFloat($input("flow-speed").value),
-        waveShape: "sine",
-        brightness: parseFloat($input("flow-brightness").value),
-        fade: 0.3,
-        color: null,
-      },
+      layer1: getLayer1Config(),
+      layer2: getLayer2Config(), // enabled flag determines if it's active
     });
   }
 
+  // Layer 1 sliders
+  setupSlider("flow-width", "flow-width-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+  setupSlider("flow-count", "flow-count-val", () => updateFlowFromSliders());
+  setupSlider("flow-speed", "flow-speed-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+  setupSlider("flow-brightness", "flow-brightness-val", () => updateFlowFromSliders(), (v) => v.toFixed(1));
+  setupSlider("flow-fade", "flow-fade-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+
+  // Wave shape and color
+  $select("flow-wave-shape").addEventListener("change", () => updateFlowFromSliders());
+  $input("flow-color").addEventListener("input", () => updateFlowFromSliders());
+  $input("flow-use-edge-color").addEventListener("change", () => updateFlowFromSliders());
+
+  // Layer 2 enable/disable
+  $input("flow2-enabled").addEventListener("change", () => {
+    if ($input("flow-enabled").checked) {
+      updateFlowFromSliders();
+    }
+  });
+
+  // Layer 2 sliders
+  setupSlider("flow2-width", "flow2-width-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+  setupSlider("flow2-count", "flow2-count-val", () => updateFlowFromSliders());
+  setupSlider("flow2-speed", "flow2-speed-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+  setupSlider("flow2-brightness", "flow2-brightness-val", () => updateFlowFromSliders(), (v) => v.toFixed(1));
+  setupSlider("flow2-fade", "flow2-fade-val", () => updateFlowFromSliders(), (v) => v.toFixed(2));
+  $select("flow2-wave-shape").addEventListener("change", () => updateFlowFromSliders());
+
+  // Flow Layer 2 color controls
+  $input("flow2-color").addEventListener("input", () => updateFlowFromSliders());
+  $input("flow2-use-edge-color").addEventListener("change", () => updateFlowFromSliders());
+
+  // ========================================================================
+  // Curved Edges Controls
+  // ========================================================================
+
+  // Curved edges enable/disable toggle
+  $input("curved-enabled").addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    if (enabled) {
+      state.graph?.enableCurvedEdges(
+        parseInt($input("curved-segments").value, 10),
+        parseFloat($input("curved-weight").value),
+      );
+      // Apply default curvature to all edges
+      applyDefaultCurvature();
+    } else {
+      state.graph?.disableCurvedEdges();
+    }
+  });
+
+  // Apply default curvature to all edges
+  function applyDefaultCurvature(): void {
+    if (!state.graph || state.edgeCount === 0) return;
+    const curvature = parseFloat($input("curved-curvature").value);
+    const curvatures = new Float32Array(state.edgeCount);
+    for (let i = 0; i < state.edgeCount; i++) {
+      curvatures[i] = curvature;
+    }
+    state.graph.setEdgeCurvatures(curvatures);
+  }
+
+  // Curved edges sliders
   setupSlider(
-    "flow-width",
-    "flow-width-val",
-    () => updateFlowFromSliders(),
+    "curved-segments",
+    "curved-segments-val",
+    (v) => {
+      if ($input("curved-enabled").checked) {
+        state.graph?.setCurvedEdges({ segments: v });
+      }
+    },
+  );
+
+  setupSlider(
+    "curved-weight",
+    "curved-weight-val",
+    (v) => {
+      if ($input("curved-enabled").checked) {
+        state.graph?.setCurvedEdges({ weight: v });
+      }
+    },
     (v) => v.toFixed(2),
   );
 
   setupSlider(
-    "flow-count",
-    "flow-count-val",
-    () => updateFlowFromSliders(),
-  );
-
-  setupSlider(
-    "flow-speed",
-    "flow-speed-val",
-    () => updateFlowFromSliders(),
+    "curved-curvature",
+    "curved-curvature-val",
+    () => {
+      if ($input("curved-enabled").checked) {
+        applyDefaultCurvature();
+      }
+    },
     (v) => v.toFixed(2),
   );
 
+  // Randomize curvatures button
+  $("curved-randomize").addEventListener("click", () => {
+    if (!state.graph || state.edgeCount === 0) return;
+    const curvatures = new Float32Array(state.edgeCount);
+    for (let i = 0; i < state.edgeCount; i++) {
+      curvatures[i] = (Math.random() - 0.5) * 0.6; // Range -0.3 to 0.3
+    }
+    state.graph.setEdgeCurvatures(curvatures);
+    if (!$input("curved-enabled").checked) {
+      $input("curved-enabled").checked = true;
+      state.graph.enableCurvedEdges();
+    }
+  });
+
+  // ========================================================================
+  // Node Borders Controls
+  // ========================================================================
+
+  // Border enable/disable toggle
+  $input("border-enabled").addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    if (enabled) {
+      state.graph?.enableNodeBorder(
+        parseFloat($input("border-width").value),
+        ($input("border-color") as HTMLInputElement).value,
+      );
+    } else {
+      state.graph?.disableNodeBorder();
+    }
+  });
+
+  // Border width slider
   setupSlider(
-    "flow-brightness",
-    "flow-brightness-val",
-    () => updateFlowFromSliders(),
+    "border-width",
+    "border-width-val",
+    (v) => {
+      if ($input("border-enabled").checked) {
+        state.graph?.setNodeBorder({ width: v });
+      }
+    },
     (v) => v.toFixed(1),
   );
+
+  // Border color picker
+  ($input("border-color") as HTMLInputElement).addEventListener("input", (e) => {
+    if ($input("border-enabled").checked) {
+      state.graph?.setNodeBorder({ color: (e.target as HTMLInputElement).value });
+    }
+  });
 
   // ========================================================================
   // Force Configuration
@@ -1309,6 +1500,28 @@ async function main(): Promise<void> {
     (v) => v.toFixed(2),
   );
 
+  // Max repulsion distance
+  setupSlider(
+    "force-max-dist",
+    "force-max-dist-val",
+    (v) => state.graph?.setForceConfig({ repulsionDistanceMax: v }),
+  );
+
+  // Barnes-Hut theta (accuracy)
+  setupSlider(
+    "force-theta",
+    "force-theta-val",
+    (v) => state.graph?.setForceConfig({ theta: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Max velocity
+  setupSlider(
+    "force-max-vel",
+    "force-max-vel-val",
+    (v) => state.graph?.setForceConfig({ maxVelocity: v }),
+  );
+
   // ========================================================================
   // Simulation Controls
   // ========================================================================
@@ -1316,6 +1529,89 @@ async function main(): Promise<void> {
   $("sim-stop").addEventListener("click", () => state.graph?.stopSimulation());
   $("sim-start").addEventListener("click", () => state.graph?.startSimulation());
   $("sim-restart").addEventListener("click", () => state.graph?.restartSimulation());
+
+  // ========================================================================
+  // Display Settings
+  // ========================================================================
+
+  // Theme presets
+  const THEMES = {
+    dark: {
+      background: "#0a0a0f",
+      nodeColor: "#4facfe",
+      edgeColor: "#808080",
+      labelColor: "#ffffff",
+    },
+    light: {
+      background: "#f5f5f5",
+      nodeColor: "#3d7dd8",
+      edgeColor: "#666666",
+      labelColor: "#1a1a1a",
+    },
+    midnight: {
+      background: "#0d1117",
+      nodeColor: "#58a6ff",
+      edgeColor: "#484f58",
+      labelColor: "#c9d1d9",
+    },
+    contrast: {
+      background: "#000000",
+      nodeColor: "#00ff00",
+      edgeColor: "#00ffff",
+      labelColor: "#ffffff",
+    },
+  };
+
+  // Apply theme preset
+  function applyTheme(themeName: keyof typeof THEMES): void {
+    const theme = THEMES[themeName];
+    if (!theme) return;
+
+    // Update color pickers to match theme
+    $input("display-bg-color").value = theme.background;
+    $input("display-edge-color").value = theme.edgeColor;
+
+    // Apply background color
+    state.graph?.setBackgroundColor(theme.background);
+
+    // Apply label color if labels are enabled
+    if ($input("labels-enabled").checked) {
+      $input("labels-color").value = theme.labelColor;
+      state.graph?.setLabelsConfig({ fontColor: theme.labelColor });
+    }
+
+    console.log(`Applied ${themeName} theme`);
+  }
+
+  // Theme selector
+  $select("display-theme").addEventListener("change", (e) => {
+    const themeName = (e.target as HTMLSelectElement).value as keyof typeof THEMES;
+    applyTheme(themeName);
+  });
+
+  // Background color picker
+  $input("display-bg-color").addEventListener("input", (e) => {
+    state.graph?.setBackgroundColor((e.target as HTMLInputElement).value);
+  });
+
+  // Default edge color picker - applies to all edges
+  $input("display-edge-color").addEventListener("input", (e) => {
+    if (!state.graph || state.edgeCount === 0) return;
+    const hex = (e.target as HTMLInputElement).value;
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const opacity = parseFloat($input("edge-opacity").value);
+
+    const colors = new Float32Array(state.edgeCount * 4);
+    for (let i = 0; i < state.edgeCount; i++) {
+      colors[i * 4 + 0] = r;
+      colors[i * 4 + 1] = g;
+      colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = opacity;
+    }
+    setEdgeColorsWithTracking(colors);
+  });
 
   // ========================================================================
   // Per-Item Styling Controls
@@ -1329,6 +1625,23 @@ async function main(): Promise<void> {
     document: [1.0, 0.88, 0.25], // #fee140 - Yellow
     service: [0.63, 0.55, 0.82], // #a18cd1 - Purple
   };
+
+  // Node size scale slider - scales all node sizes uniformly
+  setupSlider(
+    "node-size-scale",
+    "node-size-scale-val",
+    (scale) => {
+      if (!state.graph || !state.graphData || state.nodeCount === 0) return;
+      const sizes = new Float32Array(state.nodeCount);
+      for (let i = 0; i < state.nodeCount; i++) {
+        const node = state.graphData.nodes[i];
+        const baseSize = (node.radius ?? 5);
+        sizes[i] = baseSize * scale;
+      }
+      state.graph.setNodeSizes(sizes);
+    },
+    (v) => v.toFixed(1),
+  );
 
   // Color by node type
   $("style-by-type").addEventListener("click", () => {
@@ -1482,7 +1795,7 @@ async function main(): Promise<void> {
       colors[i * 4 + 2] = b;
       colors[i * 4 + 3] = parseFloat($input("edge-opacity").value);
     }
-    state.graph.setEdgeColors(colors);
+    setEdgeColorsWithTracking(colors);
     console.log("Colored edges by type");
   });
 
@@ -1559,38 +1872,47 @@ async function main(): Promise<void> {
         widths[i] = 0.5 * baseScale;
       }
     }
-    state.graph.setEdgeColors(colors);
+    setEdgeColorsWithTracking(colors);
     state.graph.setEdgeWidths(widths);
     console.log("Highlighted service dependencies");
   });
 
   // Edge opacity slider - apply to all edges
+  // Uses tracked current colors if available, otherwise falls back to original data
   setupSlider(
     "edge-opacity",
     "edge-opacity-val",
     (v) => {
-      if (!state.graph || !state.graphData || state.edgeCount === 0) return;
+      if (!state.graph || state.edgeCount === 0) return;
       const colors = new Float32Array(state.edgeCount * 4);
+
       for (let i = 0; i < state.edgeCount; i++) {
-        const edge = state.graphData.edges[i];
-        // Parse existing color or use default
-        const existingColor = edge.color;
         let r = 0.5, g = 0.5, b = 0.5;
-        if (existingColor && existingColor.startsWith("#")) {
-          // Parse hex color (could be #rgb, #rgba, #rrggbb, #rrggbbaa)
-          const hex = existingColor.slice(1);
-          if (hex.length >= 6) {
-            r = parseInt(hex.slice(0, 2), 16) / 255;
-            g = parseInt(hex.slice(2, 4), 16) / 255;
-            b = parseInt(hex.slice(4, 6), 16) / 255;
+
+        // Use tracked current colors if available (preserves any styling changes)
+        if (state.currentEdgeColors && state.currentEdgeColors.length === state.edgeCount * 4) {
+          r = state.currentEdgeColors[i * 4 + 0];
+          g = state.currentEdgeColors[i * 4 + 1];
+          b = state.currentEdgeColors[i * 4 + 2];
+        } else if (state.graphData) {
+          // Fall back to original loaded colors
+          const existingColor = state.graphData.edges[i]?.color;
+          if (existingColor && existingColor.startsWith("#")) {
+            const hex = existingColor.slice(1);
+            if (hex.length >= 6) {
+              r = parseInt(hex.slice(0, 2), 16) / 255;
+              g = parseInt(hex.slice(2, 4), 16) / 255;
+              b = parseInt(hex.slice(4, 6), 16) / 255;
+            }
           }
         }
+
         colors[i * 4 + 0] = r;
         colors[i * 4 + 1] = g;
         colors[i * 4 + 2] = b;
         colors[i * 4 + 3] = v;
       }
-      state.graph.setEdgeColors(colors);
+      setEdgeColorsWithTracking(colors);
     },
     (v) => v.toFixed(2),
   );
@@ -1617,6 +1939,8 @@ async function main(): Promise<void> {
     if (!state.graphData) return;
     // Reload restores all original styling including edges
     await state.graph?.load(state.graphData);
+    // Clear tracked edge colors (will fall back to original on next opacity change)
+    state.currentEdgeColors = null;
     // Reset slider values
     $input("edge-opacity").value = "0.4";
     $("edge-opacity-val").textContent = "0.40";

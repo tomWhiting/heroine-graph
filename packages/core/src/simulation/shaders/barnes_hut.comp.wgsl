@@ -8,6 +8,8 @@
 // The Barnes-Hut algorithm approximates long-range forces by treating
 // distant groups of nodes as single massive bodies. The theta parameter
 // controls the accuracy/speed tradeoff.
+//
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct ForceUniforms {
     node_count: u32,
@@ -22,26 +24,24 @@ struct ForceUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: ForceUniforms;
 
-// Node positions
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Node positions - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Output forces (accumulated)
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
+// Output forces (accumulated) - vec2<f32> per node
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
 // Quadtree data (from build phase)
-@group(0) @binding(5) var<storage, read> tree_com_x: array<f32>;    // Center of mass X
-@group(0) @binding(6) var<storage, read> tree_com_y: array<f32>;    // Center of mass Y
-@group(0) @binding(7) var<storage, read> tree_mass: array<f32>;     // Total mass in cell
-@group(0) @binding(8) var<storage, read> tree_sizes: array<f32>;    // Cell sizes
+@group(0) @binding(3) var<storage, read> tree_com_x: array<f32>;    // Center of mass X
+@group(0) @binding(4) var<storage, read> tree_com_y: array<f32>;    // Center of mass Y
+@group(0) @binding(5) var<storage, read> tree_mass: array<f32>;     // Total mass in cell
+@group(0) @binding(6) var<storage, read> tree_sizes: array<f32>;    // Cell sizes
 
 const MAX_TREE_SIZE: u32 = 262144u;
 const MAX_STACK_DEPTH: u32 = 64u;
 
 // Compute repulsive force between a node and a cell/body
-fn compute_repulsion(dx: f32, dy: f32, mass: f32) -> vec2<f32> {
-    let dist_sq = dx * dx + dy * dy;
+fn compute_repulsion(delta: vec2<f32>, mass: f32) -> vec2<f32> {
+    let dist_sq = dot(delta, delta);
     let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
     let safe_dist_sq = max(dist_sq, min_dist_sq);
 
@@ -51,7 +51,7 @@ fn compute_repulsion(dx: f32, dy: f32, mass: f32) -> vec2<f32> {
 
     // Normalize direction and apply magnitude
     let dist = sqrt(safe_dist_sq);
-    return vec2<f32>(dx, dy) * (force_magnitude / dist);
+    return delta * (force_magnitude / dist);
 }
 
 // Main force computation using tree traversal
@@ -63,8 +63,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos_x = positions_x[node_idx];
-    let pos_y = positions_y[node_idx];
+    let pos = positions[node_idx];
     var total_force = vec2<f32>(0.0, 0.0);
 
     // Iterative tree traversal using explicit stack
@@ -89,14 +88,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let cell_com_x = tree_com_x[cell_idx];
-        let cell_com_y = tree_com_y[cell_idx];
+        let cell_com = vec2<f32>(tree_com_x[cell_idx], tree_com_y[cell_idx]);
         let cell_size = tree_sizes[cell_idx];
 
         // Distance from node to cell center of mass
-        let dx = pos_x - cell_com_x;
-        let dy = pos_y - cell_com_y;
-        let dist_sq = dx * dx + dy * dy;
+        let delta = pos - cell_com;
+        let dist_sq = dot(delta, delta);
 
         // Skip if this is essentially the same position (likely the node itself in a leaf)
         if (dist_sq < 0.0001) {
@@ -112,7 +109,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         if (size_sq < theta_sq * dist_sq || cell_size <= 0.0 || is_leaf) {
             // Cell is far enough OR is a leaf - treat as single body
-            total_force += compute_repulsion(dx, dy, cell_mass);
+            total_force += compute_repulsion(delta, cell_mass);
         } else {
             // Cell is too close and can be subdivided - examine children
             let child_base = 4u * cell_idx + 1u;
@@ -129,6 +126,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Accumulate force
-    forces_x[node_idx] += total_force.x;
-    forces_y[node_idx] += total_force.y;
+    forces[node_idx] += total_force;
 }

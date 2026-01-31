@@ -53,7 +53,7 @@ export interface MetaballPipeline {
   /** Update uniforms */
   updateUniforms: (uniforms: MetaballUniforms) => void;
   /** Create bind group */
-  createBindGroup: (positionsX: GPUBuffer, positionsY: GPUBuffer) => GPUBindGroup;
+  createBindGroup: (positions: GPUBuffer, nodeIntensities: GPUBuffer) => GPUBindGroup;
   /** Destroy resources */
   destroy: () => void;
 }
@@ -102,13 +102,13 @@ export function createMetaballPipeline(context: GPUContext): MetaballPipeline {
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
-      // Positions X
+      // Positions (vec2)
       {
         binding: 1,
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: "read-only-storage" },
       },
-      // Positions Y
+      // Node intensities (for stream-driven metaballs)
       {
         binding: 2,
         visibility: GPUShaderStage.FRAGMENT,
@@ -219,16 +219,16 @@ export function createMetaballPipeline(context: GPUContext): MetaballPipeline {
   }
 
   function createBindGroup(
-    positionsX: GPUBuffer,
-    positionsY: GPUBuffer,
+    positions: GPUBuffer,
+    nodeIntensities: GPUBuffer,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: "Metaball Bind Group",
       layout: bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } },
-        { binding: 1, resource: { buffer: positionsX } },
-        { binding: 2, resource: { buffer: positionsY } },
+        { binding: 1, resource: { buffer: positions } },
+        { binding: 2, resource: { buffer: nodeIntensities } },
       ],
     });
   }

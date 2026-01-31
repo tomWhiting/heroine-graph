@@ -7,6 +7,8 @@
 //
 // Each internal node has exactly 2 children (binary tree).
 // Children can be internal nodes (positive index) or leaves (negative index).
+//
+// Uses vec2<f32> layout for consolidated position data.
 
 struct TreeUniforms {
     node_count: u32,        // Number of particles (N leaves)
@@ -26,26 +28,25 @@ struct TreeUniforms {
 // Sorted particle indices (from radix sort)
 @group(0) @binding(2) var<storage, read> sorted_indices: array<u32>;
 
-// Original particle positions
-@group(0) @binding(3) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(4) var<storage, read> positions_y: array<f32>;
+// Original particle positions - vec2<f32> per particle
+@group(0) @binding(3) var<storage, read> positions: array<vec2<f32>>;
 
 // Tree structure (N-1 internal nodes)
 // Negative values indicate leaf index: child = -(leaf_idx + 1)
-@group(0) @binding(5) var<storage, read_write> left_child: array<i32>;
-@group(0) @binding(6) var<storage, read_write> right_child: array<i32>;
-@group(0) @binding(7) var<storage, read_write> parent: array<i32>;
+@group(0) @binding(4) var<storage, read_write> left_child: array<i32>;
+@group(0) @binding(5) var<storage, read_write> right_child: array<i32>;
+@group(0) @binding(6) var<storage, read_write> parent: array<i32>;
 
 // Node properties (2N-1 total: N-1 internal + N leaves)
 // Internal nodes: indices 0..N-2
 // Leaf nodes: indices N-1..2N-2
-@group(0) @binding(8) var<storage, read_write> node_com_x: array<f32>;
-@group(0) @binding(9) var<storage, read_write> node_com_y: array<f32>;
-@group(0) @binding(10) var<storage, read_write> node_mass: array<f32>;
-@group(0) @binding(11) var<storage, read_write> node_size: array<f32>;
+@group(0) @binding(7) var<storage, read_write> node_com_x: array<f32>;
+@group(0) @binding(8) var<storage, read_write> node_com_y: array<f32>;
+@group(0) @binding(9) var<storage, read_write> node_mass: array<f32>;
+@group(0) @binding(10) var<storage, read_write> node_size: array<f32>;
 
 // Atomic counter for bottom-up aggregation
-@group(0) @binding(12) var<storage, read_write> visit_count: array<atomic<u32>>;
+@group(0) @binding(11) var<storage, read_write> visit_count: array<atomic<u32>>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 
@@ -186,9 +187,12 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Get original particle index from sorted order
     let particle_idx = sorted_indices[leaf_idx];
 
+    // Get position from consolidated vec2 buffer
+    let pos = positions[particle_idx];
+
     // Set leaf properties
-    node_com_x[node_idx] = positions_x[particle_idx];
-    node_com_y[node_idx] = positions_y[particle_idx];
+    node_com_x[node_idx] = pos.x;
+    node_com_y[node_idx] = pos.y;
     node_mass[node_idx] = 1.0;  // Each particle has mass 1
 
     // Leaf bounding box size derived from tree depth (root_size / 256.0).

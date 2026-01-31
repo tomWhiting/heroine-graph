@@ -17,10 +17,11 @@
 
 **Purpose**: Project initialization and module structure
 
-- [ ] T001 Create `packages/core/src/layers/` directory structure
-- [ ] T002 Create `packages/core/src/styling/` directory structure
-- [ ] T003 [P] Create `packages/core/src/renderer/buffers/` directory structure
-- [ ] T004 [P] Add d3-scale, d3-color to dependencies in `deno.json` (for color scales)
+- [x] T001 Create `packages/core/src/layers/` directory structure
+- [x] T002 Create `packages/core/src/styling/` directory structure
+- [x] T003 [P] Create `packages/core/src/renderer/buffers/` directory structure
+- [x] T004 [P] Add d3-scale, d3-color to dependencies in `deno.json` (for color scales)
+  - Note: Uses custom color scale implementation instead of d3
 
 ---
 
@@ -30,25 +31,27 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T005 Create `NodeStyleBuffer` class in `packages/core/src/renderer/buffers/node_style.ts`
+- [x] T005 Create `NodeStyleBuffer` class in `packages/core/src/renderer/buffers/node_style.ts`
   - Buffer layout: 8 floats per node (color RGBA + size + reserved)
   - Methods: `create()`, `update()`, `updateRange()`, `destroy()`
-- [ ] T006 [P] Create `EdgeStyleBuffer` class in `packages/core/src/renderer/buffers/edge_style.ts`
+  - Note: Implemented via nodeAttributes buffer + setNodeColors/setNodeSizes API
+- [x] T006 [P] Create `EdgeStyleBuffer` class in `packages/core/src/renderer/buffers/edge_style.ts`
   - Buffer layout: 8 floats per edge (color RGBA + width + curvature + reserved)
   - Methods: `create()`, `update()`, `updateRange()`, `destroy()`
-- [ ] T007 Create style buffer bind group in `packages/core/src/renderer/pipelines/nodes.ts`
+  - Note: Implemented via edgeAttributes buffer + setEdgeColors/setEdgeWidths API
+- [x] T007 Create style buffer bind group in `packages/core/src/renderer/pipelines/nodes.ts`
   - Add bind group layout for nodeStyleBuffer
   - Update pipeline to read per-node colors/sizes from buffer
-- [ ] T008 [P] Create style buffer bind group in `packages/core/src/renderer/pipelines/edges.ts`
+- [x] T008 [P] Create style buffer bind group in `packages/core/src/renderer/pipelines/edges.ts`
   - Add bind group layout for edgeStyleBuffer
   - Update pipeline to read per-edge colors/widths from buffer
-- [ ] T009 Update node vertex shader `packages/core/src/renderer/shaders/node.vert.wgsl`
+- [x] T009 Update node vertex shader `packages/core/src/renderer/shaders/node.vert.wgsl`
   - Read per-node color and size from storage buffer
   - Support fallback to uniform defaults
-- [ ] T010 [P] Update edge vertex shader `packages/core/src/renderer/shaders/edge.vert.wgsl`
+- [x] T010 [P] Update edge vertex shader `packages/core/src/renderer/shaders/edge.vert.wgsl`
   - Read per-edge color and width from storage buffer
   - Support fallback to uniform defaults
-- [ ] T011 Export new buffer types from `packages/core/mod.ts`
+- [x] T011 Export new buffer types from `packages/core/mod.ts`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
@@ -62,26 +65,27 @@
 
 ### Implementation for User Story 1
 
-- [ ] T012 [US1] Add `setNodeColors(colors: Float32Array)` method in `packages/core/src/api/graph.ts`
+- [x] T012 [US1] Add `setNodeColors(colors: Float32Array)` method in `packages/core/src/api/graph.ts`
   - Validate array length = nodeCount × 4
   - Update NodeStyleBuffer
   - Error message: "Expected {expected} values for {nodeCount} nodes (4 per node), got {actual}"
-- [ ] T013 [P] [US1] Add `setNodeSizes(sizes: Float32Array)` method in `packages/core/src/api/graph.ts`
+- [x] T013 [P] [US1] Add `setNodeSizes(sizes: Float32Array)` method in `packages/core/src/api/graph.ts`
   - Validate array length = nodeCount × 1
   - Update NodeStyleBuffer
-- [ ] T014 [P] [US1] Add `setEdgeColors(colors: Float32Array)` method in `packages/core/src/api/graph.ts`
+- [x] T014 [P] [US1] Add `setEdgeColors(colors: Float32Array)` method in `packages/core/src/api/graph.ts`
   - Validate array length = edgeCount × 4
   - Update EdgeStyleBuffer
-- [ ] T015 [P] [US1] Add `setEdgeWidths(widths: Float32Array)` method in `packages/core/src/api/graph.ts`
+- [x] T015 [P] [US1] Add `setEdgeWidths(widths: Float32Array)` method in `packages/core/src/api/graph.ts`
   - Validate array length = edgeCount × 1
   - Update EdgeStyleBuffer
-- [ ] T016 [US1] Implement fallback logic for undefined/NaN values in style buffers
+- [x] T016 [US1] Implement fallback logic for undefined/NaN values in style buffers
   - Check each value during buffer update
   - Use global defaults when value is NaN or outside valid range
-- [ ] T017 [US1] Update Mission Control example `examples/mission-control/main.ts`
+  - Note: Shader fallback via `select(DEFAULT_VALUE, value, value > 0.0)`
+- [x] T017 [US1] Update Mission Control example `examples/mission-control/main.ts`
   - Add "Per-Item Styling" panel with random color button
   - Demonstrate setNodeColors/setEdgeColors usage
-- [ ] T018 [US1] Export VisualizationAPI types from `packages/core/mod.ts`
+- [x] T018 [US1] Export VisualizationAPI types from `packages/core/mod.ts`
 
 **Checkpoint**: Per-item styling API fully functional (FR-001 through FR-005)
 
@@ -119,15 +123,15 @@
 - [x] T025 [P] [US2] Add `removeValueStream(streamId)`, `enableValueStream()`, `disableValueStream()` methods
 - [x] T026 [US2] Export stream types from `packages/core/mod.ts`
   - ValueStreamConfig, StreamDataPoint, StreamBulkData, StreamInfo, BlendMode, ValueColorScale
-- [ ] T027 [US2] Connect streams to HeatmapLayer as data source
+- [x] T027 [US2] Connect streams to HeatmapLayer as data source
   - HeatmapLayer.setDataSource(streamId | 'density') - use stream values for intensity
   - When stream is source: intensity at (x,y) based on node positions + stream values
   - Default 'density' mode: current behavior (node count per area)
-- [ ] T028 [US2] Connect streams to ContourLayer as data source
+- [x] T028 [US2] Connect streams to ContourLayer as data source
   - ContourLayer.setDataSource(streamId) - contours around stream value thresholds
-- [ ] T029 [US2] Connect streams to MetaballLayer as data source (optional)
+- [x] T029 [US2] Connect streams to MetaballLayer as data source (optional)
   - MetaballLayer.setDataSource(streamId) - blob intensity from stream values
-- [ ] T030 [US2] Update Mission Control example `examples/mission-control/main.ts`
+- [x] T030 [US2] Update Mission Control example `examples/mission-control/main.ts`
   - Add "Value Streams" panel with stream definition
   - Demo stream → layer binding (e.g., "errors" stream → heatmap)
   - Show nodes colored by type, heatmap showing stream values
@@ -146,22 +150,23 @@
 
 ### Implementation for User Story 4
 
-- [ ] T029 [US4] Create `StyleResolver` class in `packages/core/src/styling/style_resolver.ts`
+- [x] T029 [US4] Create `StyleResolver` class in `packages/core/src/styling/style_resolver.ts`
   - Precedence: per-item > type > global defaults
   - Methods: `resolveNodeStyle(nodeIndex)`, `resolveEdgeStyle(edgeIndex)`
-- [ ] T030 [US4] Create `TypeStyleManager` in `packages/core/src/styling/type_styles.ts`
+  - Note: Implemented as resolveNodeStyle/resolveEdgeStyle in TypeStyleManager
+- [x] T030 [US4] Create `TypeStyleManager` in `packages/core/src/styling/type_styles.ts`
   - Store NodeTypeStyleMap and EdgeTypeStyleMap
   - Methods: `setNodeTypeStyles()`, `setEdgeTypeStyles()`, `getStyleForType()`
-- [ ] T031 [US4] Add `setNodeTypeStyles(styles: NodeTypeStyleMap)` in `packages/core/src/api/graph.ts`
+- [x] T031 [US4] Add `setNodeTypeStyles(styles: NodeTypeStyleMap)` in `packages/core/src/api/graph.ts`
   - Store type styles in TypeStyleManager
   - Rebuild style buffers from type mappings
-- [ ] T032 [P] [US4] Add `setEdgeTypeStyles(styles: EdgeTypeStyleMap)` in `packages/core/src/api/graph.ts`
+- [x] T032 [P] [US4] Add `setEdgeTypeStyles(styles: EdgeTypeStyleMap)` in `packages/core/src/api/graph.ts`
   - Store type styles in TypeStyleManager
   - Rebuild style buffers from type mappings
-- [ ] T033 [US4] Implement automatic style buffer generation from types
+- [x] T033 [US4] Implement automatic style buffer generation from types
   - Iterate nodes, lookup type, build Float32Array
   - Handle undefined types with global defaults
-- [ ] T034 [US4] Update Mission Control example `examples/mission-control/main.ts`
+- [x] T034 [US4] Update Mission Control example `examples/mission-control/main.ts`
   - Add "Type Styling" panel with preset type configurations
 
 **Checkpoint**: Type-based styling fully functional (FR-016 through FR-019)
@@ -210,20 +215,20 @@
 
 ### Implementation for User Story 5
 
-- [ ] T043 [US5] Enhance `edge.frag.wgsl` with full Cosmograph PWM implementation
+- [x] T043 [US5] Enhance `edge.frag.wgsl` with full Cosmograph PWM implementation
   - Wave functions: squareWave, triangleWave, sineWave (sin^4)
   - Two independent flow layers with all parameters
   - Punch-through logic: `sparkPunch = flowValue2 * (1.0 - flow2Fade * 0.7)`
-- [ ] T044 [US5] Add Layer 2 flow uniforms to edge pipeline
+- [x] T044 [US5] Add Layer 2 flow uniforms to edge pipeline
   - Extend flow uniform buffer with layer2 parameters
   - Update bind group layout
-- [ ] T045 [US5] Update `setEdgeFlow(config)` method in `packages/core/src/api/graph.ts`
+- [x] T045 [US5] Update `setEdgeFlow(config)` method in `packages/core/src/api/graph.ts`
   - Accept full EdgeFlowConfig with layer1 and layer2
   - Validate parameter ranges (speed 0.01-2.0, pulseWidth 0.005-0.99, etc.)
-- [ ] T046 [US5] Add per-layer RGBA color configuration
+- [x] T046 [US5] Add per-layer RGBA color configuration
   - Color uniform with alpha as blend amount
   - Apply tint in fragment shader
-- [ ] T047 [US5] Update Mission Control example `examples/mission-control/main.ts`
+- [x] T047 [US5] Update Mission Control example `examples/mission-control/main.ts`
   - Add Layer 1 and Layer 2 flow controls
   - Color pickers for flow tint
 
@@ -239,22 +244,28 @@
 
 ### Implementation for User Story 6
 
-- [ ] T048 [US6] Create `curved_edge.wgsl` shader in `packages/core/src/renderer/shaders/`
+- [x] T048 [US6] Create `curved_edge.wgsl` shader in `packages/core/src/renderer/shaders/`
   - Implement conicParametricCurve function from research.md
   - Control point: midpoint + perpendicular offset × curvature
   - Tessellation with configurable segment count
-- [ ] T049 [US6] Add curved edge pipeline in `packages/core/src/renderer/pipelines/edges.ts`
+  - Note: Implemented directly in edge.vert.wgsl with conic_bezier() and compute_control_point() functions
+- [x] T049 [US6] Add curved edge pipeline in `packages/core/src/renderer/pipelines/edges.ts`
   - Toggle between straight and curved rendering
   - Pass tessellation params via uniforms
-- [ ] T050 [US6] Add `curvedEdges` configuration to `packages/core/src/api/graph.ts`
+  - Note: Added CurvedEdgeConfig, curveConfigBuffer, updateCurveConfig(); renderEdges uses segments*6 vertices when curved
+- [x] T050 [US6] Add `curvedEdges` configuration to `packages/core/src/api/graph.ts`
   - Config options: curvedEdges, curveSegments, curveWeight, curveControlPointDistance
   - Update via `setConfig()` method
-- [ ] T051 [US6] Add `setEdgeCurvatures(curvatures: Float32Array)` in `packages/core/src/api/graph.ts`
+  - Note: Added setCurvedEdges(), getCurvedEdgeConfig(), enableCurvedEdges(), disableCurvedEdges()
+- [x] T051 [US6] Add `setEdgeCurvatures(curvatures: Float32Array)` in `packages/core/src/api/graph.ts`
   - Validate array length = edgeCount
   - Upload to edgeStyleBuffer curvature slot
-- [ ] T052 [US6] Support negative curvature values for opposite direction bend
-- [ ] T053 [US6] Update Mission Control example `examples/mission-control/main.ts`
+  - Note: Edge buffer expanded from 6 to 8 floats per edge; curvature at offset 6
+- [x] T052 [US6] Support negative curvature values for opposite direction bend
+  - Note: Supported by shader - positive curves right, negative curves left
+- [x] T053 [US6] Update Mission Control example `examples/mission-control/main.ts`
   - Add curved edges toggle and curvature sliders
+  - Note: Added Curved Edges panel with enabled toggle, segments, weight, curvature sliders, and randomize button
 
 **Checkpoint**: Curved edges fully functional (FR-024 through FR-027)
 
@@ -268,22 +279,28 @@
 
 ### Implementation for User Story 7
 
-- [ ] T054 [US7] Add border uniforms to node pipeline
+- [x] T054 [US7] Add border uniforms to node pipeline
   - enabled (bool), thickness (float), color (RGBA)
   - Update bind group layout
-- [ ] T055 [US7] Update `node.frag.wgsl` with border rendering
+  - Note: Added RenderConfig uniform struct and renderConfigBindGroupLayout
+- [x] T055 [US7] Update `node.frag.wgsl` with border rendering
   - SDF-based border calculation
   - Apply border color at edge of node
-- [ ] T056 [US7] Add `setNodeBorder(config)` method in `packages/core/src/api/graph.ts`
+  - Note: Made border config uniform-based instead of const
+- [x] T056 [US7] Add `setNodeBorder(config)` method in `packages/core/src/api/graph.ts`
   - Config: enabled, thickness, color
   - Update uniforms
+  - Note: Also added enableNodeBorder(), disableNodeBorder(), getNodeBorderConfig()
 - [ ] T057 [US7] Support per-type border overrides in TypeStyleManager
   - BorderConfig in NodeTypeStyle
   - Override global border settings per type
+  - Note: Types exist (borderColor, borderWidth in NodeTypeStyle), but wiring requires expanding per-node buffer layout from 6 to 8+ floats
 - [ ] T058 [US7] Implement hover/selection border states
   - Configurable border style for hover and selected states
-- [ ] T059 [US7] Update Mission Control example `examples/mission-control/main.ts`
+  - Note: Selection ring exists, border already visible; needs API for custom states
+- [x] T059 [US7] Update Mission Control example `examples/mission-control/main.ts`
   - Add border toggle, thickness slider, color picker
+  - Note: Added Node Borders panel with enabled toggle, width slider, and color picker
 
 **Checkpoint**: Node border configuration fully functional (FR-028 through FR-030)
 
@@ -297,21 +314,24 @@
 
 ### Implementation for User Story 8
 
-- [ ] T060 [US8] Create `contour.comp.wgsl` shader in `packages/core/src/renderer/shaders/`
+- [x] T060 [US8] Create `contour.comp.wgsl` shader in `packages/core/src/renderer/shaders/`
   - Implement marching squares algorithm
   - Input: density field texture
   - Output: line segments to storage buffer
-- [ ] T061 [US8] Create contour pipeline in `packages/core/src/renderer/pipelines/contours.ts`
+  - Note: Implemented in packages/core/src/layers/contour/
+- [x] T061 [US8] Create contour pipeline in `packages/core/src/renderer/pipelines/contours.ts`
   - Compute pass for marching squares
   - Render pass for line segments
-- [ ] T062 [US8] Create contour vertex buffer for line segments
+  - Note: Implemented as ContourLayer with SimpleContourPipeline
+- [x] T062 [US8] Create contour vertex buffer for line segments
   - Dynamic size based on threshold count and density field
-- [ ] T063 [US8] Add `setContours(config)` method in `packages/core/src/api/graph.ts`
+- [x] T063 [US8] Add `setContours(config)` method in `packages/core/src/api/graph.ts`
   - Config: enabled, thresholds, lineColor, lineThickness
   - Trigger contour regeneration
-- [ ] T064 [US8] Implement contour dirty flag for efficient updates
+  - Note: Implemented as enableContour(), disableContour(), setContourConfig()
+- [x] T064 [US8] Implement contour dirty flag for efficient updates
   - Regenerate only when density field changes
-- [ ] T065 [US8] Update Mission Control example `examples/mission-control/main.ts`
+- [x] T065 [US8] Update Mission Control example `examples/mission-control/main.ts`
   - Add contour toggle, threshold inputs, line color picker
 
 **Checkpoint**: Topographical contours fully functional (FR-031 through FR-034)
@@ -326,14 +346,16 @@
 
 ### Implementation for User Story 9
 
-- [ ] T066 [US9] Add `setLayerVisible(layerId, visible)` method in `packages/core/src/api/graph.ts`
+- [x] T066 [US9] Add `setLayerVisible(layerId, visible)` method in `packages/core/src/api/graph.ts`
   - Update layer visibility state
   - Trigger re-render
-- [ ] T067 [P] [US9] Add `getLayerVisibility()` method in `packages/core/src/api/graph.ts`
+  - Note: Implemented in LayerManager.setLayerVisible()
+- [x] T067 [P] [US9] Add `getLayerVisibility()` method in `packages/core/src/api/graph.ts`
   - Return Record<string, boolean> of all layer states
-- [ ] T068 [US9] Ensure hidden layers preserve configuration
+  - Note: Implemented as isLayerVisible() per layer (isHeatmapEnabled, isContourEnabled, etc.)
+- [x] T068 [US9] Ensure hidden layers preserve configuration
   - Layer not destroyed, just skipped in render loop
-- [ ] T069 [US9] Implement fast visibility toggle (<16ms target)
+- [x] T069 [US9] Implement fast visibility toggle (<16ms target)
   - No buffer rebuilds on toggle
   - Skip layer in render command encoding
 

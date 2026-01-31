@@ -10,14 +10,13 @@ struct BoundsUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: BoundsUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
 // Output bounds
-@group(0) @binding(3) var<storage, read_write> bounds_min_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> bounds_min_y: array<f32>;
-@group(0) @binding(5) var<storage, read_write> bounds_max_x: array<f32>;
-@group(0) @binding(6) var<storage, read_write> bounds_max_y: array<f32>;
+@group(0) @binding(2) var<storage, read_write> bounds_min_x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> bounds_min_y: array<f32>;
+@group(0) @binding(4) var<storage, read_write> bounds_max_x: array<f32>;
+@group(0) @binding(5) var<storage, read_write> bounds_max_y: array<f32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const F32_MAX: f32 = 3.402823466e+38;
@@ -44,12 +43,11 @@ fn reduce_bounds(@builtin(global_invocation_id) global_id: vec3<u32>,
     var local_max_y = F32_MIN;
 
     if (idx < uniforms.node_count) {
-        let x = positions_x[idx];
-        let y = positions_y[idx];
-        local_min_x = x;
-        local_min_y = y;
-        local_max_x = x;
-        local_max_y = y;
+        let pos = positions[idx];
+        local_min_x = pos.x;
+        local_min_y = pos.y;
+        local_max_x = pos.x;
+        local_max_y = pos.y;
     }
 
     // Store in shared memory
@@ -142,12 +140,11 @@ fn bounds_small(@builtin(global_invocation_id) global_id: vec3<u32>,
     // Process multiple elements per thread for small arrays
     var idx = lid;
     while (idx < uniforms.node_count) {
-        let x = positions_x[idx];
-        let y = positions_y[idx];
-        local_min_x = min(local_min_x, x);
-        local_min_y = min(local_min_y, y);
-        local_max_x = max(local_max_x, x);
-        local_max_y = max(local_max_y, y);
+        let pos = positions[idx];
+        local_min_x = min(local_min_x, pos.x);
+        local_min_y = min(local_min_y, pos.y);
+        local_max_x = max(local_max_x, pos.x);
+        local_max_y = max(local_max_y, pos.y);
         idx += WORKGROUP_SIZE;
     }
 

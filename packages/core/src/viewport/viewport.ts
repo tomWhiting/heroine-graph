@@ -97,10 +97,12 @@ export class Viewport {
 
   /**
    * Pan the viewport by a delta in screen pixels.
+   * Converts screen pixels to graph units by dividing by scale.
+   * Same sign convention as pan() - positive dx moves viewport right.
    */
   panScreen(dx: number, dy: number): void {
-    this.x -= dx / this.scale;
-    this.y -= dy / this.scale;
+    this.x += dx / this.scale;
+    this.y += dy / this.scale;
     this.emitChange();
   }
 

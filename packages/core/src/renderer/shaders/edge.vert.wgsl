@@ -1,5 +1,6 @@
 // Edge Vertex Shader
 // Renders edges as thick lines with anti-aliased edges
+// Supports both straight and curved (conic Bezier) edges
 
 struct ViewportUniforms {
     transform_col0: vec4<f32>,
@@ -11,27 +12,38 @@ struct ViewportUniforms {
     _padding: vec2<f32>,
 }
 
+// Curved edge configuration
+struct CurveConfig {
+    enabled: u32,           // 0 = straight, 1 = curved
+    segments: u32,          // tessellation segments (default 19)
+    weight: f32,            // rational curve weight (default 0.8)
+    _pad: f32,
+}
+
 @group(0) @binding(0) var<uniform> viewport: ViewportUniforms;
 
 // Node positions (needed to get edge endpoints)
-@group(1) @binding(0) var<storage, read> positions_x: array<f32>;
-@group(1) @binding(1) var<storage, read> positions_y: array<f32>;
+@group(1) @binding(0) var<storage, read> positions: array<vec2<f32>>;
 
 // Edge data: pairs of (source_idx, target_idx) packed as u32
-@group(1) @binding(2) var<storage, read> edge_indices: array<u32>;
+@group(1) @binding(1) var<storage, read> edge_indices: array<u32>;
 
-// Edge attributes (width, color, selected, hovered)
-@group(1) @binding(3) var<storage, read> edge_attrs: array<f32>;
+// Edge attributes (width, color, selected, hovered, curvature, reserved)
+// Layout: 8 floats per edge
+@group(1) @binding(2) var<storage, read> edge_attrs: array<f32>;
+
+// Curve configuration uniform
+@group(1) @binding(3) var<storage, read> curve_config: CurveConfig;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,        // For line distance
+    @location(0) uv: vec2<f32>,        // For line distance (t along curve, perpendicular dist)
     @location(1) color: vec3<f32>,      // Edge color
     @location(2) half_width: f32,       // Half line width in pixels
     @location(3) state: vec2<f32>,      // (selected, hovered)
 }
 
-// Each edge is rendered as a quad (2 triangles, 6 vertices)
+// Each edge segment is rendered as a quad (2 triangles, 6 vertices)
 const QUAD_OFFSETS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(0.0, -1.0),  // Bottom-left
     vec2<f32>(1.0, -1.0),  // Bottom-right
@@ -51,8 +63,35 @@ fn transform_point(pos: vec2<f32>) -> vec2<f32> {
     );
 }
 
+// Rational quadratic (conic) Bezier curve evaluation
+// A = start, B = end, C = control point, t = parameter [0,1], w = weight
+fn conic_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, t: f32, w: f32) -> vec2<f32> {
+    let one_minus_t = 1.0 - t;
+    let dividend = one_minus_t * one_minus_t * A +
+                   2.0 * one_minus_t * t * w * C +
+                   t * t * B;
+    let divisor = one_minus_t * one_minus_t +
+                  2.0 * one_minus_t * t * w +
+                  t * t;
+    return dividend / divisor;
+}
+
+// Compute control point for curved edge
+// curvature: positive = bend right, negative = bend left
+fn compute_control_point(src: vec2<f32>, dst: vec2<f32>, curvature: f32) -> vec2<f32> {
+    let midpoint = (src + dst) * 0.5;
+    let edge_dir = dst - src;
+    let edge_length = length(edge_dir);
+    // Perpendicular direction (rotated 90 degrees)
+    let perp = vec2<f32>(-edge_dir.y, edge_dir.x) / max(edge_length, 0.0001);
+    // Control point offset
+    return midpoint + perp * edge_length * curvature;
+}
+
 // Default edge width in pixels
 const DEFAULT_WIDTH: f32 = 1.0;
+// Number of floats per edge in attributes buffer
+const EDGE_ATTR_STRIDE: u32 = 8u;
 
 @vertex
 fn vs_main(
@@ -66,53 +105,92 @@ fn vs_main(
     let source_idx = edge_indices[edge_base];
     let target_idx = edge_indices[edge_base + 1u];
 
-    let source_pos = vec2<f32>(
-        positions_x[source_idx],
-        positions_y[source_idx]
-    );
-    let target_pos = vec2<f32>(
-        positions_x[target_idx],
-        positions_y[target_idx]
-    );
+    let source_pos = positions[source_idx];
+    let target_pos = positions[target_idx];
 
-    // Read edge attributes (6 floats per edge)
-    let attr_base = instance_idx * 6u;
+    // Read edge attributes (8 floats per edge)
+    let attr_base = instance_idx * EDGE_ATTR_STRIDE;
     let width = edge_attrs[attr_base];
     let color_r = edge_attrs[attr_base + 1u];
     let color_g = edge_attrs[attr_base + 2u];
     let color_b = edge_attrs[attr_base + 3u];
     let selected = edge_attrs[attr_base + 4u];
     let hovered = edge_attrs[attr_base + 5u];
+    let curvature = edge_attrs[attr_base + 6u];
+    // attr_base + 7u is reserved
 
     // Use default width if not specified
     let actual_width = select(DEFAULT_WIDTH, width, width > 0.0);
     let half_width = actual_width * 0.5;
 
-    // Transform endpoints to clip space
-    let source_clip = transform_point(source_pos);
-    let target_clip = transform_point(target_pos);
+    // Determine if we're rendering curved or straight
+    let is_curved = curve_config.enabled != 0u && abs(curvature) > 0.001;
+    let segments = max(curve_config.segments, 1u);
 
-    // Calculate edge direction in clip space
-    let edge_dir = target_clip - source_clip;
-    let edge_length = length(edge_dir);
+    // For curved edges, we render multiple segments
+    // vertex_idx is divided into: which segment (0..segments-1) and which vertex of quad (0..5)
+    var segment_idx: u32 = 0u;
+    var quad_vertex_idx: u32 = vertex_idx % 6u;
 
-    // Handle degenerate edges
-    if (edge_length < 0.0001) {
+    if (is_curved) {
+        segment_idx = (vertex_idx / 6u) % segments;
+        quad_vertex_idx = vertex_idx % 6u;
+    }
+
+    // Calculate t values for this segment
+    var t0: f32;
+    var t1: f32;
+    if (is_curved) {
+        let seg_f = f32(segments);
+        t0 = f32(segment_idx) / seg_f;
+        t1 = f32(segment_idx + 1u) / seg_f;
+    } else {
+        t0 = 0.0;
+        t1 = 1.0;
+    }
+
+    // Compute positions based on curve mode
+    var p0: vec2<f32>;
+    var p1: vec2<f32>;
+
+    if (is_curved) {
+        // Compute control point for curve
+        let control = compute_control_point(source_pos, target_pos, curvature);
+        let w = curve_config.weight;
+
+        // Evaluate curve at segment endpoints
+        p0 = conic_bezier(source_pos, target_pos, control, t0, w);
+        p1 = conic_bezier(source_pos, target_pos, control, t1, w);
+    } else {
+        p0 = source_pos;
+        p1 = target_pos;
+    }
+
+    // Transform to clip space
+    let p0_clip = transform_point(p0);
+    let p1_clip = transform_point(p1);
+
+    // Calculate segment direction in clip space
+    let seg_dir = p1_clip - p0_clip;
+    let seg_length = length(seg_dir);
+
+    // Handle degenerate segments
+    if (seg_length < 0.0001) {
         output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);  // Behind camera
         return output;
     }
 
-    let edge_unit = edge_dir / edge_length;
+    let seg_unit = seg_dir / seg_length;
 
     // Perpendicular direction for width
-    let perp = vec2<f32>(-edge_unit.y, edge_unit.x);
+    let perp = vec2<f32>(-seg_unit.y, seg_unit.x);
 
     // Get quad vertex offset
-    let quad_offset = QUAD_OFFSETS[vertex_idx % 6u];
+    let quad_offset = QUAD_OFFSETS[quad_vertex_idx];
 
-    // Calculate position along edge (0 = source, 1 = target)
-    let t = quad_offset.x;
-    let base_pos = mix(source_clip, target_clip, t);
+    // Calculate position along segment (0 = p0, 1 = p1)
+    let local_t = quad_offset.x;
+    let base_pos = mix(p0_clip, p1_clip, local_t);
 
     // Add width offset (perpendicular)
     // Convert width from pixels to clip space
@@ -124,9 +202,10 @@ fn vs_main(
     output.position = vec4<f32>(base_pos + offset, 0.0, 1.0);
 
     // UV for line distance calculation
-    // x: position along line (0-1)
+    // x: position along full edge (0-1), accounting for segment position
     // y: perpendicular distance in pixels
-    output.uv = vec2<f32>(t, quad_offset.y * (half_width + aa_padding));
+    let global_t = mix(t0, t1, local_t);
+    output.uv = vec2<f32>(global_t, quad_offset.y * (half_width + aa_padding));
 
     output.color = vec3<f32>(color_r, color_g, color_b);
     output.half_width = half_width;

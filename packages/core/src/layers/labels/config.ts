@@ -51,44 +51,5 @@ export const DEFAULT_LABEL_CONFIG: LabelConfig = {
   backgroundRadius: 2,
 };
 
-/**
- * Parse CSS color to RGBA values (0-1 range)
- */
-export function parseColor(color: string): [number, number, number, number] {
-  // Handle hex colors
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    if (hex.length === 3) {
-      const r = parseInt(hex[0] + hex[0], 16) / 255;
-      const g = parseInt(hex[1] + hex[1], 16) / 255;
-      const b = parseInt(hex[2] + hex[2], 16) / 255;
-      return [r, g, b, 1.0];
-    }
-    if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      return [r, g, b, 1.0];
-    }
-    if (hex.length === 8) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      const a = parseInt(hex.slice(6, 8), 16) / 255;
-      return [r, g, b, a];
-    }
-  }
-
-  // Handle rgb/rgba
-  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-  if (rgbMatch) {
-    const r = parseInt(rgbMatch[1]) / 255;
-    const g = parseInt(rgbMatch[2]) / 255;
-    const b = parseInt(rgbMatch[3]) / 255;
-    const a = rgbMatch[4] ? parseFloat(rgbMatch[4]) : 1.0;
-    return [r, g, b, a];
-  }
-
-  // Default to black
-  return [0, 0, 0, 1.0];
-}
+// Re-export parseColor from shared utilities for backwards compatibility
+export { parseColorToRGBA as parseColor } from "../../utils/color.ts";

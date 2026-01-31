@@ -25,12 +25,11 @@ struct NodeAttributes {
 
 @group(0) @binding(0) var<uniform> viewport: ViewportUniforms;
 
-// Position buffers (SoA layout)
-@group(1) @binding(0) var<storage, read> positions_x: array<f32>;
-@group(1) @binding(1) var<storage, read> positions_y: array<f32>;
+// Position buffer (vec2 layout)
+@group(1) @binding(0) var<storage, read> positions: array<vec2<f32>>;
 
 // Node attributes buffer
-@group(1) @binding(2) var<storage, read> node_attrs: array<f32>;
+@group(1) @binding(1) var<storage, read> node_attrs: array<f32>;
 
 // Vertex output to fragment shader
 struct VertexOutput {
@@ -74,10 +73,8 @@ fn vs_main(
 ) -> VertexOutput {
     var output: VertexOutput;
 
-    // Get node position from SoA buffers
-    let node_x = positions_x[instance_idx];
-    let node_y = positions_y[instance_idx];
-    let node_pos = vec2<f32>(node_x, node_y);
+    // Get node position from vec2 buffer
+    let node_pos = positions[instance_idx];
 
     // Read node attributes (6 floats per node)
     let attr_base = instance_idx * 6u;

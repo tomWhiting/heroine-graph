@@ -44,6 +44,8 @@ export interface NodeRenderPipeline {
   viewportBindGroupLayout: GPUBindGroupLayout;
   /** Bind group layout for node data */
   nodeBindGroupLayout: GPUBindGroupLayout;
+  /** Bind group layout for render config */
+  renderConfigBindGroupLayout: GPUBindGroupLayout;
   /** Shader module */
   shaderModule: GPUShaderModule;
   /** Pipeline configuration */
@@ -83,9 +85,8 @@ export function createNodeRenderPipeline(
   });
 
   // Node data bind group layout (group 1)
-  // - binding 0: positions_x (storage buffer)
-  // - binding 1: positions_y (storage buffer)
-  // - binding 2: node_attrs (storage buffer)
+  // - binding 0: positions (vec2 storage buffer)
+  // - binding 1: node_attrs (storage buffer)
   const nodeBindGroupLayout = device.createBindGroupLayout({
     label: "Node Pipeline - Node Data",
     entries: [
@@ -99,10 +100,18 @@ export function createNodeRenderPipeline(
         visibility: GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
+    ],
+  });
+
+  // Render config bind group layout (group 2)
+  // - binding 0: render config uniform
+  const renderConfigBindGroupLayout = device.createBindGroupLayout({
+    label: "Node Pipeline - Render Config",
+    entries: [
       {
-        binding: 2,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
       },
     ],
   });
@@ -110,7 +119,7 @@ export function createNodeRenderPipeline(
   // Create pipeline layout
   const pipelineLayout = device.createPipelineLayout({
     label: "Node Pipeline Layout",
-    bindGroupLayouts: [viewportBindGroupLayout, nodeBindGroupLayout],
+    bindGroupLayouts: [viewportBindGroupLayout, nodeBindGroupLayout, renderConfigBindGroupLayout],
   });
 
   // Create render pipeline
@@ -157,6 +166,7 @@ export function createNodeRenderPipeline(
     pipeline,
     viewportBindGroupLayout,
     nodeBindGroupLayout,
+    renderConfigBindGroupLayout,
     shaderModule,
     config: finalConfig,
   };
@@ -167,25 +177,22 @@ export function createNodeRenderPipeline(
  *
  * @param device - GPU device
  * @param pipeline - Node render pipeline
- * @param positionsX - X position buffer
- * @param positionsY - Y position buffer
+ * @param positions - Position buffer (vec2 per node)
  * @param nodeAttrs - Node attributes buffer
  * @returns Bind group for node data
  */
 export function createNodeBindGroup(
   device: GPUDevice,
   pipeline: NodeRenderPipeline,
-  positionsX: GPUBuffer,
-  positionsY: GPUBuffer,
+  positions: GPUBuffer,
   nodeAttrs: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: "Node Data Bind Group",
     layout: pipeline.nodeBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: positionsX } },
-      { binding: 1, resource: { buffer: positionsY } },
-      { binding: 2, resource: { buffer: nodeAttrs } },
+      { binding: 0, resource: { buffer: positions } },
+      { binding: 1, resource: { buffer: nodeAttrs } },
     ],
   });
 }
@@ -211,12 +218,33 @@ export function createViewportBindGroup(
 }
 
 /**
+ * Creates a bind group for render config uniforms
+ *
+ * @param device - GPU device
+ * @param pipeline - Node render pipeline
+ * @param renderConfigBuffer - Render config uniform buffer
+ * @returns Bind group for render config
+ */
+export function createRenderConfigBindGroup(
+  device: GPUDevice,
+  pipeline: NodeRenderPipeline,
+  renderConfigBuffer: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: "Render Config Bind Group",
+    layout: pipeline.renderConfigBindGroupLayout,
+    entries: [{ binding: 0, resource: { buffer: renderConfigBuffer } }],
+  });
+}
+
+/**
  * Records node rendering commands
  *
  * @param pass - Render pass encoder
  * @param pipeline - Node render pipeline
  * @param viewportBindGroup - Viewport uniforms bind group
  * @param nodeBindGroup - Node data bind group
+ * @param renderConfigBindGroup - Render config bind group
  * @param nodeCount - Number of nodes to render
  */
 export function renderNodes(
@@ -224,6 +252,7 @@ export function renderNodes(
   pipeline: NodeRenderPipeline,
   viewportBindGroup: GPUBindGroup,
   nodeBindGroup: GPUBindGroup,
+  renderConfigBindGroup: GPUBindGroup,
   nodeCount: number,
 ): void {
   if (nodeCount <= 0) return;
@@ -231,6 +260,7 @@ export function renderNodes(
   pass.setPipeline(pipeline.pipeline);
   pass.setBindGroup(0, viewportBindGroup);
   pass.setBindGroup(1, nodeBindGroup);
+  pass.setBindGroup(2, renderConfigBindGroup);
 
   // 6 vertices per quad (2 triangles), 1 instance per node
   pass.draw(6, nodeCount);

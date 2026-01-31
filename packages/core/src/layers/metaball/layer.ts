@@ -21,10 +21,10 @@ import { createMetaballPipeline } from "./pipeline.ts";
 export interface MetaballRenderContext {
   /** Viewport uniform buffer */
   viewportUniformBuffer: GPUBuffer;
-  /** Position X buffer */
-  positionsX: GPUBuffer;
-  /** Position Y buffer */
-  positionsY: GPUBuffer;
+  /** Position buffer (vec2 per node) */
+  positions: GPUBuffer;
+  /** Node intensities buffer (per-node intensity from stream, 0-1 range) */
+  nodeIntensities: GPUBuffer;
   /** Number of nodes */
   nodeCount: number;
   /** Viewport offset (pan) */
@@ -97,6 +97,23 @@ export class MetaballLayer implements Layer {
   }
 
   /**
+   * Set the data source for per-node intensity values.
+   * @param source - 'density' for uniform intensity, or a stream ID
+   */
+  setDataSource(source: string): void {
+    if (source === this.config.dataSource) return;
+    this.config.dataSource = source;
+    this.bindGroupDirty = true;
+  }
+
+  /**
+   * Get the current data source
+   */
+  getDataSource(): string {
+    return this.config.dataSource;
+  }
+
+  /**
    * Render the metaball layer
    */
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
@@ -152,8 +169,8 @@ export class MetaballLayer implements Layer {
     if (!this.bindGroupDirty || !this.renderContext) return;
 
     this.bindGroup = this.pipeline.createBindGroup(
-      this.renderContext.positionsX,
-      this.renderContext.positionsY,
+      this.renderContext.positions,
+      this.renderContext.nodeIntensities,
     );
 
     this.bindGroupDirty = false;

@@ -10,16 +10,10 @@
 import type { GraphInput } from "../types.ts";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
 import { createIdMap, type IdLike, type IdMap } from "./id_map.ts";
+import { parseColorToRGB, type RgbaColor } from "../utils/color.ts";
 
-/**
- * Internal RGBA color representation for GPU upload
- */
-interface RgbaColor {
-  readonly r: number;
-  readonly g: number;
-  readonly b: number;
-  readonly a: number;
-}
+// Re-export RgbaColor for backwards compatibility
+export type { RgbaColor } from "../utils/color.ts";
 
 /**
  * Parsed graph data ready for GPU upload
@@ -101,22 +95,8 @@ function parseColor(
   }
 
   if (typeof color === "string") {
-    // Parse hex color
-    const hex = color.replace("#", "");
-    if (hex.length === 3) {
-      return [
-        parseInt(hex[0] + hex[0], 16) / 255,
-        parseInt(hex[1] + hex[1], 16) / 255,
-        parseInt(hex[2] + hex[2], 16) / 255,
-      ];
-    } else if (hex.length === 6) {
-      return [
-        parseInt(hex.slice(0, 2), 16) / 255,
-        parseInt(hex.slice(2, 4), 16) / 255,
-        parseInt(hex.slice(4, 6), 16) / 255,
-      ];
-    }
-    return [defaultColor.r, defaultColor.g, defaultColor.b];
+    // Use shared utility for string parsing
+    return parseColorToRGB(color, [defaultColor.r, defaultColor.g, defaultColor.b]);
   }
 
   // Object with r, g, b properties
@@ -150,7 +130,8 @@ export function parseGraphInput(
   const nodeAttributes = new Float32Array(nodeCount * 6);
   const edgeSources = new Uint32Array(edgeCount);
   const edgeTargets = new Uint32Array(edgeCount);
-  const edgeAttributes = new Float32Array(edgeCount * 6);
+  // 8 floats per edge: width, r, g, b, selected, hovered, curvature, reserved
+  const edgeAttributes = new Float32Array(edgeCount * 8);
 
   // Metadata storage
   const nodeMetadata = new Map<number, Record<string, unknown>>();
@@ -225,8 +206,8 @@ export function parseGraphInput(
     edgeSources[idx] = sourceIdx ?? 0;
     edgeTargets[idx] = targetIdx ?? 0;
 
-    // Attributes
-    const attrBase = idx * 6;
+    // Attributes (8 floats per edge)
+    const attrBase = idx * 8;
     edgeAttributes[attrBase] = edge.width ?? finalConfig.defaultEdgeWidth;
     const [r, g, b] = parseColor(edge.color, finalConfig.defaultEdgeColor);
     edgeAttributes[attrBase + 1] = r;
@@ -234,6 +215,8 @@ export function parseGraphInput(
     edgeAttributes[attrBase + 3] = b;
     edgeAttributes[attrBase + 4] = 0; // selected
     edgeAttributes[attrBase + 5] = 0; // hovered
+    edgeAttributes[attrBase + 6] = 0; // curvature (default: straight)
+    edgeAttributes[attrBase + 7] = 0; // reserved
 
     // Store metadata (accessed via index signature)
     const edgeMetadataValue = edge["metadata"] as Record<string, unknown> | undefined;

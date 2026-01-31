@@ -33,6 +33,7 @@ import { initializePositions, needsInitialization } from "../graph/initialize.ts
 import {
   createNodeBindGroup,
   createNodeRenderPipeline,
+  createRenderConfigBindGroup,
   createViewportBindGroup,
   type NodeRenderPipeline,
   renderNodes,
@@ -40,8 +41,11 @@ import {
 import {
   createEdgeBindGroup,
   createEdgeRenderPipeline,
+  type CurvedEdgeConfig,
+  DEFAULT_CURVED_EDGE_CONFIG,
   type EdgeRenderPipeline,
   renderEdges,
+  updateCurveConfig,
   updateEdgeFlowUniforms,
 } from "../renderer/pipelines/edges.ts";
 import {
@@ -49,6 +53,11 @@ import {
   type EdgeFlowPreset,
   EDGE_FLOW_PRESETS,
 } from "../renderer/edge_flow.ts";
+import { parseColorToRGB } from "../utils/color.ts";
+import {
+  DEFAULT_NODE_BORDER_CONFIG as _DEFAULT_NODE_BORDER_CONFIG,
+  type NodeBorderConfig as _NodeBorderConfig,
+} from "../config/node_border.ts";
 import { createRenderLoop, type FrameStats, type RenderLoop } from "../renderer/render_loop.ts";
 import { createSimulationController, type SimulationController } from "../simulation/controller.ts";
 import {
@@ -73,6 +82,18 @@ import {
   swapSimulationBuffers,
   updateSimulationUniforms,
 } from "../simulation/pipeline.ts";
+import {
+  type CollisionBindGroup,
+  type CollisionBuffers,
+  type CollisionPipeline,
+  createCollisionBindGroup,
+  createCollisionBuffers,
+  createCollisionPipeline,
+  destroyCollisionBuffers,
+  recordCollisionPass,
+  updateCollisionUniforms,
+  uploadNodeSizes,
+} from "../simulation/collision.ts";
 import {
   createHitTester,
   type HitTester,
@@ -113,6 +134,8 @@ import {
   type ForceAlgorithmType,
   getAlgorithmRegistry,
   initializeBuiltinAlgorithms,
+  RelativityAtlasAlgorithm,
+  uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
 import {
   createStreamManager,
@@ -130,11 +153,17 @@ import {
 } from "../styling/mod.ts";
 
 /**
- * WASM engine interface for spatial queries.
+ * WASM engine interface for spatial queries and graph data.
  * This matches the HeroineGraphWasm API exposed by the WASM module.
  */
 interface WasmEngine extends SpatialQueryEngine {
   findNearestNode(x: number, y: number): number | undefined;
+  /** Get edges in CSR format: [offsets..., targets...] */
+  getEdgesCsr(): Uint32Array;
+  /** Get inverse edges (incoming) in CSR format: [offsets..., sources...] */
+  getInverseEdgesCsr(): Uint32Array;
+  /** Get node degrees: [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...] */
+  getNodeDegrees(): Uint32Array;
 }
 
 /**
@@ -153,6 +182,9 @@ export interface HeroineGraphConfig {
   debug?: boolean;
 }
 
+// Re-export NodeBorderConfig types for backwards compatibility
+export { DEFAULT_NODE_BORDER_CONFIG, type NodeBorderConfig } from "../config/node_border.ts";
+
 /**
  * Internal graph state
  */
@@ -167,8 +199,7 @@ interface GraphState {
  * GPU buffers for rendering
  */
 interface GPUBuffers {
-  positionsX: GPUBuffer;
-  positionsY: GPUBuffer;
+  positions: GPUBuffer;
   nodeAttributes: GPUBuffer;
   edgeIndices: GPUBuffer;
   edgeAttributes: GPUBuffer;
@@ -211,6 +242,14 @@ export class HeroineGraph {
   private nodeBindGroup: GPUBindGroup | null = null;
   private edgeBindGroup: GPUBindGroup | null = null;
   private viewportBindGroup: GPUBindGroup | null = null;
+  private renderConfigBindGroup: GPUBindGroup | null = null;
+  private renderConfigBuffer: GPUBuffer | null = null;
+
+  // Node border configuration
+  private nodeBorderConfig: _NodeBorderConfig = { ..._DEFAULT_NODE_BORDER_CONFIG };
+
+  // Background color (RGBA 0-1)
+  private backgroundColor: { r: number; g: number; b: number; a: number } = { r: 0.04, g: 0.04, b: 0.06, a: 1.0 };
 
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
@@ -221,6 +260,11 @@ export class HeroineGraph {
   private algorithmPipelines: AlgorithmPipelines | null = null;
   private algorithmBuffers: AlgorithmBuffers | null = null;
   private algorithmBindGroups: AlgorithmBindGroups | null = null;
+
+  // Collision detection resources
+  private collisionPipeline: CollisionPipeline | null = null;
+  private collisionBuffers: CollisionBuffers | null = null;
+  private collisionBindGroup: CollisionBindGroup | null = null;
 
   // Interaction
   private hitTester: HitTester;
@@ -253,6 +297,16 @@ export class HeroineGraph {
 
   // Heatmap stream intensity buffer (per-node values from stream)
   private heatmapIntensityBuffer: GPUBuffer | null = null;
+
+  // Metaball stream intensity buffer (per-node values from stream)
+  private metaballIntensityBuffer: GPUBuffer | null = null;
+
+  // Default intensity buffer (all 1.0 values for density mode)
+  private defaultIntensityBuffer: GPUBuffer | null = null;
+
+  // Visibility change handling - pause simulation when tab hidden
+  private visibilityChangeHandler: (() => void) | null = null;
+  private wasRunningBeforeHidden: boolean = false;
 
   constructor(config: HeroineGraphConfig) {
     this.gpuContext = config.gpuContext;
@@ -350,9 +404,44 @@ export class HeroineGraph {
     // Note: render loop starts on first load() call, not here
     // This prevents rendering before canvas has valid dimensions
 
+    // Set up visibility change handling - pause simulation when tab is hidden
+    this.setupVisibilityChangeHandler();
+
     if (this.debug) {
       console.log("HeroineGraph instance created");
     }
+  }
+
+  /**
+   * Set up visibility change handling to pause simulation when tab is hidden.
+   * This saves resources when the user switches tabs.
+   */
+  private setupVisibilityChangeHandler(): void {
+    if (typeof document === "undefined") return;
+
+    this.visibilityChangeHandler = () => {
+      if (document.hidden) {
+        // Tab became hidden - pause simulation if running
+        if (this.simulationController.state.status === "running") {
+          this.wasRunningBeforeHidden = true;
+          this.simulationController.pause();
+          if (this.debug) {
+            console.log("Tab hidden - pausing simulation");
+          }
+        }
+      } else {
+        // Tab became visible - resume simulation if it was running before
+        if (this.wasRunningBeforeHidden) {
+          this.wasRunningBeforeHidden = false;
+          this.simulationController.start();
+          if (this.debug) {
+            console.log("Tab visible - resuming simulation");
+          }
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", this.visibilityChangeHandler);
   }
 
   /**
@@ -360,10 +449,34 @@ export class HeroineGraph {
    */
   private initializePipelines(): void {
     const format = this.gpuContext.format;
+    const { device } = this.gpuContext;
 
     this.nodePipeline = createNodeRenderPipeline(this.gpuContext, { format });
     this.edgePipeline = createEdgeRenderPipeline(this.gpuContext, { format });
     this.simulationPipeline = createSimulationPipeline(this.gpuContext);
+    this.collisionPipeline = createCollisionPipeline(this.gpuContext);
+
+    // Create render config buffer
+    // Struct layout (must match node.frag.wgsl RenderConfig):
+    // - selection_color: vec3<f32> (12 bytes) + selection_ring_width: f32 (4 bytes) = 16 bytes
+    // - hover_brightness: f32 (4 bytes) + border_enabled: u32 (4 bytes) + border_width: f32 (4 bytes) + pad: f32 (4 bytes) = 16 bytes
+    // - border_color: vec3<f32> (12 bytes) + pad: f32 (4 bytes) = 16 bytes
+    // Total: 48 bytes
+    this.renderConfigBuffer = device.createBuffer({
+      label: "Render Config Uniform Buffer",
+      size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Initialize with default values
+    this.updateRenderConfigBuffer();
+
+    // Create render config bind group
+    this.renderConfigBindGroup = createRenderConfigBindGroup(
+      device,
+      this.nodePipeline,
+      this.renderConfigBuffer,
+    );
   }
 
   /**
@@ -384,6 +497,51 @@ export class HeroineGraph {
       cssWidth,
       cssHeight,
     );
+  }
+
+  /**
+   * Update render config uniform buffer with current node border settings.
+   * Called when border configuration changes.
+   */
+  private updateRenderConfigBuffer(): void {
+    if (!this.renderConfigBuffer) return;
+
+    const { device } = this.gpuContext;
+    const data = new ArrayBuffer(48);
+    const floatView = new Float32Array(data);
+    const uintView = new Uint32Array(data);
+
+    // Parse border color from hex/CSS string
+    const borderColor = this.parseColorString(this.nodeBorderConfig.color);
+
+    // Layout matches RenderConfig struct in node.frag.wgsl:
+    // vec3 selection_color (0-2), f32 selection_ring_width (3)
+    floatView[0] = 0.259; // selection_color.r (#4285f4)
+    floatView[1] = 0.522; // selection_color.g
+    floatView[2] = 0.957; // selection_color.b
+    floatView[3] = 2.0; // selection_ring_width
+
+    // f32 hover_brightness (4), u32 border_enabled (5), f32 border_width (6), f32 _pad1 (7)
+    floatView[4] = 1.2; // hover_brightness
+    uintView[5] = this.nodeBorderConfig.enabled ? 1 : 0; // border_enabled
+    floatView[6] = this.nodeBorderConfig.width; // border_width
+    floatView[7] = 0.0; // _pad1
+
+    // vec3 border_color (8-10), f32 _pad2 (11)
+    floatView[8] = borderColor[0]; // border_color.r
+    floatView[9] = borderColor[1]; // border_color.g
+    floatView[10] = borderColor[2]; // border_color.b
+    floatView[11] = 0.0; // _pad2
+
+    device.queue.writeBuffer(this.renderConfigBuffer, 0, data);
+  }
+
+  /**
+   * Parse a CSS color string or hex to RGB values (0-1 range).
+   */
+  private parseColorString(color: string): [number, number, number] {
+    // Use shared color parsing utility
+    return parseColorToRGB(color);
   }
 
   /**
@@ -411,10 +569,8 @@ export class HeroineGraph {
     if (this.currentAlgorithm && this.algorithmBuffers && this.algorithmBindGroups) {
       const context: AlgorithmRenderContext = {
         device,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
-        forcesX: this.simBuffers.forcesX,
-        forcesY: this.simBuffers.forcesY,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
         forceConfig: this.forceConfig,
       };
@@ -443,6 +599,32 @@ export class HeroineGraph {
       },
     );
 
+    // Record collision detection pass (after integration, if enabled)
+    if (
+      this.forceConfig.collisionEnabled &&
+      this.collisionPipeline &&
+      this.collisionBuffers &&
+      this.collisionBindGroup
+    ) {
+      // Update collision uniforms with current config
+      updateCollisionUniforms(
+        device,
+        this.collisionBuffers,
+        this.state.nodeCount,
+        this.forceConfig,
+      );
+
+      // Record collision pass(es)
+      recordCollisionPass(
+        encoder,
+        this.collisionPipeline,
+        this.collisionBindGroup,
+        this.state.nodeCount,
+        this.forceConfig.collisionIterations,
+        this.state.nodeCount > 5000, // Use tiled version for large graphs
+      );
+    }
+
     // Tick the simulation controller
     this.simulationController.tick();
   }
@@ -468,8 +650,7 @@ export class HeroineGraph {
       this.nodeBindGroup = createNodeBindGroup(
         this.gpuContext.device,
         this.nodePipeline,
-        this.simBuffers.positionsX,
-        this.simBuffers.positionsY,
+        this.simBuffers.positions,
         this.buffers!.nodeAttributes,
       );
     }
@@ -478,8 +659,7 @@ export class HeroineGraph {
       this.edgeBindGroup = createEdgeBindGroup(
         this.gpuContext.device,
         this.edgePipeline,
-        this.simBuffers.positionsX,
-        this.simBuffers.positionsY,
+        this.simBuffers.positions,
         this.buffers.edgeIndices,
         this.buffers.edgeAttributes,
       );
@@ -489,10 +669,8 @@ export class HeroineGraph {
     if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
       const context: AlgorithmRenderContext = {
         device: this.gpuContext.device,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
-        forcesX: this.simBuffers.forcesX,
-        forcesY: this.simBuffers.forcesY,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
         forceConfig: this.forceConfig,
       };
@@ -502,6 +680,16 @@ export class HeroineGraph {
         this.algorithmPipelines,
         context,
         this.algorithmBuffers,
+      );
+    }
+
+    // Rebuild collision bind group with swapped position buffers
+    if (this.collisionPipeline && this.collisionBuffers) {
+      this.collisionBindGroup = createCollisionBindGroup(
+        this.gpuContext.device,
+        this.collisionPipeline,
+        this.collisionBuffers,
+        this.simBuffers.positions,
       );
     }
 
@@ -539,7 +727,7 @@ export class HeroineGraph {
       colorAttachments: [
         {
           view: textureView,
-          clearValue: { r: 0.95, g: 0.95, b: 0.95, a: 1.0 },
+          clearValue: this.backgroundColor,
           loadOp: "clear",
           storeOp: "store",
         },
@@ -590,6 +778,7 @@ export class HeroineGraph {
       this.nodePipeline &&
       this.viewportBindGroup &&
       this.nodeBindGroup &&
+      this.renderConfigBindGroup &&
       this.state.nodeCount > 0
     ) {
       renderNodes(
@@ -597,6 +786,7 @@ export class HeroineGraph {
         this.nodePipeline,
         this.viewportBindGroup,
         this.nodeBindGroup,
+        this.renderConfigBindGroup,
         this.state.nodeCount,
       );
     }
@@ -681,6 +871,34 @@ export class HeroineGraph {
     const parsed = isTyped
       ? parseGraphTypedInput(data as GraphTypedInput)
       : parseGraphInput(data as GraphInput);
+
+    // Handle empty graph gracefully
+    if (parsed.nodeCount === 0) {
+      // Clear existing state
+      this.destroyBuffers();
+      this.destroySimulationBuffers();
+      this.state.loaded = true;
+      this.state.nodeCount = 0;
+      this.state.edgeCount = 0;
+      this.state.parsedGraph = parsed;
+
+      // Start render loop (will just clear the screen)
+      if (!this.renderLoop.isRunning) {
+        this.renderLoop.start();
+      }
+
+      this.events.emit({
+        type: "graph:load",
+        timestamp: Date.now(),
+        nodeCount: 0,
+        edgeCount: 0,
+      });
+
+      if (this.debug) {
+        console.log("Loaded empty graph (0 nodes)");
+      }
+      return;
+    }
 
     // Initialize positions if needed
     if (needsInitialization(parsed.positionsX, parsed.positionsY)) {
@@ -787,8 +1005,7 @@ export class HeroineGraph {
       this.nodeBindGroup = createNodeBindGroup(
         device,
         this.nodePipeline,
-        this.simBuffers.positionsX,
-        this.simBuffers.positionsY,
+        this.simBuffers.positions,
         this.buffers!.nodeAttributes,
       );
     }
@@ -797,8 +1014,7 @@ export class HeroineGraph {
       this.edgeBindGroup = createEdgeBindGroup(
         device,
         this.edgePipeline,
-        this.simBuffers.positionsX,
-        this.simBuffers.positionsY,
+        this.simBuffers.positions,
         this.buffers.edgeIndices,
         this.buffers.edgeAttributes,
       );
@@ -813,10 +1029,8 @@ export class HeroineGraph {
 
       const context: AlgorithmRenderContext = {
         device,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
-        forcesX: this.simBuffers.forcesX,
-        forcesY: this.simBuffers.forcesY,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
         nodeCount: parsed.nodeCount,
         forceConfig: this.forceConfig,
       };
@@ -827,6 +1041,87 @@ export class HeroineGraph {
         context,
         this.algorithmBuffers,
       );
+
+      // Upload algorithm-specific edge data
+      this.uploadAlgorithmEdgeData(device);
+    }
+
+    // Create collision detection resources
+    this.initializeCollisionResources(device, parsed.nodeCount, parsed.nodeAttributes);
+  }
+
+  /**
+   * Initialize collision detection resources
+   */
+  private initializeCollisionResources(
+    device: GPUDevice,
+    nodeCount: number,
+    nodeAttributes: Float32Array,
+  ): void {
+    if (!this.collisionPipeline || !this.simBuffers) {
+      return;
+    }
+
+    // Destroy existing collision resources
+    if (this.collisionBuffers) {
+      destroyCollisionBuffers(this.collisionBuffers);
+    }
+
+    // Create new collision buffers
+    this.collisionBuffers = createCollisionBuffers(device, nodeCount);
+
+    // Extract node sizes from attributes (attribute index 2 is radius)
+    // Node attributes layout: [x, y, radius, color_r, color_g, color_b, color_a, state] per node
+    const ATTRIBUTES_PER_NODE = 8;
+    const nodeSizes = new Float32Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) {
+      const radius = nodeAttributes[i * ATTRIBUTES_PER_NODE + 2];
+      nodeSizes[i] = radius > 0 ? radius : 5.0; // Default radius if not set
+    }
+    uploadNodeSizes(device, this.collisionBuffers, nodeSizes);
+
+    // Create collision bind group
+    this.collisionBindGroup = createCollisionBindGroup(
+      device,
+      this.collisionPipeline,
+      this.collisionBuffers,
+      this.simBuffers.positions,
+    );
+
+    // Update collision uniforms
+    updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+
+    if (this.debug) {
+      console.log(`Collision detection initialized for ${nodeCount} nodes`);
+    }
+  }
+
+  /**
+   * Upload edge data for algorithm-specific formats (CSR for Relativity Atlas)
+   */
+  private uploadAlgorithmEdgeData(device: GPUDevice): void {
+    if (!this.currentAlgorithm || !this.algorithmBuffers || !this.wasmEngine) {
+      return;
+    }
+
+    // Handle Relativity Atlas CSR data upload
+    if (this.currentAlgorithm instanceof RelativityAtlasAlgorithm) {
+      const csrData = this.wasmEngine.getEdgesCsr();
+      const inverseCsrData = this.wasmEngine.getInverseEdgesCsr();
+
+      uploadRelativityAtlasEdges(
+        device,
+        this.algorithmBuffers,
+        csrData,
+        inverseCsrData,
+      );
+
+      // Reset mass state so it gets recomputed on next frame
+      (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
+
+      if (this.debug) {
+        console.log(`Relativity Atlas: uploaded CSR data (${csrData.length} forward, ${inverseCsrData.length} inverse elements)`);
+      }
     }
   }
 
@@ -839,20 +1134,20 @@ export class HeroineGraph {
     // Destroy old buffers
     this.destroyBuffers();
 
-    // Create position buffers
-    const positionsX = device.createBuffer({
-      label: "Positions X",
-      size: parsed.positionsX.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(positionsX, 0, toArrayBuffer(parsed.positionsX));
+    // Create position buffer (vec2 per node)
+    const nodeCount = parsed.positionsX.length;
+    const positionsVec2 = new Float32Array(nodeCount * 2);
+    for (let i = 0; i < nodeCount; i++) {
+      positionsVec2[i * 2] = parsed.positionsX[i];
+      positionsVec2[i * 2 + 1] = parsed.positionsY[i];
+    }
 
-    const positionsY = device.createBuffer({
-      label: "Positions Y",
-      size: parsed.positionsY.byteLength,
+    const positions = device.createBuffer({
+      label: "Positions",
+      size: positionsVec2.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(positionsY, 0, toArrayBuffer(parsed.positionsY));
+    device.queue.writeBuffer(positions, 0, toArrayBuffer(positionsVec2));
 
     // Create node attributes buffer
     const nodeAttributes = device.createBuffer({
@@ -887,8 +1182,7 @@ export class HeroineGraph {
 
     // Store buffers
     this.buffers = {
-      positionsX,
-      positionsY,
+      positions,
       nodeAttributes,
       edgeIndices,
       edgeAttributes,
@@ -906,8 +1200,7 @@ export class HeroineGraph {
       this.nodeBindGroup = createNodeBindGroup(
         device,
         this.nodePipeline,
-        positionsX,
-        positionsY,
+        positions,
         nodeAttributes,
       );
     }
@@ -916,8 +1209,7 @@ export class HeroineGraph {
       this.edgeBindGroup = createEdgeBindGroup(
         device,
         this.edgePipeline,
-        positionsX,
-        positionsY,
+        positions,
         edgeIndices,
         edgeAttributes,
       );
@@ -932,8 +1224,7 @@ export class HeroineGraph {
    */
   private destroyBuffers(): void {
     if (this.buffers) {
-      this.buffers.positionsX.destroy();
-      this.buffers.positionsY.destroy();
+      this.buffers.positions.destroy();
       this.buffers.nodeAttributes.destroy();
       this.buffers.edgeIndices.destroy();
       this.buffers.edgeAttributes.destroy();
@@ -1101,6 +1392,19 @@ export class HeroineGraph {
   }
 
   /**
+   * Enable or disable collision detection.
+   *
+   * @param enabled - Whether collision detection should be enabled
+   * @param strength - Optional collision strength (0-1)
+   */
+  setCollisionEnabled(enabled: boolean, strength?: number): void {
+    this.forceConfig.collisionEnabled = enabled;
+    if (strength !== undefined) {
+      this.forceConfig.collisionStrength = Math.max(0, Math.min(1, strength));
+    }
+  }
+
+  /**
    * Get information about available force algorithms.
    *
    * @returns Array of available algorithm info
@@ -1168,10 +1472,8 @@ export class HeroineGraph {
       // Create bind groups
       const context: AlgorithmRenderContext = {
         device: this.gpuContext.device,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
-        forcesX: this.simBuffers.forcesX,
-        forcesY: this.simBuffers.forcesY,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
         forceConfig: this.forceConfig,
       };
@@ -1182,6 +1484,9 @@ export class HeroineGraph {
         context,
         this.algorithmBuffers,
       );
+
+      // Upload algorithm-specific edge data
+      this.uploadAlgorithmEdgeData(this.gpuContext.device);
     }
 
     // Reheat simulation
@@ -1347,6 +1652,37 @@ export class HeroineGraph {
   }
 
   /**
+   * Get or create the default intensity buffer (all 1.0 values).
+   * Used for density mode where all nodes contribute equally.
+   */
+  private getOrCreateDefaultIntensityBuffer(): GPUBuffer {
+    const { device } = this.gpuContext;
+    const requiredSize = Math.max(4, this.state.nodeCount * 4); // 1 f32 per node, min 4 bytes
+
+    // Recreate buffer if size changed
+    if (!this.defaultIntensityBuffer || this.defaultIntensityBuffer.size < requiredSize) {
+      this.defaultIntensityBuffer?.destroy();
+
+      // Create buffer with all 1.0 values
+      const intensities = new Float32Array(this.state.nodeCount || 1);
+      intensities.fill(1.0);
+
+      this.defaultIntensityBuffer = device.createBuffer({
+        label: "Default Intensity Buffer",
+        size: requiredSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+
+      // Write initial data
+      new Float32Array(this.defaultIntensityBuffer.getMappedRange()).set(intensities);
+      this.defaultIntensityBuffer.unmap();
+    }
+
+    return this.defaultIntensityBuffer;
+  }
+
+  /**
    * Update render context for all layers.
    * Called when graph data changes.
    */
@@ -1407,8 +1743,7 @@ export class HeroineGraph {
 
       const heatmapContext: HeatmapRenderContext = {
         viewportUniformBuffer: this.viewportUniformBuffer.buffer,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
+        positions: this.simBuffers.positions,
         nodeCount: this.state.nodeCount,
         nodeIntensities,
       };
@@ -1433,10 +1768,66 @@ export class HeroineGraph {
     const metaballLayer = this.layerManager.getLayer<MetaballLayer>("metaball");
     if (metaballLayer) {
       const viewportState = this.viewport.state;
+
+      // Check if metaball is using a stream for per-node intensity
+      const metaballDataSource = metaballLayer.getDataSource();
+      let metaballIntensities: GPUBuffer;
+
+      if (metaballDataSource !== "density" && this.streamManager.hasStream(metaballDataSource)) {
+        // Get stream values and create intensity buffer
+        const stream = this.streamManager.getStream(metaballDataSource);
+        if (stream) {
+          // Get normalized values from stream (domain mapped to 0-1)
+          const intensities = new Float32Array(this.state.nodeCount);
+
+          // Get domain for normalization
+          const colorScale = stream.getColorScale();
+          const domain = colorScale.domain;
+          const domainMin = domain[0];
+          const domainRange = domain[1] - domainMin;
+
+          // Fill intensity array from stream data
+          for (let i = 0; i < this.state.nodeCount; i++) {
+            const value = stream.getValue(i);
+            if (value !== undefined && domainRange > 0) {
+              // Normalize to 0-1 range based on domain
+              intensities[i] = Math.max(0, Math.min(1, (value - domainMin) / domainRange));
+            } else {
+              // Nodes without values don't contribute (intensity = 0)
+              intensities[i] = 0;
+            }
+          }
+
+          // Create or update GPU buffer
+          const { device } = this.gpuContext;
+          const requiredSize = this.state.nodeCount * 4; // 1 f32 per node
+
+          // Recreate buffer if size changed
+          if (!this.metaballIntensityBuffer || this.metaballIntensityBuffer.size < requiredSize) {
+            this.metaballIntensityBuffer?.destroy();
+            this.metaballIntensityBuffer = device.createBuffer({
+              label: "Metaball Stream Intensity Buffer",
+              size: requiredSize,
+              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+          }
+
+          // Write intensity data
+          device.queue.writeBuffer(this.metaballIntensityBuffer, 0, intensities);
+          metaballIntensities = this.metaballIntensityBuffer;
+        } else {
+          // Stream not found, use default density mode
+          metaballIntensities = this.getOrCreateDefaultIntensityBuffer();
+        }
+      } else {
+        // Density mode: all nodes contribute equally (intensity = 1.0)
+        metaballIntensities = this.getOrCreateDefaultIntensityBuffer();
+      }
+
       const metaballContext: MetaballRenderContext = {
         viewportUniformBuffer: this.viewportUniformBuffer.buffer,
-        positionsX: this.simBuffers.positionsX,
-        positionsY: this.simBuffers.positionsY,
+        positions: this.simBuffers.positions,
+        nodeIntensities: metaballIntensities,
         nodeCount: this.state.nodeCount,
         viewportOffset: [viewportState.x, viewportState.y],
         viewportScale: viewportState.scale,
@@ -1534,6 +1925,48 @@ export class HeroineGraph {
     return layer?.getConfig() ?? null;
   }
 
+  /**
+   * Set contour data source.
+   *
+   * @param source - 'density' for uniform intensity (all nodes contribute equally),
+   *                 or a stream ID to use stream values for contour thresholds
+   *
+   * @example
+   * ```typescript
+   * // Use uniform density (default)
+   * graph.setContourDataSource('density');
+   *
+   * // Use activity stream values - contours follow activity level thresholds
+   * graph.setContourDataSource('activity');
+   * ```
+   */
+  setContourDataSource(source: string): void {
+    const contourLayer = this.layerManager.getLayer<ContourLayer>("contour");
+    if (contourLayer) {
+      contourLayer.setDataSource(source);
+    }
+
+    // The contour layer uses the heatmap's density texture, so we need to
+    // ensure the heatmap is configured with the same data source
+    const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+    if (heatmapLayer) {
+      heatmapLayer.setDataSource(source);
+    }
+
+    // Rebuild render context to update stream intensity buffer
+    this.updateLayerRenderContext();
+  }
+
+  /**
+   * Get contour data source.
+   *
+   * @returns Current data source ('density' or stream ID)
+   */
+  getContourDataSource(): string | null {
+    const layer = this.layerManager.getLayer<ContourLayer>("contour");
+    return layer?.getDataSource() ?? null;
+  }
+
   // ==========================================================================
   // Public API - Metaball Layer
   // ==========================================================================
@@ -1595,6 +2028,40 @@ export class HeroineGraph {
   getMetaballConfig(): MetaballConfig | null {
     const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
     return layer?.getConfig() ?? null;
+  }
+
+  /**
+   * Set metaball data source.
+   *
+   * @param source - 'density' for uniform intensity (all nodes contribute equally),
+   *                 or a stream ID to use stream values for per-node blob size
+   *
+   * @example
+   * ```typescript
+   * // Use uniform density (default)
+   * graph.setMetaballDataSource('density');
+   *
+   * // Use importance stream values - nodes with higher importance = larger blobs
+   * graph.setMetaballDataSource('importance');
+   * ```
+   */
+  setMetaballDataSource(source: string): void {
+    const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
+    if (layer) {
+      layer.setDataSource(source);
+      // Rebuild render context to update stream data
+      this.updateLayerRenderContext();
+    }
+  }
+
+  /**
+   * Get metaball data source.
+   *
+   * @returns Current data source ('density' or stream ID)
+   */
+  getMetaballDataSource(): string | null {
+    const layer = this.layerManager.getLayer<MetaballLayer>("metaball");
+    return layer?.getDataSource() ?? null;
   }
 
   // ==========================================================================
@@ -1855,6 +2322,14 @@ export class HeroineGraph {
       0,
       toArrayBuffer(nodeAttrs),
     );
+
+    // Also update collision buffers if they're initialized
+    if (this.collisionBuffers) {
+      uploadNodeSizes(device, this.collisionBuffers, sizes);
+      if (this.debug) {
+        console.log(`Updated collision radii for ${sizes.length} nodes`);
+      }
+    }
   }
 
   /**
@@ -1897,10 +2372,10 @@ export class HeroineGraph {
     const edgeAttrs = this.state.parsedGraph.edgeAttributes;
 
     // Update CPU-side array and GPU buffer
-    // Edge attrs layout: [width, r, g, b, selected, hovered] per edge
+    // Edge attrs layout: [width, r, g, b, selected, hovered, curvature, reserved] per edge (8 floats)
     for (let i = 0; i < this.state.edgeCount; i++) {
       const colorBase = i * 4;
-      const attrBase = i * 6;
+      const attrBase = i * 8;
 
       const r = colors[colorBase];
       const g = colors[colorBase + 1];
@@ -1957,11 +2432,11 @@ export class HeroineGraph {
     const edgeAttrs = this.state.parsedGraph.edgeAttributes;
 
     // Update CPU-side array
-    // Edge attrs layout: [width, r, g, b, selected, hovered] per edge
+    // Edge attrs layout: [width, r, g, b, selected, hovered, curvature, reserved] per edge (8 floats)
     for (let i = 0; i < this.state.edgeCount; i++) {
       const width = widths[i];
       if (!Number.isNaN(width) && width > 0) {
-        edgeAttrs[i * 6] = width; // width is at offset 0
+        edgeAttrs[i * 8] = width; // width is at offset 0
       }
     }
 
@@ -1971,6 +2446,243 @@ export class HeroineGraph {
       0,
       toArrayBuffer(edgeAttrs),
     );
+  }
+
+  // ==========================================================================
+  // Public API - Curved Edges
+  // ==========================================================================
+
+  /**
+   * Configure curved edge rendering.
+   *
+   * @param config Partial curved edge configuration to merge with current settings.
+   *
+   * @example
+   * ```typescript
+   * // Enable curved edges
+   * graph.setCurvedEdges({ enabled: true });
+   *
+   * // Enable with custom segments and weight
+   * graph.setCurvedEdges({ enabled: true, segments: 25, weight: 0.6 });
+   *
+   * // Disable curved edges
+   * graph.setCurvedEdges({ enabled: false });
+   * ```
+   */
+  setCurvedEdges(config: Partial<CurvedEdgeConfig>): void {
+    if (!this.edgePipeline) return;
+
+    updateCurveConfig(this.gpuContext.device, this.edgePipeline, config);
+  }
+
+  /**
+   * Get current curved edge configuration.
+   *
+   * @returns Current curved edge configuration.
+   */
+  getCurvedEdgeConfig(): CurvedEdgeConfig {
+    if (!this.edgePipeline) {
+      return { ...DEFAULT_CURVED_EDGE_CONFIG };
+    }
+    return { ...this.edgePipeline.curveConfig };
+  }
+
+  /**
+   * Enable curved edge rendering.
+   *
+   * @param segments Optional number of tessellation segments (default: 19).
+   * @param weight Optional rational curve weight (default: 0.8).
+   */
+  enableCurvedEdges(segments?: number, weight?: number): void {
+    this.setCurvedEdges({
+      enabled: true,
+      ...(segments !== undefined && { segments }),
+      ...(weight !== undefined && { weight }),
+    });
+  }
+
+  /**
+   * Disable curved edge rendering (back to straight edges).
+   */
+  disableCurvedEdges(): void {
+    this.setCurvedEdges({ enabled: false });
+  }
+
+  /**
+   * Set curvature for individual edges.
+   *
+   * Curvature values control how much each edge bends:
+   * - Positive values bend the edge to the right
+   * - Negative values bend the edge to the left
+   * - Zero means a straight edge
+   * - Typical values are in the range -0.5 to 0.5
+   *
+   * Note: Curved edges must be enabled via setCurvedEdges({ enabled: true })
+   * for curvature values to take effect.
+   *
+   * @param curvatures Float32Array with 1 value per edge.
+   *                   Length must equal edgeCount.
+   * @throws HeroineGraphError if array length doesn't match edgeCount
+   *
+   * @example
+   * ```typescript
+   * // Give all edges random curvature
+   * const curvatures = new Float32Array(edgeCount);
+   * for (let i = 0; i < edgeCount; i++) {
+   *   curvatures[i] = (Math.random() - 0.5) * 0.6; // Range -0.3 to 0.3
+   * }
+   * graph.setEdgeCurvatures(curvatures);
+   * graph.enableCurvedEdges(); // Don't forget to enable!
+   * ```
+   */
+  setEdgeCurvatures(curvatures: Float32Array): void {
+    if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot set edge curvatures: graph not loaded",
+      );
+    }
+
+    const expected = this.state.edgeCount;
+    if (curvatures.length !== expected) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Expected ${expected} values for ${this.state.edgeCount} edges (1 per edge), got ${curvatures.length}`,
+      );
+    }
+
+    const { device } = this.gpuContext;
+    const edgeAttrs = this.state.parsedGraph.edgeAttributes;
+
+    // Update CPU-side array
+    // Edge attrs layout: [width, r, g, b, selected, hovered, curvature, reserved] per edge (8 floats)
+    for (let i = 0; i < this.state.edgeCount; i++) {
+      const curvature = curvatures[i];
+      if (!Number.isNaN(curvature)) {
+        edgeAttrs[i * 8 + 6] = curvature; // curvature is at offset 6
+      }
+    }
+
+    // Upload entire buffer to GPU
+    device.queue.writeBuffer(
+      this.buffers.edgeAttributes,
+      0,
+      toArrayBuffer(edgeAttrs),
+    );
+  }
+
+  // ==========================================================================
+  // Public API - Node Borders
+  // ==========================================================================
+
+  /**
+   * Configure node border rendering.
+   *
+   * @param config Partial border configuration to merge with current settings.
+   *
+   * @example
+   * ```typescript
+   * // Enable thick dark borders
+   * graph.setNodeBorder({ enabled: true, width: 2.0, color: "#000000" });
+   *
+   * // Disable borders
+   * graph.setNodeBorder({ enabled: false });
+   *
+   * // Just change color
+   * graph.setNodeBorder({ color: "#ff0000" });
+   * ```
+   */
+  setNodeBorder(config: Partial<_NodeBorderConfig>): void {
+    // Merge with current config
+    this.nodeBorderConfig = {
+      ...this.nodeBorderConfig,
+      ...config,
+    };
+
+    // Update GPU buffer
+    this.updateRenderConfigBuffer();
+  }
+
+  /**
+   * Get current node border configuration.
+   *
+   * @returns Current border configuration.
+   */
+  getNodeBorderConfig(): _NodeBorderConfig {
+    return { ...this.nodeBorderConfig };
+  }
+
+  /**
+   * Enable node borders.
+   *
+   * @param width Optional border width in pixels (default: current width).
+   * @param color Optional border color as CSS/hex string (default: current color).
+   */
+  enableNodeBorder(width?: number, color?: string): void {
+    this.setNodeBorder({
+      enabled: true,
+      ...(width !== undefined && { width }),
+      ...(color !== undefined && { color }),
+    });
+  }
+
+  /**
+   * Disable node borders.
+   */
+  disableNodeBorder(): void {
+    this.setNodeBorder({ enabled: false });
+  }
+
+  // ==========================================================================
+  // Public API - Display Settings
+  // ==========================================================================
+
+  /**
+   * Set the background color of the graph canvas.
+   *
+   * @param color - Color as hex string (e.g., "#0a0a0f") or RGBA object
+   *
+   * @example
+   * ```typescript
+   * // Set dark background
+   * graph.setBackgroundColor("#0a0a0f");
+   *
+   * // Set light background
+   * graph.setBackgroundColor("#ffffff");
+   *
+   * // Set with RGBA object
+   * graph.setBackgroundColor({ r: 0.04, g: 0.04, b: 0.06, a: 1.0 });
+   * ```
+   */
+  setBackgroundColor(color: string | { r: number; g: number; b: number; a?: number }): void {
+    if (typeof color === "string") {
+      // Parse hex color
+      const hex = color.startsWith("#") ? color.slice(1) : color;
+      if (hex.length >= 6) {
+        this.backgroundColor = {
+          r: parseInt(hex.slice(0, 2), 16) / 255,
+          g: parseInt(hex.slice(2, 4), 16) / 255,
+          b: parseInt(hex.slice(4, 6), 16) / 255,
+          a: hex.length >= 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1.0,
+        };
+      }
+    } else {
+      this.backgroundColor = {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+        a: color.a ?? 1.0,
+      };
+    }
+  }
+
+  /**
+   * Get the current background color.
+   *
+   * @returns Current background color as RGBA object (0-1 range)
+   */
+  getBackgroundColor(): { r: number; g: number; b: number; a: number } {
+    return { ...this.backgroundColor };
   }
 
   // ==========================================================================
@@ -2282,17 +2994,15 @@ export class HeroineGraph {
         const style = this.typeStyleManager.resolveEdgeStyle(edgeType);
 
         const baseOffset = i * 8;
-        // Width
+        // Layout: [width, r, g, b, selected, hovered, curvature, reserved]
         edgeAttributes[baseOffset + 0] = style.width;
-        // Color (RGBA)
-        edgeAttributes[baseOffset + 1] = style.color[0];
-        edgeAttributes[baseOffset + 2] = style.color[1];
-        edgeAttributes[baseOffset + 3] = style.color[2];
-        edgeAttributes[baseOffset + 4] = style.color[3];
-        // Remaining slots (reserved)
-        edgeAttributes[baseOffset + 5] = 0;
-        edgeAttributes[baseOffset + 6] = 0;
-        edgeAttributes[baseOffset + 7] = 0;
+        edgeAttributes[baseOffset + 1] = style.color[0]; // r
+        edgeAttributes[baseOffset + 2] = style.color[1]; // g
+        edgeAttributes[baseOffset + 3] = style.color[2]; // b
+        edgeAttributes[baseOffset + 4] = 0; // selected
+        edgeAttributes[baseOffset + 5] = 0; // hovered
+        edgeAttributes[baseOffset + 6] = 0; // curvature (default: straight)
+        edgeAttributes[baseOffset + 7] = 0; // reserved
       }
 
       device.queue.writeBuffer(
@@ -2673,9 +3383,10 @@ export class HeroineGraph {
         });
       } else if (this.isPanning && this.lastPanPosition) {
         // Pan the viewport (inverted - like pushing a piece of paper)
+        // Use panScreen since delta is in screen pixels, not graph units
         const dx = this.lastPanPosition.x - e.screenPosition.x;
         const dy = this.lastPanPosition.y - e.screenPosition.y;
-        this.viewport.pan(dx, dy);
+        this.viewport.panScreen(dx, dy);
         this.lastPanPosition = { ...e.screenPosition };
       } else {
         // Hover detection
@@ -2832,18 +3543,15 @@ export class HeroineGraph {
     if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
 
     const { device } = this.gpuContext;
-    const posX = new Float32Array([x]);
-    const posY = new Float32Array([y]);
+    const posVec2 = new Float32Array([x, y]);
 
-    device.queue.writeBuffer(this.buffers.positionsX, idx * 4, posX);
-    device.queue.writeBuffer(this.buffers.positionsY, idx * 4, posY);
+    // Write vec2 at the node's offset (8 bytes per vec2)
+    device.queue.writeBuffer(this.buffers.positions, idx * 8, posVec2);
 
     // Also update simulation buffers if they exist
     if (this.simBuffers) {
-      device.queue.writeBuffer(this.simBuffers.positionsX, idx * 4, posX);
-      device.queue.writeBuffer(this.simBuffers.positionsY, idx * 4, posY);
-      device.queue.writeBuffer(this.simBuffers.positionsXOut, idx * 4, posX);
-      device.queue.writeBuffer(this.simBuffers.positionsYOut, idx * 4, posY);
+      device.queue.writeBuffer(this.simBuffers.positions, idx * 8, posVec2);
+      device.queue.writeBuffer(this.simBuffers.positionsOut, idx * 8, posVec2);
     }
   }
 
@@ -2980,6 +3688,12 @@ export class HeroineGraph {
     // Dispose pointer manager
     this.pointerManager?.dispose();
 
+    // Remove visibility change listener
+    if (this.visibilityChangeHandler && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.visibilityChangeHandler);
+      this.visibilityChangeHandler = null;
+    }
+
     // Dispose viewport
     this.viewport.dispose();
 
@@ -2999,6 +3713,18 @@ export class HeroineGraph {
     this.heatmapIntensityBuffer?.destroy();
     this.heatmapIntensityBuffer = null;
 
+    // Destroy metaball intensity buffer
+    this.metaballIntensityBuffer?.destroy();
+    this.metaballIntensityBuffer = null;
+
+    // Destroy default intensity buffer
+    this.defaultIntensityBuffer?.destroy();
+    this.defaultIntensityBuffer = null;
+
+    // Destroy render config buffer
+    this.renderConfigBuffer?.destroy();
+    this.renderConfigBuffer = null;
+
     // Destroy viewport uniform buffer
     this.viewportUniformBuffer.destroy();
 
@@ -3015,22 +3741,18 @@ export class HeroineGraph {
    */
   private destroySimulationBuffers(): void {
     if (this.simBuffers) {
-      this.simBuffers.positionsX.destroy();
-      this.simBuffers.positionsY.destroy();
-      this.simBuffers.positionsXOut.destroy();
-      this.simBuffers.positionsYOut.destroy();
-      this.simBuffers.velocitiesX.destroy();
-      this.simBuffers.velocitiesY.destroy();
-      this.simBuffers.velocitiesXOut.destroy();
-      this.simBuffers.velocitiesYOut.destroy();
-      this.simBuffers.forcesX.destroy();
-      this.simBuffers.forcesY.destroy();
+      this.simBuffers.positions.destroy();
+      this.simBuffers.positionsOut.destroy();
+      this.simBuffers.velocities.destroy();
+      this.simBuffers.velocitiesOut.destroy();
+      this.simBuffers.forces.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
       this.simBuffers.clearUniforms.destroy();
       this.simBuffers.repulsionUniforms.destroy();
       this.simBuffers.springUniforms.destroy();
       this.simBuffers.integrationUniforms.destroy();
+      this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
     this.simBindGroups = null;
@@ -3039,6 +3761,13 @@ export class HeroineGraph {
     this.algorithmBuffers?.destroy();
     this.algorithmBuffers = null;
     this.algorithmBindGroups = null;
+
+    // Destroy collision buffers
+    if (this.collisionBuffers) {
+      destroyCollisionBuffers(this.collisionBuffers);
+      this.collisionBuffers = null;
+    }
+    this.collisionBindGroup = null;
   }
 
   // ==========================================================================

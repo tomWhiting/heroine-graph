@@ -8,6 +8,13 @@
  */
 
 /**
+ * Data source for contour layer
+ * - 'density': Use uniform node density (default)
+ * - string: ID of a value stream - contours follow stream value thresholds
+ */
+export type ContourDataSource = "density" | string;
+
+/**
  * Contour layer configuration
  */
 export interface ContourConfig {
@@ -25,6 +32,12 @@ export interface ContourConfig {
   resolutionScale?: number;
   /** Whether to smooth the contour lines */
   smooth?: boolean;
+  /**
+   * Data source for contour values.
+   * - 'density' (default): Contours based on uniform node density
+   * - streamId: Contours based on stream value thresholds
+   */
+  dataSource?: ContourDataSource;
 }
 
 /**
@@ -38,6 +51,7 @@ export const DEFAULT_CONTOUR_CONFIG: Required<ContourConfig> = {
   opacity: 0.8,
   resolutionScale: 1.0,
   smooth: true,
+  dataSource: "density",
 };
 
 /**
@@ -92,32 +106,5 @@ export function validateContourConfig(config: ContourConfig): string[] {
   return errors;
 }
 
-/**
- * Parse CSS color to RGBA values (0-1 range)
- */
-export function parseColor(color: string): [number, number, number, number] {
-  // Handle hex colors
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    if (hex.length === 3) {
-      const r = parseInt(hex[0] + hex[0], 16) / 255;
-      const g = parseInt(hex[1] + hex[1], 16) / 255;
-      const b = parseInt(hex[2] + hex[2], 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 8) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      const a = parseInt(hex.slice(6, 8), 16) / 255;
-      return [r, g, b, a];
-    }
-  }
-
-  // Default to dark gray
-  return [0.2, 0.2, 0.2, 1.0];
-}
+// Re-export parseColor from shared utilities for backwards compatibility
+export { parseColorToRGBA as parseColor } from "../../utils/color.ts";

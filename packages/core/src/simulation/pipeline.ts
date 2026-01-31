@@ -19,7 +19,7 @@ import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
 import CLEAR_FORCES_WGSL from "./shaders/clear_forces.comp.wgsl";
 import REPULSION_N2_WGSL from "./shaders/repulsion_n2.comp.wgsl";
 import SPRINGS_SIMPLE_WGSL from "./shaders/springs_simple.comp.wgsl";
-import INTEGRATE_SIMPLE_WGSL from "./shaders/integrate_simple.comp.wgsl";
+import INTEGRATE_WGSL from "./shaders/integrate.comp.wgsl";
 
 /**
  * Simulation pipeline configuration
@@ -59,21 +59,19 @@ export interface SimulationPipeline {
 
 /**
  * Simulation buffers required for compute passes
+ *
+ * All position, velocity, force, and readback buffers use vec2<f32> layout
+ * (8 bytes per node) for better memory access patterns and reduced binding count.
  */
 export interface SimulationBuffers {
-  // Position buffers (ping-pong for integration)
-  positionsX: GPUBuffer;
-  positionsY: GPUBuffer;
-  positionsXOut: GPUBuffer;
-  positionsYOut: GPUBuffer;
-  // Velocity buffers (ping-pong for integration)
-  velocitiesX: GPUBuffer;
-  velocitiesY: GPUBuffer;
-  velocitiesXOut: GPUBuffer;
-  velocitiesYOut: GPUBuffer;
-  // Force accumulators
-  forcesX: GPUBuffer;
-  forcesY: GPUBuffer;
+  // Position buffers (ping-pong for integration) - vec2<f32> per node
+  positions: GPUBuffer;
+  positionsOut: GPUBuffer;
+  // Velocity buffers (ping-pong for integration) - vec2<f32> per node
+  velocities: GPUBuffer;
+  velocitiesOut: GPUBuffer;
+  // Force accumulators - vec2<f32> per node
+  forces: GPUBuffer;
   // Edge data
   edgeSources: GPUBuffer;
   edgeTargets: GPUBuffer;
@@ -82,9 +80,10 @@ export interface SimulationBuffers {
   repulsionUniforms: GPUBuffer;
   springUniforms: GPUBuffer;
   integrationUniforms: GPUBuffer;
-  // Readback buffers for syncing positions to CPU
-  readbackX: GPUBuffer;
-  readbackY: GPUBuffer;
+  // Node state flags (for pinned nodes)
+  nodeFlags: GPUBuffer;
+  // Readback buffer for syncing positions to CPU - vec2<f32> per node
+  readback: GPUBuffer;
   // Node count for readback sizing
   nodeCount: number;
 }
@@ -112,7 +111,7 @@ export function createSimulationPipeline(
   const clearForcesModule = createModule("Clear Forces Shader", CLEAR_FORCES_WGSL);
   const repulsionModule = createModule("N^2 Repulsion Shader", REPULSION_N2_WGSL);
   const springsModule = createModule("Springs Shader", SPRINGS_SIMPLE_WGSL);
-  const integrateModule = createModule("Integration Shader", INTEGRATE_SIMPLE_WGSL);
+  const integrateModule = createModule("Integration Shader", INTEGRATE_WGSL);
 
   // Create compute pipelines with auto layout
   // Each shader module now only declares bindings it uses, so auto layout works correctly
@@ -292,67 +291,60 @@ export interface SimulationBindGroups {
 /**
  * Creates simulation bind groups from buffers
  * Uses getBindGroupLayout(0) to get the auto-inferred layout from each pipeline
+ *
+ * All buffers use vec2<f32> layout for consolidated X/Y data.
  */
 export function createSimulationBindGroups(
   device: GPUDevice,
   pipeline: SimulationPipeline,
   buffers: SimulationBuffers,
 ): SimulationBindGroups {
-  // Clear forces bind group (bindings 0-2)
+  // Clear forces bind group (bindings 0-1)
   const clearForces = device.createBindGroup({
     label: "Clear Forces Bind Group",
     layout: pipeline.pipelines.clearForces.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: buffers.clearUniforms } },
-      { binding: 1, resource: { buffer: buffers.forcesX } },
-      { binding: 2, resource: { buffer: buffers.forcesY } },
+      { binding: 1, resource: { buffer: buffers.forces } },
     ],
   });
 
-  // Repulsion bind group (bindings 0-4)
+  // Repulsion bind group (bindings 0-2)
   const repulsion = device.createBindGroup({
     label: "Repulsion Bind Group",
     layout: pipeline.pipelines.repulsion.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: buffers.repulsionUniforms } },
-      { binding: 1, resource: { buffer: buffers.positionsX } },
-      { binding: 2, resource: { buffer: buffers.positionsY } },
-      { binding: 3, resource: { buffer: buffers.forcesX } },
-      { binding: 4, resource: { buffer: buffers.forcesY } },
+      { binding: 1, resource: { buffer: buffers.positions } },
+      { binding: 2, resource: { buffer: buffers.forces } },
     ],
   });
 
-  // Springs bind group (bindings 0-6)
+  // Springs bind group (bindings 0-4)
   const springs = device.createBindGroup({
     label: "Springs Bind Group",
     layout: pipeline.pipelines.springs.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: buffers.springUniforms } },
-      { binding: 1, resource: { buffer: buffers.positionsX } },
-      { binding: 2, resource: { buffer: buffers.positionsY } },
-      { binding: 3, resource: { buffer: buffers.forcesX } },
-      { binding: 4, resource: { buffer: buffers.forcesY } },
-      { binding: 5, resource: { buffer: buffers.edgeSources } },
-      { binding: 6, resource: { buffer: buffers.edgeTargets } },
+      { binding: 1, resource: { buffer: buffers.positions } },
+      { binding: 2, resource: { buffer: buffers.forces } },
+      { binding: 3, resource: { buffer: buffers.edgeSources } },
+      { binding: 4, resource: { buffer: buffers.edgeTargets } },
     ],
   });
 
-  // Integration bind group (bindings 0-10)
+  // Integration bind group (bindings 0-5)
+  // With vec2 consolidation, we now have room for node_flags if needed
   const integration = device.createBindGroup({
     label: "Integration Bind Group",
     layout: pipeline.pipelines.integrate.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: buffers.integrationUniforms } },
-      { binding: 1, resource: { buffer: buffers.positionsX } },
-      { binding: 2, resource: { buffer: buffers.positionsY } },
-      { binding: 3, resource: { buffer: buffers.positionsXOut } },
-      { binding: 4, resource: { buffer: buffers.positionsYOut } },
-      { binding: 5, resource: { buffer: buffers.velocitiesX } },
-      { binding: 6, resource: { buffer: buffers.velocitiesY } },
-      { binding: 7, resource: { buffer: buffers.velocitiesXOut } },
-      { binding: 8, resource: { buffer: buffers.velocitiesYOut } },
-      { binding: 9, resource: { buffer: buffers.forcesX } },
-      { binding: 10, resource: { buffer: buffers.forcesY } },
+      { binding: 1, resource: { buffer: buffers.positions } },
+      { binding: 2, resource: { buffer: buffers.positionsOut } },
+      { binding: 3, resource: { buffer: buffers.velocities } },
+      { binding: 4, resource: { buffer: buffers.velocitiesOut } },
+      { binding: 5, resource: { buffer: buffers.forces } },
     ],
   });
 
@@ -361,68 +353,47 @@ export function createSimulationBindGroups(
 
 /**
  * Create simulation buffers
+ *
+ * All position, velocity, force, and readback buffers use vec2<f32> layout
+ * (8 bytes per node) for consolidated X/Y data.
  */
 export function createSimulationBuffers(
   device: GPUDevice,
   nodeCount: number,
   edgeCount: number,
 ): SimulationBuffers {
-  const nodeBytes = nodeCount * 4; // f32 = 4 bytes
+  const nodeVec2Bytes = nodeCount * 8; // vec2<f32> = 8 bytes
+  const nodeFlagBytes = nodeCount * 4; // u32 = 4 bytes
   const edgeBytes = Math.max(edgeCount * 4, 4); // Minimum 4 bytes
 
-  // Position buffers (ping-pong)
-  const positionsX = device.createBuffer({
-    label: "Sim Positions X",
-    size: nodeBytes,
+  // Position buffers (ping-pong) - vec2<f32> per node
+  const positions = device.createBuffer({
+    label: "Sim Positions",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
-  const positionsY = device.createBuffer({
-    label: "Sim Positions Y",
-    size: nodeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  const positionsXOut = device.createBuffer({
-    label: "Sim Positions X Out",
-    size: nodeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  const positionsYOut = device.createBuffer({
-    label: "Sim Positions Y Out",
-    size: nodeBytes,
+  const positionsOut = device.createBuffer({
+    label: "Sim Positions Out",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
 
-  // Velocity buffers (ping-pong)
-  const velocitiesX = device.createBuffer({
-    label: "Sim Velocities X",
-    size: nodeBytes,
+  // Velocity buffers (ping-pong) - vec2<f32> per node
+  const velocities = device.createBuffer({
+    label: "Sim Velocities",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  const velocitiesY = device.createBuffer({
-    label: "Sim Velocities Y",
-    size: nodeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const velocitiesXOut = device.createBuffer({
-    label: "Sim Velocities X Out",
-    size: nodeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const velocitiesYOut = device.createBuffer({
-    label: "Sim Velocities Y Out",
-    size: nodeBytes,
+  const velocitiesOut = device.createBuffer({
+    label: "Sim Velocities Out",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  // Force accumulators
-  const forcesX = device.createBuffer({
-    label: "Sim Forces X",
-    size: nodeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const forcesY = device.createBuffer({
-    label: "Sim Forces Y",
-    size: nodeBytes,
+  // Force accumulators - vec2<f32> per node
+  const forces = device.createBuffer({
+    label: "Sim Forces",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
@@ -460,44 +431,43 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // IntegrationUniforms: 16 bytes (4 f32/u32)
+  // IntegrationUniforms: 48 bytes for full shader
+  // (node_count, dt, damping, max_velocity, alpha, alpha_decay, alpha_min,
+  //  gravity_strength, center_x, center_y, padding)
   const integrationUniforms = device.createBuffer({
     label: "Integration Uniforms",
-    size: 16,
+    size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Readback buffers for syncing positions to CPU
-  const readbackX = device.createBuffer({
-    label: "Position Readback X",
-    size: nodeBytes,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  // Node state flags (for pinned nodes, etc.)
+  const nodeFlags = device.createBuffer({
+    label: "Node Flags",
+    size: nodeFlagBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  const readbackY = device.createBuffer({
-    label: "Position Readback Y",
-    size: nodeBytes,
+
+  // Readback buffer for syncing positions to CPU - vec2<f32> per node
+  const readback = device.createBuffer({
+    label: "Position Readback",
+    size: nodeVec2Bytes,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
   return {
-    positionsX,
-    positionsY,
-    positionsXOut,
-    positionsYOut,
-    velocitiesX,
-    velocitiesY,
-    velocitiesXOut,
-    velocitiesYOut,
-    forcesX,
-    forcesY,
+    positions,
+    positionsOut,
+    velocities,
+    velocitiesOut,
+    forces,
     edgeSources,
     edgeTargets,
     clearUniforms,
     repulsionUniforms,
     springUniforms,
     integrationUniforms,
-    readbackX,
-    readbackY,
+    nodeFlags,
+    readback,
     nodeCount,
   };
 }
@@ -545,20 +515,44 @@ export function updateSimulationUniforms(
   springView.setUint32(12, 0, true); // padding
   device.queue.writeBuffer(buffers.springUniforms, 0, springData);
 
-  // IntegrationUniforms: { node_count, dt, damping, alpha }
+  // IntegrationUniforms: full 48-byte struct
+  // {
+  //   node_count: u32,         // offset 0
+  //   dt: f32,                 // offset 4
+  //   damping: f32,            // offset 8
+  //   max_velocity: f32,       // offset 12
+  //   alpha: f32,              // offset 16
+  //   alpha_decay: f32,        // offset 20
+  //   alpha_min: f32,          // offset 24
+  //   gravity_strength: f32,   // offset 28
+  //   center_x: f32,           // offset 32
+  //   center_y: f32,           // offset 36
+  //   _padding: vec2<u32>,     // offset 40 (8 bytes)
+  // }
   // Note: velocityDecay is the fraction lost per frame, damping is fraction retained
   // damping = 1 - velocityDecay
-  const intData = new ArrayBuffer(16);
+  const intData = new ArrayBuffer(48);
   const intView = new DataView(intData);
-  intView.setUint32(0, nodeCount, true);
-  intView.setFloat32(4, forceConfig.timeStep, true);
-  intView.setFloat32(8, 1 - forceConfig.velocityDecay, true);
-  intView.setFloat32(12, alpha, true);
+  intView.setUint32(0, nodeCount, true);                          // node_count
+  intView.setFloat32(4, forceConfig.timeStep, true);              // dt
+  intView.setFloat32(8, 1 - forceConfig.velocityDecay, true);     // damping
+  intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
+  intView.setFloat32(16, alpha, true);                            // alpha
+  intView.setFloat32(20, 0.0228, true);                           // alpha_decay (default)
+  intView.setFloat32(24, 0.001, true);                            // alpha_min (default)
+  intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
+  intView.setFloat32(32, forceConfig.centerX, true);              // center_x
+  intView.setFloat32(36, forceConfig.centerY, true);              // center_y
+  intView.setUint32(40, 0, true);                                 // padding[0]
+  intView.setUint32(44, 0, true);                                 // padding[1]
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
 }
 
 /**
  * Copy initial positions to simulation buffers
+ *
+ * Accepts separate X/Y arrays for API compatibility and interleaves them
+ * into vec2<f32> format for GPU buffers.
  */
 export function copyPositionsToSimulation(
   device: GPUDevice,
@@ -566,19 +560,27 @@ export function copyPositionsToSimulation(
   positionsX: Float32Array,
   positionsY: Float32Array,
 ): void {
-  device.queue.writeBuffer(buffers.positionsX, 0, toArrayBuffer(positionsX));
-  device.queue.writeBuffer(buffers.positionsY, 0, toArrayBuffer(positionsY));
-  device.queue.writeBuffer(buffers.positionsXOut, 0, toArrayBuffer(positionsX));
-  device.queue.writeBuffer(buffers.positionsYOut, 0, toArrayBuffer(positionsY));
+  const nodeCount = positionsX.length;
 
-  // Zero out velocities
-  const zeros = new Float32Array(positionsX.length);
-  device.queue.writeBuffer(buffers.velocitiesX, 0, toArrayBuffer(zeros));
-  device.queue.writeBuffer(buffers.velocitiesY, 0, toArrayBuffer(zeros));
-  device.queue.writeBuffer(buffers.velocitiesXOut, 0, toArrayBuffer(zeros));
-  device.queue.writeBuffer(buffers.velocitiesYOut, 0, toArrayBuffer(zeros));
-  device.queue.writeBuffer(buffers.forcesX, 0, toArrayBuffer(zeros));
-  device.queue.writeBuffer(buffers.forcesY, 0, toArrayBuffer(zeros));
+  // Interleave X/Y into vec2<f32> format
+  const positionsVec2 = new Float32Array(nodeCount * 2);
+  for (let i = 0; i < nodeCount; i++) {
+    positionsVec2[i * 2] = positionsX[i];
+    positionsVec2[i * 2 + 1] = positionsY[i];
+  }
+
+  device.queue.writeBuffer(buffers.positions, 0, toArrayBuffer(positionsVec2));
+  device.queue.writeBuffer(buffers.positionsOut, 0, toArrayBuffer(positionsVec2));
+
+  // Zero out velocities and forces (vec2<f32> per node)
+  const zerosVec2 = new Float32Array(nodeCount * 2);
+  device.queue.writeBuffer(buffers.velocities, 0, toArrayBuffer(zerosVec2));
+  device.queue.writeBuffer(buffers.velocitiesOut, 0, toArrayBuffer(zerosVec2));
+  device.queue.writeBuffer(buffers.forces, 0, toArrayBuffer(zerosVec2));
+
+  // Initialize node flags to 0 (all unpinned, visible)
+  const zeroFlags = new Uint32Array(nodeCount);
+  device.queue.writeBuffer(buffers.nodeFlags, 0, toArrayBuffer(zeroFlags));
 }
 
 /**
@@ -599,38 +601,34 @@ export function copyEdgesToSimulation(
  */
 export function swapSimulationBuffers(buffers: SimulationBuffers): void {
   // Swap position buffers
-  const tempPosX = buffers.positionsX;
-  const tempPosY = buffers.positionsY;
-  buffers.positionsX = buffers.positionsXOut;
-  buffers.positionsY = buffers.positionsYOut;
-  buffers.positionsXOut = tempPosX;
-  buffers.positionsYOut = tempPosY;
+  const tempPos = buffers.positions;
+  buffers.positions = buffers.positionsOut;
+  buffers.positionsOut = tempPos;
 
   // Swap velocity buffers
-  const tempVelX = buffers.velocitiesX;
-  const tempVelY = buffers.velocitiesY;
-  buffers.velocitiesX = buffers.velocitiesXOut;
-  buffers.velocitiesY = buffers.velocitiesYOut;
-  buffers.velocitiesXOut = tempVelX;
-  buffers.velocitiesYOut = tempVelY;
+  const tempVel = buffers.velocities;
+  buffers.velocities = buffers.velocitiesOut;
+  buffers.velocitiesOut = tempVel;
 }
 
 /**
- * Schedule a copy of positions to readback buffers.
+ * Schedule a copy of positions to readback buffer.
  * Call this during command encoding, then call readbackPositions later.
  */
 export function copyPositionsToReadback(
   encoder: GPUCommandEncoder,
   buffers: SimulationBuffers,
 ): void {
-  const byteSize = buffers.nodeCount * 4;
-  encoder.copyBufferToBuffer(buffers.positionsX, 0, buffers.readbackX, 0, byteSize);
-  encoder.copyBufferToBuffer(buffers.positionsY, 0, buffers.readbackY, 0, byteSize);
+  const byteSize = buffers.nodeCount * 8; // vec2<f32> = 8 bytes per node
+  encoder.copyBufferToBuffer(buffers.positions, 0, buffers.readback, 0, byteSize);
 }
 
 /**
  * Read positions from GPU to CPU arrays.
  * This is async and causes a GPU pipeline stall - use sparingly.
+ *
+ * Accepts separate X/Y arrays for API compatibility and de-interleaves
+ * the vec2<f32> data from the GPU buffer.
  */
 export async function readbackPositions(
   buffers: SimulationBuffers,
@@ -638,17 +636,17 @@ export async function readbackPositions(
   targetY: Float32Array,
 ): Promise<void> {
   const nodeCount = buffers.nodeCount;
-  const byteSize = nodeCount * 4;
+  const byteSize = nodeCount * 8; // vec2<f32> = 8 bytes per node
 
-  // Map and read X positions
-  await buffers.readbackX.mapAsync(GPUMapMode.READ);
-  const dataX = new Float32Array(buffers.readbackX.getMappedRange(0, byteSize));
-  targetX.set(dataX);
-  buffers.readbackX.unmap();
+  // Map and read interleaved positions
+  await buffers.readback.mapAsync(GPUMapMode.READ);
+  const data = new Float32Array(buffers.readback.getMappedRange(0, byteSize));
 
-  // Map and read Y positions
-  await buffers.readbackY.mapAsync(GPUMapMode.READ);
-  const dataY = new Float32Array(buffers.readbackY.getMappedRange(0, byteSize));
-  targetY.set(dataY);
-  buffers.readbackY.unmap();
+  // De-interleave into separate X/Y arrays
+  for (let i = 0; i < nodeCount; i++) {
+    targetX[i] = data[i * 2];
+    targetY[i] = data[i * 2 + 1];
+  }
+
+  buffers.readback.unmap();
 }

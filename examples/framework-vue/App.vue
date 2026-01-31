@@ -1,0 +1,237 @@
+<!--
+  Heroine Graph Vue Example
+
+  Demonstrates the @heroine-graph/vue wrapper with:
+  - Basic graph rendering
+  - Event handling
+  - Simulation controls
+-->
+<template>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <h1>Heroine Graph - Vue</h1>
+      <span v-if="selectedNode !== null" class="selected">
+        Selected: Node {{ selectedNode }}
+      </span>
+    </header>
+
+    <!-- Main Content -->
+    <div class="content">
+      <!-- Graph -->
+      <main class="graph-container">
+        <HeroineGraph
+          ref="graphRef"
+          :data="graphData"
+          @ready="onReady"
+          @node-click="onNodeClick"
+          @node-hover-enter="onNodeHoverEnter"
+          @node-hover-leave="onNodeHoverLeave"
+          @simulation-end="onSimulationEnd"
+          width="100%"
+          height="100%"
+        />
+      </main>
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <!-- Controls -->
+        <section class="section">
+          <h2 class="section-title">Controls</h2>
+          <div class="button-group">
+            <button class="btn" @click="fitToView">Fit to View</button>
+            <button class="btn" @click="restartSimulation">Restart Simulation</button>
+            <button class="btn" @click="clearSelection">Clear Selection</button>
+          </div>
+        </section>
+
+        <!-- Event Log -->
+        <section class="section log-section">
+          <h2 class="section-title">Event Log</h2>
+          <div class="event-log">
+            <span v-if="eventLog.length === 0" class="no-events">
+              No events yet...
+            </span>
+            <div v-for="(log, i) in eventLog" :key="i" class="log-entry">
+              {{ log }}
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive } from "vue";
+import { HeroineGraph } from "@heroine-graph/vue";
+import type { GraphInput, NodeClickEvent, NodeHoverEnterEvent, NodeHoverLeaveEvent } from "@heroine-graph/vue";
+
+// Refs
+const graphRef = ref<InstanceType<typeof HeroineGraph> | null>(null);
+const selectedNode = ref<number | null>(null);
+const eventLog = reactive<string[]>([]);
+
+// Generate sample graph data
+function generateGraph(nodeCount: number): GraphInput {
+  const nodes = Array.from({ length: nodeCount }, (_, i) => ({
+    id: i,
+    label: `Node ${i}`,
+    type: i % 3 === 0 ? "primary" : i % 3 === 1 ? "secondary" : "tertiary",
+  }));
+
+  const edges: GraphInput["edges"] = [];
+  for (let i = 1; i < nodeCount; i++) {
+    edges.push({ source: Math.floor(i / 2), target: i });
+    if (Math.random() > 0.7 && i > 3) {
+      edges.push({ source: Math.floor(Math.random() * i), target: i });
+    }
+  }
+
+  return { nodes, edges };
+}
+
+const graphData = generateGraph(100);
+
+// Event handlers
+function addLog(message: string) {
+  eventLog.unshift(message);
+  if (eventLog.length > 10) {
+    eventLog.pop();
+  }
+}
+
+function onReady() {
+  addLog("Graph ready!");
+}
+
+function onNodeClick(event: NodeClickEvent) {
+  selectedNode.value = event.nodeId as number;
+  addLog(`Clicked node ${event.nodeId}`);
+}
+
+function onNodeHoverEnter(event: NodeHoverEnterEvent) {
+  addLog(`Hover enter: ${event.nodeId}`);
+}
+
+function onNodeHoverLeave(event: NodeHoverLeaveEvent) {
+  addLog(`Hover leave: ${event.nodeId}`);
+}
+
+function onSimulationEnd() {
+  addLog("Simulation ended");
+}
+
+// Control methods
+function fitToView() {
+  graphRef.value?.getGraph()?.fitToView();
+}
+
+function restartSimulation() {
+  graphRef.value?.getGraph()?.restartSimulation();
+}
+
+function clearSelection() {
+  graphRef.value?.getGraph()?.clearSelection();
+  selectedNode.value = null;
+}
+</script>
+
+<style scoped>
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.header {
+  padding: 16px 24px;
+  border-bottom: 1px solid #333;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.header h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.selected {
+  color: #888;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.graph-container {
+  flex: 1;
+  position: relative;
+}
+
+.sidebar {
+  width: 280px;
+  border-left: 1px solid #333;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+}
+
+.section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+}
+
+.button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn {
+  padding: 8px 12px;
+  background: #222;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.btn:hover {
+  background: #333;
+}
+
+.log-section {
+  flex: 1;
+  min-height: 0;
+}
+
+.event-log {
+  background: #111;
+  border-radius: 6px;
+  padding: 12px;
+  height: 200px;
+  overflow: auto;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+.no-events {
+  color: #666;
+}
+
+.log-entry {
+  color: #aaa;
+  margin-bottom: 4px;
+}
+</style>

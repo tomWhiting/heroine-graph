@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Heroine Graph - Large Graph Stress Test</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0a0a0a;
+        color: #ffffff;
+      }
+
+      .container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .header {
+        padding: 12px 20px;
+        background: #111;
+        border-bottom: 1px solid #333;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .title {
+        font-size: 1.2rem;
+        font-weight: 600;
+      }
+
+      .controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .control-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      label {
+        font-size: 0.875rem;
+        color: #888;
+      }
+
+      select, button {
+        padding: 6px 12px;
+        background: #222;
+        border: 1px solid #444;
+        border-radius: 4px;
+        color: #fff;
+        font-size: 0.875rem;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #333;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .main {
+        flex: 1;
+        display: flex;
+        position: relative;
+      }
+
+      #graph-canvas {
+        width: 100%;
+        height: 100%;
+      }
+
+      .stats {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        background: rgba(0, 0, 0, 0.8);
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 12px;
+        font-family: monospace;
+        font-size: 0.75rem;
+        min-width: 200px;
+      }
+
+      .stats-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+
+      .stats-label {
+        color: #888;
+      }
+
+      .stats-value {
+        color: #4ecdc4;
+      }
+
+      .stats-value.warning {
+        color: #ff6b6b;
+      }
+
+      .stats-value.good {
+        color: #2ecc71;
+      }
+
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.9);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+
+      .loading-overlay.hidden {
+        display: none;
+      }
+
+      .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid #333;
+        border-top-color: #4ecdc4;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .loading-text {
+        color: #888;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header class="header">
+        <h1 class="title">Large Graph Stress Test</h1>
+        <div class="controls">
+          <div class="control-group">
+            <label for="node-count">Nodes:</label>
+            <select id="node-count">
+              <option value="10000">10K</option>
+              <option value="50000">50K</option>
+              <option value="100000" selected>100K</option>
+              <option value="250000">250K</option>
+              <option value="500000">500K</option>
+              <option value="1000000">1M</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label for="edge-ratio">Edges/Node:</label>
+            <select id="edge-ratio">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+              <option value="5">5</option>
+            </select>
+          </div>
+          <button id="btn-load">Load Graph</button>
+          <button id="btn-simulation">Start Simulation</button>
+          <button id="btn-fit">Fit to View</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <canvas id="graph-canvas"></canvas>
+
+        <div class="stats" id="stats">
+          <div class="stats-row">
+            <span class="stats-label">Nodes:</span>
+            <span class="stats-value" id="stat-nodes">-</span>
+          </div>
+          <div class="stats-row">
+            <span class="stats-label">Edges:</span>
+            <span class="stats-value" id="stat-edges">-</span>
+          </div>
+          <div class="stats-row">
+            <span class="stats-label">FPS:</span>
+            <span class="stats-value" id="stat-fps">-</span>
+          </div>
+          <div class="stats-row">
+            <span class="stats-label">Frame Time:</span>
+            <span class="stats-value" id="stat-frametime">-</span>
+          </div>
+          <div class="stats-row">
+            <span class="stats-label">Simulation:</span>
+            <span class="stats-value" id="stat-simulation">-</span>
+          </div>
+          <div class="stats-row">
+            <span class="stats-label">Alpha:</span>
+            <span class="stats-value" id="stat-alpha">-</span>
+          </div>
+        </div>
+
+        <div class="loading-overlay hidden" id="loading">
+          <div class="loading-spinner"></div>
+          <div class="loading-text" id="loading-text">Loading...</div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -8,7 +8,7 @@
  */
 
 // Configuration
-export type { MetaballConfig } from "./config.ts";
+export type { MetaballConfig, MetaballDataSource } from "./config.ts";
 export {
   DEFAULT_METABALL_CONFIG,
   mergeMetaballConfig,

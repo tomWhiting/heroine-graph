@@ -88,10 +88,8 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
       layout: pipelines.repulsion.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer } },
-        { binding: 1, resource: { buffer: context.positionsX } },
-        { binding: 2, resource: { buffer: context.positionsY } },
-        { binding: 3, resource: { buffer: context.forcesX } },
-        { binding: 4, resource: { buffer: context.forcesY } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
       ],
     });
 

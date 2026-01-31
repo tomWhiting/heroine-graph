@@ -20,9 +20,8 @@ struct DensitySplatUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: DensitySplatUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
-@group(0) @binding(3) var density_texture: texture_storage_2d<r32float, read_write>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
+@group(0) @binding(2) var density_texture: texture_storage_2d<r32float, read_write>;
 
 // Convert world position to texture UV
 fn world_to_uv(pos: vec2<f32>) -> vec2<f32> {
@@ -54,7 +53,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos = vec2<f32>(positions_x[node_idx], positions_y[node_idx]);
+    let pos = positions[node_idx];
     let uv = world_to_uv(pos);
 
     // Skip if outside bounds

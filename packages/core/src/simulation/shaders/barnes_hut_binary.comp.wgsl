@@ -10,6 +10,8 @@
 // The Barnes-Hut algorithm approximates long-range forces by treating
 // distant groups of nodes as single massive bodies. The theta parameter
 // controls the accuracy/speed tradeoff.
+//
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct ForceUniforms {
     particle_count: u32,       // Number of particles
@@ -24,30 +26,28 @@ struct ForceUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: ForceUniforms;
 
-// Particle positions (original order, not sorted)
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Particle positions (original order, not sorted) - vec2<f32> per particle
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Output forces (accumulated)
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
+// Output forces (accumulated) - vec2<f32> per particle
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
 // Tree structure (from Karras build)
-@group(0) @binding(5) var<storage, read> left_child: array<i32>;
-@group(0) @binding(6) var<storage, read> right_child: array<i32>;
+@group(0) @binding(3) var<storage, read> left_child: array<i32>;
+@group(0) @binding(4) var<storage, read> right_child: array<i32>;
 
 // Node properties (2N-1 total: internal + leaves)
-@group(0) @binding(7) var<storage, read> node_com_x: array<f32>;
-@group(0) @binding(8) var<storage, read> node_com_y: array<f32>;
-@group(0) @binding(9) var<storage, read> node_mass: array<f32>;
-@group(0) @binding(10) var<storage, read> node_size: array<f32>;
+@group(0) @binding(5) var<storage, read> node_com_x: array<f32>;
+@group(0) @binding(6) var<storage, read> node_com_y: array<f32>;
+@group(0) @binding(7) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(8) var<storage, read> node_size: array<f32>;
 
 const MAX_STACK_DEPTH: u32 = 64u;
 const WORKGROUP_SIZE: u32 = 256u;
 
 // Compute repulsive force between a particle and a cell/body
-fn compute_repulsion(dx: f32, dy: f32, mass: f32) -> vec2<f32> {
-    let dist_sq = dx * dx + dy * dy;
+fn compute_repulsion(delta: vec2<f32>, mass: f32) -> vec2<f32> {
+    let dist_sq = dot(delta, delta);
     let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
     let safe_dist_sq = max(dist_sq, min_dist_sq);
 
@@ -57,11 +57,11 @@ fn compute_repulsion(dx: f32, dy: f32, mass: f32) -> vec2<f32> {
 
     // Normalize direction and apply magnitude
     let dist = sqrt(safe_dist_sq);
-    return vec2<f32>(dx, dy) * (force_magnitude / dist);
+    return delta * (force_magnitude / dist);
 }
 
 // Convert child reference to node index
-// Negative values are leaves: -(leaf_idx + 1) → node_idx = N - 1 + leaf_idx
+// Negative values are leaves: -(leaf_idx + 1) -> node_idx = N - 1 + leaf_idx
 fn child_to_node_idx(child: i32, n: u32) -> u32 {
     if (child < 0) {
         // Leaf: convert negative reference to node index
@@ -88,8 +88,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos_x = positions_x[particle_idx];
-    let pos_y = positions_y[particle_idx];
+    let pos = positions[particle_idx];
     var total_force = vec2<f32>(0.0, 0.0);
 
     // Handle degenerate cases
@@ -124,14 +123,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let cell_com_x = node_com_x[node_idx];
-        let cell_com_y = node_com_y[node_idx];
+        let cell_com = vec2<f32>(node_com_x[node_idx], node_com_y[node_idx]);
         let cell_size = node_size[node_idx];
 
         // Distance from particle to cell center of mass
-        let dx = pos_x - cell_com_x;
-        let dy = pos_y - cell_com_y;
-        let dist_sq = dx * dx + dy * dy;
+        let delta = pos - cell_com;
+        let dist_sq = dot(delta, delta);
 
         // Skip if this is essentially the same position
         // This handles self-interaction (particle in its own leaf)
@@ -149,7 +146,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         if (use_approximation) {
             // Cell is far enough OR is a leaf - treat as single body
-            total_force += compute_repulsion(dx, dy, cell_mass);
+            total_force += compute_repulsion(delta, cell_mass);
         } else {
             // Cell is too close - examine children (binary tree: 2 children)
             let left = left_child[node_idx];
@@ -171,8 +168,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Accumulate force to output
-    forces_x[particle_idx] += total_force.x;
-    forces_y[particle_idx] += total_force.y;
+    forces[particle_idx] += total_force;
 }
 
 // Alternative entry point for sorted particle order.

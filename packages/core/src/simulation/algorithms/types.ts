@@ -12,7 +12,7 @@ import type { FullForceConfig } from "../config.ts";
 /**
  * Available force algorithm types
  */
-export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density";
+export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas";
 
 /**
  * Algorithm metadata for display
@@ -67,18 +67,16 @@ export interface AlgorithmPipelines {
 
 /**
  * Context passed to algorithm for rendering
+ *
+ * All position and force buffers use vec2<f32> layout (8 bytes per node).
  */
 export interface AlgorithmRenderContext {
   /** GPU device */
   device: GPUDevice;
-  /** Position buffers (X coordinates) */
-  positionsX: GPUBuffer;
-  /** Position buffers (Y coordinates) */
-  positionsY: GPUBuffer;
-  /** Force accumulator buffers (X) */
-  forcesX: GPUBuffer;
-  /** Force accumulator buffers (Y) */
-  forcesY: GPUBuffer;
+  /** Position buffer - vec2<f32> per node (interleaved X,Y) */
+  positions: GPUBuffer;
+  /** Force accumulator buffer - vec2<f32> per node (interleaved X,Y) */
+  forces: GPUBuffer;
   /** Number of nodes */
   nodeCount: number;
   /** Current force configuration */

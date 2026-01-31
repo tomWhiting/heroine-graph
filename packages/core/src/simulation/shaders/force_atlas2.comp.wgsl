@@ -6,6 +6,8 @@
 // - Degree-weighted repulsion
 // - Optional LinLog mode for better cluster separation
 // - Strong gravity option for disconnected components
+//
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct ForceAtlas2Uniforms {
     node_count: u32,
@@ -18,16 +20,14 @@ struct ForceAtlas2Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: ForceAtlas2Uniforms;
 
-// Node positions
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Node positions - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Output forces (accumulated)
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
+// Output forces (accumulated) - vec2<f32> per node
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
 // Node degrees (for degree-weighted repulsion)
-@group(0) @binding(5) var<storage, read> degrees: array<u32>;
+@group(0) @binding(3) var<storage, read> degrees: array<u32>;
 
 const MIN_DISTANCE: f32 = 0.01;
 const FLAG_LINLOG: u32 = 1u;
@@ -35,9 +35,9 @@ const FLAG_STRONG_GRAVITY: u32 = 2u;
 const FLAG_PREVENT_OVERLAP: u32 = 4u;
 
 // ForceAtlas2 repulsion: F = kr * (degree(i) + 1) * (degree(j) + 1) / distance
-// This is different from Coulomb repulsion which uses distance²
-fn fa2_repulsion(dx: f32, dy: f32, degree_i: u32, degree_j: u32) -> vec2<f32> {
-    let dist_sq = dx * dx + dy * dy;
+// This is different from Coulomb repulsion which uses distance^2
+fn fa2_repulsion(delta: vec2<f32>, degree_i: u32, degree_j: u32) -> vec2<f32> {
+    let dist_sq = dot(delta, delta);
     let dist = sqrt(max(dist_sq, MIN_DISTANCE * MIN_DISTANCE));
 
     // Degree-weighted mass
@@ -48,12 +48,12 @@ fn fa2_repulsion(dx: f32, dy: f32, degree_i: u32, degree_j: u32) -> vec2<f32> {
     let force_magnitude = uniforms.scaling * mass_i * mass_j / dist;
 
     // Direction: pointing away from the other node
-    let dir = vec2<f32>(dx, dy) / dist;
+    let dir = delta / dist;
 
     return dir * force_magnitude;
 }
 
-// Main repulsion kernel - O(n²) but with FA2 force model
+// Main repulsion kernel - O(n^2) but with FA2 force model
 @compute @workgroup_size(256)
 fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = global_id.x;
@@ -62,7 +62,7 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let node_pos = vec2<f32>(positions_x[node_idx], positions_y[node_idx]);
+    let node_pos = positions[node_idx];
     let node_degree = degrees[node_idx];
     var total_force = vec2<f32>(0.0, 0.0);
 
@@ -72,13 +72,12 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let other_pos = vec2<f32>(positions_x[i], positions_y[i]);
+        let other_pos = positions[i];
         let other_degree = degrees[i];
 
-        let dx = node_pos.x - other_pos.x;
-        let dy = node_pos.y - other_pos.y;
+        let delta = node_pos - other_pos;
 
-        total_force += fa2_repulsion(dx, dy, node_degree, other_degree);
+        total_force += fa2_repulsion(delta, node_degree, other_degree);
     }
 
     // Gravity toward center
@@ -96,8 +95,7 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
     total_force += final_gravity;
 
     // Add to output forces
-    forces_x[node_idx] += total_force.x;
-    forces_y[node_idx] += total_force.y;
+    forces[node_idx] += total_force;
 }
 
 // ForceAtlas2 attraction: F = distance (linear, not spring-like)
@@ -110,12 +108,10 @@ struct AttractionUniforms {
 }
 
 @group(0) @binding(0) var<uniform> attr_uniforms: AttractionUniforms;
-@group(0) @binding(1) var<storage, read> attr_positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> attr_positions_y: array<f32>;
-@group(0) @binding(3) var<storage, read_write> attr_forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> attr_forces_y: array<f32>;
-@group(0) @binding(5) var<storage, read> edge_sources: array<u32>;
-@group(0) @binding(6) var<storage, read> edge_targets: array<u32>;
+@group(0) @binding(1) var<storage, read> attr_positions: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> attr_forces: array<vec2<f32>>;
+@group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
+@group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
 
 @compute @workgroup_size(256)
 fn attraction(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -128,8 +124,8 @@ fn attraction(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let src_node = edge_sources[edge_idx];
     let dst_node = edge_targets[edge_idx];
 
-    let source_pos = vec2<f32>(attr_positions_x[src_node], attr_positions_y[src_node]);
-    let target_pos = vec2<f32>(attr_positions_x[dst_node], attr_positions_y[dst_node]);
+    let source_pos = attr_positions[src_node];
+    let target_pos = attr_positions[dst_node];
 
     let delta = target_pos - source_pos;
     let dist = length(delta);
@@ -153,8 +149,6 @@ fn attraction(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Apply forces to both nodes (equal and opposite).
     // Direct accumulation is safe because each edge is processed exactly once.
-    attr_forces_x[src_node] += force.x;
-    attr_forces_y[src_node] += force.y;
-    attr_forces_x[dst_node] -= force.x;
-    attr_forces_y[dst_node] -= force.y;
+    attr_forces[src_node] += force;
+    attr_forces[dst_node] -= force;
 }

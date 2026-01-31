@@ -179,6 +179,23 @@ export class ContourLayer implements Layer {
   }
 
   /**
+   * Set the data source for contour values.
+   * @param source - 'density' for uniform node density, or a stream ID
+   */
+  setDataSource(source: string): void {
+    if (source === this.config.dataSource) return;
+    this.config.dataSource = source;
+    this.bindGroupsDirty = true;
+  }
+
+  /**
+   * Get the current data source
+   */
+  getDataSource(): string {
+    return this.config.dataSource;
+  }
+
+  /**
    * Allocate GPU buffers for marching squares
    */
   private allocateBuffers(width: number, height: number): void {

@@ -87,16 +87,14 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     });
 
     // Create explicit bind group layout
-    // Bindings: uniforms, positions_x, positions_y, forces_x, forces_y, density_grid
+    // Bindings: uniforms, positions (vec2), forces (vec2), density_grid
     const bindGroupLayout = device.createBindGroupLayout({
       label: "Density Field Bind Group Layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
@@ -160,11 +158,9 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
       layout: p.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: b.uniforms } },
-        { binding: 1, resource: { buffer: context.positionsX } },
-        { binding: 2, resource: { buffer: context.positionsY } },
-        { binding: 3, resource: { buffer: context.forcesX } },
-        { binding: 4, resource: { buffer: context.forcesY } },
-        { binding: 5, resource: { buffer: b.densityGrid } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: b.densityGrid } },
       ],
     });
 

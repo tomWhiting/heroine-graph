@@ -65,8 +65,7 @@ export interface HeatmapPipeline {
   /** Create splat bind group for positions */
   createSplatBindGroup: (
     viewportUniformBuffer: GPUBuffer,
-    positionsX: GPUBuffer,
-    positionsY: GPUBuffer,
+    positions: GPUBuffer,
     intensities?: GPUBuffer | null,
   ) => { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup };
   /** Create colormap bind group */
@@ -141,7 +140,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
     ],
   });
 
-  // Group 1: Position buffers (and optional per-node intensities)
+  // Group 1: Position buffer (vec2) and optional per-node intensities
   const positionLayout = device.createBindGroupLayout({
     label: "Heatmap Position Layout",
     entries: [
@@ -152,11 +151,6 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
       },
       {
         binding: 1,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 2,
         visibility: GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
@@ -336,8 +330,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
 
   function createSplatBindGroup(
     viewportUniformBuffer: GPUBuffer,
-    positionsX: GPUBuffer,
-    positionsY: GPUBuffer,
+    positions: GPUBuffer,
     intensities?: GPUBuffer | null,
   ): { uniformsBindGroup: GPUBindGroup; positionBindGroup: GPUBindGroup } {
     const uniformsBindGroup = device.createBindGroup({
@@ -356,9 +349,8 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
       label: "Heatmap Position Bind Group",
       layout: positionLayout,
       entries: [
-        { binding: 0, resource: { buffer: positionsX } },
-        { binding: 1, resource: { buffer: positionsY } },
-        { binding: 2, resource: { buffer: intensityBuffer } },
+        { binding: 0, resource: { buffer: positions } },
+        { binding: 1, resource: { buffer: intensityBuffer } },
       ],
     });
 

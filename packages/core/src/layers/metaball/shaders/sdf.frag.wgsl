@@ -29,8 +29,8 @@ struct FragmentInput {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: MetaballUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read> node_intensities: array<f32>;
 
 // Quadratic smooth minimum for SDF blending
 // This creates organic blobs when SDFs are combined
@@ -54,7 +54,16 @@ fn evaluate_field(p: vec2<f32>) -> f32 {
 
     // Blend nearby node circles together (spatial culling for performance)
     for (var i = 0u; i < uniforms.node_count; i++) {
-        let center = vec2<f32>(positions_x[i], positions_y[i]);
+        // Get per-node intensity (0.0-1.0, default 1.0 for density mode)
+        // Intensity scales the node's influence radius
+        let intensity = node_intensities[i];
+
+        // Skip nodes with zero intensity (they don't contribute)
+        if (intensity <= 0.0) {
+            continue;
+        }
+
+        let center = positions[i];
 
         // Quick distance check to skip far nodes (avoids expensive smin)
         let dx = abs(p.x - center.x);
@@ -63,7 +72,9 @@ fn evaluate_field(p: vec2<f32>) -> f32 {
             continue;
         }
 
-        let circle_d = sd_circle(p, center, uniforms.node_radius);
+        // Scale node radius by intensity - higher intensity = larger blob
+        let scaled_radius = uniforms.node_radius * intensity;
+        let circle_d = sd_circle(p, center, scaled_radius);
         d = smin(d, circle_d, uniforms.blend_radius);
     }
 

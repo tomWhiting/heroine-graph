@@ -3,6 +3,8 @@
 //
 // Implements velocity Verlet integration with adaptive damping
 // for stable force-directed layout convergence.
+//
+// All position, velocity, and force data uses vec2<f32> layout.
 
 struct IntegrationUniforms {
     node_count: u32,
@@ -21,24 +23,16 @@ struct IntegrationUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: IntegrationUniforms;
 
-// Positions (read from one buffer, write to another for ping-pong)
-@group(0) @binding(1) var<storage, read> positions_x_in: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y_in: array<f32>;
-@group(0) @binding(3) var<storage, read_write> positions_x_out: array<f32>;
-@group(0) @binding(4) var<storage, read_write> positions_y_out: array<f32>;
+// Positions (read from one buffer, write to another for ping-pong) - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions_in: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> positions_out: array<vec2<f32>>;
 
-// Velocities
-@group(0) @binding(5) var<storage, read> velocities_x_in: array<f32>;
-@group(0) @binding(6) var<storage, read> velocities_y_in: array<f32>;
-@group(0) @binding(7) var<storage, read_write> velocities_x_out: array<f32>;
-@group(0) @binding(8) var<storage, read_write> velocities_y_out: array<f32>;
+// Velocities - vec2<f32> per node
+@group(0) @binding(3) var<storage, read> velocities_in: array<vec2<f32>>;
+@group(0) @binding(4) var<storage, read_write> velocities_out: array<vec2<f32>>;
 
-// Forces (input)
-@group(0) @binding(9) var<storage, read> forces_x: array<f32>;
-@group(0) @binding(10) var<storage, read> forces_y: array<f32>;
-
-// NOTE: node_flags removed due to WebGPU 10 storage buffer limit per stage
-// When pinning is needed, we should combine X/Y into vec2 buffers to free up slots
+// Forces (input) - vec2<f32> per node
+@group(0) @binding(5) var<storage, read> forces: array<vec2<f32>>;
 
 // Clamp vector magnitude
 fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
@@ -59,12 +53,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Read current state
-    let pos = vec2<f32>(positions_x_in[node_idx], positions_y_in[node_idx]);
-    var vel = vec2<f32>(velocities_x_in[node_idx], velocities_y_in[node_idx]);
-    let force = vec2<f32>(forces_x[node_idx], forces_y[node_idx]);
+    let pos = positions_in[node_idx];
+    var vel = velocities_in[node_idx];
+    let force = forces[node_idx];
 
     // Add gravity (pull toward center)
-    let to_center = vec2<f32>(uniforms.center_x, uniforms.center_y) - pos;
+    let center = vec2<f32>(uniforms.center_x, uniforms.center_y);
+    let to_center = center - pos;
     let gravity_force = to_center * uniforms.gravity_strength;
     let total_force = force + gravity_force;
 
@@ -81,10 +76,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let new_pos = pos + vel * uniforms.dt;
 
     // Write new state
-    positions_x_out[node_idx] = new_pos.x;
-    positions_y_out[node_idx] = new_pos.y;
-    velocities_x_out[node_idx] = vel.x;
-    velocities_y_out[node_idx] = vel.y;
+    positions_out[node_idx] = new_pos;
+    velocities_out[node_idx] = vel;
 }
 
 // Workgroup shared memory for energy reduction (must be at module scope in WGSL)
@@ -100,9 +93,8 @@ fn compute_energy(@builtin(global_invocation_id) global_id: vec3<u32>,
     // Calculate kinetic energy for this node
     var energy = 0.0;
     if (node_idx < uniforms.node_count) {
-        let vx = velocities_x_in[node_idx];
-        let vy = velocities_y_in[node_idx];
-        energy = 0.5 * (vx * vx + vy * vy);
+        let vel = velocities_in[node_idx];
+        energy = 0.5 * dot(vel, vel);
     }
 
     shared_energy[lid] = energy;
@@ -129,8 +121,7 @@ fn reset_velocities(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    velocities_x_out[node_idx] = 0.0;
-    velocities_y_out[node_idx] = 0.0;
+    velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
 }
 
 // Apply random jitter (for escaping local minima)
@@ -148,6 +139,6 @@ fn apply_jitter(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let random_y = fract(sin(seed + 1.0) * 43758.5453) * 2.0 - 1.0;
 
     let jitter_strength = 1.0;
-    positions_x_out[node_idx] = positions_x_in[node_idx] + random_x * jitter_strength;
-    positions_y_out[node_idx] = positions_y_in[node_idx] + random_y * jitter_strength;
+    let pos = positions_in[node_idx];
+    positions_out[node_idx] = pos + vec2<f32>(random_x, random_y) * jitter_strength;
 }

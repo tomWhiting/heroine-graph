@@ -3,6 +3,8 @@
 //
 // Each edge acts as a spring pulling its endpoint nodes together.
 // Force magnitude increases linearly with distance beyond rest length.
+//
+// Uses vec2<f32> layout for consolidated position/velocity/force data.
 
 struct SpringUniforms {
     node_count: u32,
@@ -15,24 +17,21 @@ struct SpringUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: SpringUniforms;
 
-// Node positions
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Node positions - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Node velocities (for damping)
-@group(0) @binding(3) var<storage, read> velocities_x: array<f32>;
-@group(0) @binding(4) var<storage, read> velocities_y: array<f32>;
+// Node velocities (for damping) - vec2<f32> per node
+@group(0) @binding(2) var<storage, read> velocities: array<vec2<f32>>;
 
-// Output forces (accumulated)
-@group(0) @binding(5) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(6) var<storage, read_write> forces_y: array<f32>;
+// Output forces (accumulated) - vec2<f32> per node
+@group(0) @binding(3) var<storage, read_write> forces: array<vec2<f32>>;
 
 // Edge data (source, target pairs)
-@group(0) @binding(7) var<storage, read> edge_sources: array<u32>;
-@group(0) @binding(8) var<storage, read> edge_targets: array<u32>;
+@group(0) @binding(4) var<storage, read> edge_sources: array<u32>;
+@group(0) @binding(5) var<storage, read> edge_targets: array<u32>;
 
 // Optional: edge weights for variable spring strength
-@group(0) @binding(9) var<storage, read> edge_weights: array<f32>;
+@group(0) @binding(6) var<storage, read> edge_weights: array<f32>;
 
 // Compute spring force for an edge
 fn spring_force(
@@ -80,12 +79,12 @@ fn per_edge(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let target_idx = edge_targets[edge_idx];
 
     // Get positions
-    let source_pos = vec2<f32>(positions_x[source_idx], positions_y[source_idx]);
-    let target_pos = vec2<f32>(positions_x[target_idx], positions_y[target_idx]);
+    let source_pos = positions[source_idx];
+    let target_pos = positions[target_idx];
 
     // Get velocities
-    let source_vel = vec2<f32>(velocities_x[source_idx], velocities_y[source_idx]);
-    let target_vel = vec2<f32>(velocities_x[target_idx], velocities_y[target_idx]);
+    let source_vel = velocities[source_idx];
+    let target_vel = velocities[target_idx];
 
     // Get edge weight (default 1.0)
     let weight = edge_weights[edge_idx];
@@ -96,10 +95,8 @@ fn per_edge(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // WGSL lacks atomic float operations. Direct writes may have race conditions,
     // but this is acceptable for approximate physics simulation where small
     // numerical variations do not affect convergence or visual quality.
-    forces_x[source_idx] += force.x;
-    forces_y[source_idx] += force.y;
-    forces_x[target_idx] -= force.x;
-    forces_y[target_idx] -= force.y;
+    forces[source_idx] += force;
+    forces[target_idx] -= force;
 }
 
 
@@ -112,6 +109,5 @@ fn clear_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    forces_x[node_idx] = 0.0;
-    forces_y[node_idx] = 0.0;
+    forces[node_idx] = vec2<f32>(0.0, 0.0);
 }

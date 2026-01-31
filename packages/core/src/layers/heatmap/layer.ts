@@ -45,10 +45,8 @@ export interface Layer {
 export interface HeatmapRenderContext {
   /** Viewport uniform buffer */
   viewportUniformBuffer: GPUBuffer;
-  /** Position X buffer */
-  positionsX: GPUBuffer;
-  /** Position Y buffer */
-  positionsY: GPUBuffer;
+  /** Position buffer (vec2 per node) */
+  positions: GPUBuffer;
   /** Number of nodes */
   nodeCount: number;
   /**
@@ -313,8 +311,7 @@ export class HeatmapLayer implements Layer {
 
     const { uniformsBindGroup, positionBindGroup } = this.pipeline.createSplatBindGroup(
       this.renderContext.viewportUniformBuffer,
-      this.renderContext.positionsX,
-      this.renderContext.positionsY,
+      this.renderContext.positions,
       this.renderContext.nodeIntensities,
     );
 

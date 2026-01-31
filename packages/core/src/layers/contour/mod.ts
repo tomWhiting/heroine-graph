@@ -10,7 +10,7 @@
  */
 
 // Configuration
-export type { ContourConfig } from "./config.ts";
+export type { ContourConfig, ContourDataSource } from "./config.ts";
 export {
   DEFAULT_CONTOUR_CONFIG,
   mergeContourConfig,

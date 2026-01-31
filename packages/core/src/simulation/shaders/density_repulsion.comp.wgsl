@@ -17,12 +17,10 @@ struct DensityRepulsionUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: DensityRepulsionUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
-@group(0) @binding(5) var gradient_texture: texture_2d<f32>;
-@group(0) @binding(6) var gradient_sampler: sampler;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
+@group(0) @binding(3) var gradient_texture: texture_2d<f32>;
+@group(0) @binding(4) var gradient_sampler: sampler;
 
 // Convert world position to texture UV
 fn world_to_uv(pos: vec2<f32>) -> vec2<f32> {
@@ -39,7 +37,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos = vec2<f32>(positions_x[node_idx], positions_y[node_idx]);
+    let pos = positions[node_idx];
     let uv = world_to_uv(pos);
 
     // Clamp UV to valid range
@@ -54,6 +52,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let force = -gradient * uniforms.repulsion_strength;
 
     // Accumulate force
-    forces_x[node_idx] += force.x;
-    forces_y[node_idx] += force.y;
+    forces[node_idx] += force;
 }

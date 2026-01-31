@@ -300,6 +300,21 @@ export type {
 } from "./src/simulation/pipeline.ts";
 
 export {
+  createCollisionBindGroup,
+  createCollisionBuffers,
+  createCollisionPipeline,
+  destroyCollisionBuffers,
+  recordCollisionPass,
+  updateCollisionUniforms,
+  uploadNodeSizes,
+} from "./src/simulation/collision.ts";
+export type {
+  CollisionBindGroup,
+  CollisionBuffers,
+  CollisionPipeline,
+} from "./src/simulation/collision.ts";
+
+export {
   calculateDecayRate,
   calculateIterations,
   createAdaptiveAlphaController,
@@ -453,6 +468,29 @@ export type {
   Layer as VisualizationLayer,
 } from "./src/layers/mod.ts";
 
+// Labels Layer
+export {
+  DEFAULT_LABEL_CONFIG,
+  getGlyph,
+  getGlyphUVs,
+  getKerning,
+  LabelManager,
+  LabelsLayer,
+  loadDefaultFontAtlas,
+  loadFontAtlas,
+  measureText,
+} from "./src/layers/mod.ts";
+export type {
+  BMFontChar,
+  BMFontData,
+  FontAtlas,
+  LabelConfig,
+  LabelData,
+  LabelsRenderContext,
+  PositionProvider as LabelPositionProvider,
+  VisibleLabel,
+} from "./src/layers/mod.ts";
+
 // =============================================================================
 // Value Streams
 // =============================================================================
@@ -489,3 +527,36 @@ export type {
   ResolvedEdgeStyle,
   ResolvedNodeStyle,
 } from "./src/styling/mod.ts";
+
+// =============================================================================
+// Central Configuration Nexus
+// =============================================================================
+
+// Import from config nexus for centralized access to all settings.
+// Note: Some types (ColorRGBA, ColorScaleName, etc.) are already exported
+// above from their original locations for backwards compatibility.
+// The config nexus re-exports these for convenience.
+export {
+  // Node Border
+  DEFAULT_NODE_BORDER_CONFIG,
+  // Shared Data Source type
+  type LayerDataSource,
+} from "./src/config/index.ts";
+export type { NodeBorderConfig } from "./src/config/index.ts";
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+// Color utilities - centralized parsing for the entire library
+export {
+  colorToHex,
+  DEFAULT_COLORS,
+  lerpColor,
+  NAMED_COLORS,
+  parseColor,
+  parseColorToRGB,
+  parseColorToRGBA,
+  withAlpha,
+} from "./src/utils/mod.ts";
+export type { ColorInput, ColorRGB, RgbaColor } from "./src/utils/mod.ts";

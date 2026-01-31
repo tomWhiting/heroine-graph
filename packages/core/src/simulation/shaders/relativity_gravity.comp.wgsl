@@ -5,6 +5,8 @@
 // - High-mass nodes (with large subtrees) move slowly
 // - Low-mass nodes (leaves) are pulled more strongly
 // - Creates natural clustering around hubs
+//
+// Uses vec2<f32> layout for consolidated position/force data.
 
 struct GravityUniforms {
     node_count: u32,
@@ -17,16 +19,14 @@ struct GravityUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: GravityUniforms;
 
-// Node positions
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
+// Node positions - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Force accumulators
-@group(0) @binding(3) var<storage, read_write> forces_x: array<f32>;
-@group(0) @binding(4) var<storage, read_write> forces_y: array<f32>;
+// Force accumulators - vec2<f32> per node
+@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
 // Node masses
-@group(0) @binding(5) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(3) var<storage, read> node_mass: array<f32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
@@ -40,22 +40,19 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let pos_x = positions_x[node_idx];
-    let pos_y = positions_y[node_idx];
+    let pos = positions[node_idx];
     let mass = max(node_mass[node_idx], 1.0);
 
     // Direction toward center
-    let to_center_x = uniforms.center_x - pos_x;
-    let to_center_y = uniforms.center_y - pos_y;
+    let center = vec2<f32>(uniforms.center_x, uniforms.center_y);
+    let to_center = center - pos;
 
-    let dist_sq = to_center_x * to_center_x + to_center_y * to_center_y;
+    let dist_sq = dot(to_center, to_center);
 
     // Skip if already at center
     if (dist_sq < EPSILON) {
         return;
     }
-
-    let dist = sqrt(dist_sq);
 
     // Mass-weighted gravity: lighter nodes are pulled more strongly
     // gravity_factor = gravity_strength / mass^exponent
@@ -63,11 +60,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let gravity = uniforms.gravity_strength / max(mass_factor, 0.1);
 
     // Linear pull (not inverse-square, for stability)
-    let force_x = to_center_x * gravity;
-    let force_y = to_center_y * gravity;
+    let force = to_center * gravity;
 
-    forces_x[node_idx] += force_x;
-    forces_y[node_idx] += force_y;
+    forces[node_idx] += force;
 }
 
 // Compute center of mass for the entire graph
@@ -86,8 +81,9 @@ fn compute_center_of_mass(@builtin(global_invocation_id) global_id: vec3<u32>,
     // Load data (or zero if out of bounds)
     if (node_idx < uniforms.node_count) {
         let mass = max(node_mass[node_idx], 1.0);
-        shared_sum_x[tid] = positions_x[node_idx] * mass;
-        shared_sum_y[tid] = positions_y[node_idx] * mass;
+        let pos = positions[node_idx];
+        shared_sum_x[tid] = pos.x * mass;
+        shared_sum_y[tid] = pos.y * mass;
         shared_mass[tid] = mass;
     } else {
         shared_sum_x[tid] = 0.0;
@@ -121,16 +117,13 @@ fn apply_gravity_to_com(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Use pre-computed center of mass from uniforms
-    let com_x = uniforms.center_x;
-    let com_y = uniforms.center_y;
+    let com = vec2<f32>(uniforms.center_x, uniforms.center_y);
 
-    let pos_x = positions_x[node_idx];
-    let pos_y = positions_y[node_idx];
+    let pos = positions[node_idx];
     let mass = max(node_mass[node_idx], 1.0);
 
-    let dx = com_x - pos_x;
-    let dy = com_y - pos_y;
-    let dist = sqrt(dx * dx + dy * dy);
+    let delta = com - pos;
+    let dist = length(delta);
 
     if (dist < EPSILON) {
         return;
@@ -140,6 +133,5 @@ fn apply_gravity_to_com(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let mass_factor = pow(mass, uniforms.mass_exponent);
     let force_mag = uniforms.gravity_strength / max(mass_factor, 0.1);
 
-    forces_x[node_idx] += dx * force_mag;
-    forces_y[node_idx] += dy * force_mag;
+    forces[node_idx] += delta * force_mag;
 }

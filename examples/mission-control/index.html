@@ -633,6 +633,42 @@
 
         <!-- Layers grid -->
         <div class="layers-grid">
+          <!-- Display Settings -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(135deg, #fff 50%, #000 50%)"
+                ></span>
+                Display
+              </span>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Theme</span>
+              </div>
+              <select id="display-theme">
+                <option value="dark">Dark (Default)</option>
+                <option value="light">Light</option>
+                <option value="midnight">Midnight</option>
+                <option value="contrast">High Contrast</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Background</span>
+              </div>
+              <input type="color" id="display-bg-color" value="#0a0a0f">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Default Edge Color</span>
+              </div>
+              <input type="color" id="display-edge-color" value="#808080">
+            </div>
+          </div>
+
           <!-- Heatmap -->
           <div class="layer-card">
             <div class="layer-header">
@@ -747,6 +783,13 @@
               </div>
               <input type="range" id="contour-thresholds" min="1" max="10" value="4">
             </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Min Threshold</span>
+                <span class="control-value" id="contour-min-val">0.10</span>
+              </div>
+              <input type="range" id="contour-min" min="0.02" max="0.5" step="0.02" value="0.1">
+            </div>
           </div>
 
           <!-- Metaballs -->
@@ -823,7 +866,7 @@
             </div>
           </div>
 
-          <!-- Node Styling -->
+          <!-- Node Styling (includes borders) -->
           <div class="layer-card">
             <div class="layer-header">
               <span class="layer-title">
@@ -833,6 +876,13 @@
                 ></span>
                 Node Styling
               </span>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Size Scale</span>
+                <span class="control-value" id="node-size-scale-val">1.0</span>
+              </div>
+              <input type="range" id="node-size-scale" min="0.25" max="4" step="0.25" value="1">
             </div>
             <div class="control-row">
               <button class="sim-btn" id="style-by-type" style="width: 100%">Color by Type</button>
@@ -849,9 +899,32 @@
             <div class="control-row">
               <button class="sim-btn" id="style-reset" style="width: 100%">Reset to Default</button>
             </div>
+            <!-- Node Borders subsection -->
+            <div class="control-row" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);">
+              <div class="control-label" style="font-weight: 600;">
+                <span>Borders</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="border-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Border Width</span>
+                <span class="control-value" id="border-width-val">2.0</span>
+              </div>
+              <input type="range" id="border-width" min="0.5" max="5" step="0.5" value="2">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Border Color</span>
+              </div>
+              <input type="color" id="border-color" value="#000000" style="width: 60px; height: 28px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer;">
+            </div>
           </div>
 
-          <!-- Edge Styling -->
+          <!-- Edge Styling (includes curved edges) -->
           <div class="layer-card">
             <div class="layer-header">
               <span class="layer-title">
@@ -872,21 +945,55 @@
               <button class="sim-btn" id="edge-highlight-services" style="width: 100%">Highlight Service Deps</button>
             </div>
             <div class="control-row">
-              <label class="slider-label">
+              <div class="control-label">
                 <span>Edge Opacity</span>
-                <span id="edge-opacity-val">0.40</span>
-              </label>
+                <span class="control-value" id="edge-opacity-val">0.40</span>
+              </div>
               <input type="range" id="edge-opacity" min="0.05" max="1" step="0.05" value="0.4">
             </div>
             <div class="control-row">
-              <label class="slider-label">
+              <div class="control-label">
                 <span>Edge Width Scale</span>
-                <span id="edge-width-scale-val">1.0</span>
-              </label>
-              <input type="range" id="edge-width-scale" min="0.25" max="4" step="0.25" value="1">
+                <span class="control-value" id="edge-width-scale-val">1.0</span>
+              </div>
+              <input type="range" id="edge-width-scale" min="0.1" max="5" step="0.1" value="1">
             </div>
             <div class="control-row">
               <button class="sim-btn" id="edge-reset" style="width: 100%">Reset Edges</button>
+            </div>
+            <!-- Curved Edges subsection -->
+            <div class="control-row" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);">
+              <div class="control-label" style="font-weight: 600;">
+                <span>Curved Edges</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="curved-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Segments</span>
+                <span class="control-value" id="curved-segments-val">19</span>
+              </div>
+              <input type="range" id="curved-segments" min="3" max="50" step="1" value="19">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Weight</span>
+                <span class="control-value" id="curved-weight-val">0.80</span>
+              </div>
+              <input type="range" id="curved-weight" min="0.1" max="2" step="0.05" value="0.8">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Curvature</span>
+                <span class="control-value" id="curved-curvature-val">0.25</span>
+              </div>
+              <input type="range" id="curved-curvature" min="-0.5" max="0.5" step="0.01" value="0.25">
+            </div>
+            <div class="control-row">
+              <button class="sim-btn" id="curved-randomize" style="width: 100%">Randomize Curvatures</button>
             </div>
           </div>
 
@@ -971,6 +1078,16 @@
             </div>
             <div class="control-row">
               <div class="control-label">
+                <span>Wave Shape</span>
+              </div>
+              <select id="flow-wave-shape">
+                <option value="sine">Sine</option>
+                <option value="square">Square</option>
+                <option value="triangle">Triangle</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
                 <span>Pulse Width</span>
                 <span class="control-value" id="flow-width-val">0.10</span>
               </div>
@@ -997,7 +1114,95 @@
               </div>
               <input type="range" id="flow-brightness" min="1" max="5" step="0.1" value="2">
             </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Fade</span>
+                <span class="control-value" id="flow-fade-val">0.30</span>
+              </div>
+              <input type="range" id="flow-fade" min="0" max="1" step="0.05" value="0.3">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Flow Color</span>
+              </div>
+              <input type="color" id="flow-color" value="#00ffff" style="width: 60px;">
+              <label style="font-size: 10px; margin-left: 8px;">
+                <input type="checkbox" id="flow-use-edge-color"> Use edge color
+              </label>
+            </div>
           </div>
+
+          <!-- Edge Flow Layer 2 -->
+          <div class="layer-card">
+            <div class="layer-header">
+              <span class="layer-title">
+                <span
+                  class="layer-icon"
+                  style="background: linear-gradient(90deg, #ff6b6b 0%, transparent 50%, #ff6b6b 100%)"
+                ></span>
+                Flow Layer 2
+              </span>
+              <label class="toggle">
+                <input type="checkbox" id="flow2-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Wave Shape</span>
+              </div>
+              <select id="flow2-wave-shape">
+                <option value="sine">Sine</option>
+                <option value="square" selected>Square</option>
+                <option value="triangle">Triangle</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Pulse Width</span>
+                <span class="control-value" id="flow2-width-val">0.05</span>
+              </div>
+              <input type="range" id="flow2-width" min="0.01" max="0.5" step="0.01" value="0.05">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Pulse Count</span>
+                <span class="control-value" id="flow2-count-val">6</span>
+              </div>
+              <input type="range" id="flow2-count" min="1" max="12" step="1" value="6">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Speed</span>
+                <span class="control-value" id="flow2-speed-val">0.50</span>
+              </div>
+              <input type="range" id="flow2-speed" min="0.05" max="2" step="0.05" value="0.5">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Brightness</span>
+                <span class="control-value" id="flow2-brightness-val">1.5</span>
+              </div>
+              <input type="range" id="flow2-brightness" min="0.5" max="5" step="0.1" value="1.5">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Fade</span>
+                <span class="control-value" id="flow2-fade-val">0.20</span>
+              </div>
+              <input type="range" id="flow2-fade" min="0" max="1" step="0.05" value="0.2">
+            </div>
+            <div class="control-row">
+              <div class="control-label">
+                <span>Flow Color</span>
+              </div>
+              <input type="color" id="flow2-color" value="#ff6b6b" style="width: 60px;">
+              <label style="font-size: 10px; margin-left: 8px;">
+                <input type="checkbox" id="flow2-use-edge-color"> Use edge color
+              </label>
+            </div>
+          </div>
+
         </div>
 
         <!-- Force Configuration section -->
@@ -1061,6 +1266,33 @@
                 <span class="control-value" id="force-damping-val">0.40</span>
               </div>
               <input type="range" id="force-damping" min="0.1" max="0.9" step="0.05" value="0.4">
+            </div>
+
+            <!-- Max Repulsion Distance -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Max Repel Dist</span>
+                <span class="control-value" id="force-max-dist-val">1000</span>
+              </div>
+              <input type="range" id="force-max-dist" min="100" max="5000" step="100" value="1000">
+            </div>
+
+            <!-- Barnes-Hut Theta -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Theta (accuracy)</span>
+                <span class="control-value" id="force-theta-val">0.80</span>
+              </div>
+              <input type="range" id="force-theta" min="0.3" max="1.5" step="0.1" value="0.8">
+            </div>
+
+            <!-- Max Velocity -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Max Velocity</span>
+                <span class="control-value" id="force-max-vel-val">50</span>
+              </div>
+              <input type="range" id="force-max-vel" min="10" max="200" step="10" value="50">
             </div>
           </div>
         </div>

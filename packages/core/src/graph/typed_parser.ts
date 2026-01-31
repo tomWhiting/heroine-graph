@@ -164,23 +164,23 @@ export function parseGraphTypedInput(
     edgeTargets = new Uint32Array(edgeCount);
   }
 
-  // Edge attributes
-  const edgeAttributes = new Float32Array(edgeCount * 6);
+  // Edge attributes (8 floats per edge: width, r, g, b, selected, hovered, curvature, reserved)
+  const edgeAttributes = new Float32Array(edgeCount * 8);
   const [defER, defEG, defEB] = finalConfig.defaultEdgeColor;
 
   if (input.edgeWidths) {
     for (let i = 0; i < edgeCount; i++) {
-      edgeAttributes[i * 6] = input.edgeWidths[i];
+      edgeAttributes[i * 8] = input.edgeWidths[i];
     }
   } else {
     for (let i = 0; i < edgeCount; i++) {
-      edgeAttributes[i * 6] = finalConfig.defaultEdgeWidth;
+      edgeAttributes[i * 8] = finalConfig.defaultEdgeWidth;
     }
   }
 
   if (input.edgeColors) {
     for (let i = 0; i < edgeCount; i++) {
-      const base = i * 6;
+      const base = i * 8;
       const colorBase = i * 3;
       edgeAttributes[base + 1] = input.edgeColors[colorBase];
       edgeAttributes[base + 2] = input.edgeColors[colorBase + 1];
@@ -188,12 +188,14 @@ export function parseGraphTypedInput(
     }
   } else {
     for (let i = 0; i < edgeCount; i++) {
-      const base = i * 6;
+      const base = i * 8;
       edgeAttributes[base + 1] = defER;
       edgeAttributes[base + 2] = defEG;
       edgeAttributes[base + 3] = defEB;
     }
   }
+
+  // Initialize curvature and reserved to 0 (already zero-initialized)
 
   return {
     nodeCount,

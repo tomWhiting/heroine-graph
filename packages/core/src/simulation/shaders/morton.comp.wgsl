@@ -4,6 +4,8 @@
 // Morton codes interleave bits of x and y coordinates, creating a space-filling
 // curve that preserves locality. Nodes that are spatially close will have
 // similar Morton codes, making them adjacent after sorting.
+//
+// Uses vec2<f32> layout for consolidated position data.
 
 struct SimulationUniforms {
     bounds_min: vec2<f32>,      // Bounding box minimum
@@ -13,10 +15,9 @@ struct SimulationUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SimulationUniforms;
-@group(0) @binding(1) var<storage, read> positions_x: array<f32>;
-@group(0) @binding(2) var<storage, read> positions_y: array<f32>;
-@group(0) @binding(3) var<storage, read_write> morton_codes: array<u32>;
-@group(0) @binding(4) var<storage, read_write> node_indices: array<u32>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> morton_codes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> node_indices: array<u32>;
 
 // Number of bits for each coordinate (16 bits each = 32-bit Morton code)
 const MORTON_BITS: u32 = 16u;
@@ -49,7 +50,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Get node position
-    let pos = vec2<f32>(positions_x[idx], positions_y[idx]);
+    let pos = positions[idx];
 
     // Normalize to [0, 1] range within bounding box
     let bounds_size = uniforms.bounds_max - uniforms.bounds_min;

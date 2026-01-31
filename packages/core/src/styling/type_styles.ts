@@ -15,6 +15,7 @@ import type {
   ResolvedEdgeStyle,
   ResolvedNodeStyle,
 } from "./types.ts";
+import { parseColorToRGBA } from "../utils/color.ts";
 
 /**
  * Default node style
@@ -32,69 +33,8 @@ const DEFAULT_EDGE_STYLE: ResolvedEdgeStyle = {
   width: 1.0,
 };
 
-/**
- * Parse a CSS color string to RGBA (0-1 range)
- */
-function parseColor(color: string): [number, number, number, number] {
-  // Handle hex colors
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    if (hex.length === 3) {
-      // Short hex (#RGB)
-      const r = parseInt(hex[0] + hex[0], 16) / 255;
-      const g = parseInt(hex[1] + hex[1], 16) / 255;
-      const b = parseInt(hex[2] + hex[2], 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 6) {
-      // Long hex (#RRGGBB)
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      return [r, g, b, 1.0];
-    } else if (hex.length === 8) {
-      // Hex with alpha (#RRGGBBAA)
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      const a = parseInt(hex.slice(6, 8), 16) / 255;
-      return [r, g, b, a];
-    }
-  }
-
-  // Handle rgb/rgba
-  const rgbaMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/i);
-  if (rgbaMatch) {
-    const r = parseInt(rgbaMatch[1], 10) / 255;
-    const g = parseInt(rgbaMatch[2], 10) / 255;
-    const b = parseInt(rgbaMatch[3], 10) / 255;
-    const a = rgbaMatch[4] ? parseFloat(rgbaMatch[4]) : 1.0;
-    return [r, g, b, a];
-  }
-
-  // Handle named colors (basic set)
-  const namedColors: Record<string, [number, number, number, number]> = {
-    red: [1, 0, 0, 1],
-    green: [0, 0.5, 0, 1],
-    blue: [0, 0, 1, 1],
-    yellow: [1, 1, 0, 1],
-    orange: [1, 0.647, 0, 1],
-    purple: [0.5, 0, 0.5, 1],
-    cyan: [0, 1, 1, 1],
-    magenta: [1, 0, 1, 1],
-    white: [1, 1, 1, 1],
-    black: [0, 0, 0, 1],
-    gray: [0.5, 0.5, 0.5, 1],
-    grey: [0.5, 0.5, 0.5, 1],
-  };
-
-  const lower = color.toLowerCase();
-  if (namedColors[lower]) {
-    return namedColors[lower];
-  }
-
-  // Fallback to default gray
-  return [0.5, 0.5, 0.5, 1.0];
-}
+// Use shared color parsing utility
+const parseColor = parseColorToRGBA;
 
 /**
  * Type Style Manager

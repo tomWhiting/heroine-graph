@@ -417,6 +417,86 @@ impl GraphEngine {
         result.extend(targets);
         result
     }
+
+    /// Get inverse edge list in CSR format (incoming edges).
+    ///
+    /// For each node, lists the source nodes of incoming edges.
+    /// Returns [offsets..., sources...] where offsets has node_count + 1 elements.
+    /// This is useful for finding "parents" in a directed graph.
+    pub fn get_inverse_edges_csr(&self) -> Vec<u32> {
+        let node_count = self.graph.node_count();
+        let edge_count = self.graph.edge_count();
+
+        let mut offsets = vec![0u32; node_count + 1];
+        let mut sources = Vec::with_capacity(edge_count);
+
+        // Count incoming edges per node (edges where this node is the target)
+        for edge in self.graph.edge_references() {
+            let target = edge.target().index();
+            if target < node_count {
+                offsets[target + 1] += 1;
+            }
+        }
+
+        // Prefix sum
+        for i in 1..=node_count {
+            offsets[i] += offsets[i - 1];
+        }
+
+        // Initialize sources vector to the right size
+        sources.resize(edge_count, 0);
+
+        // Build sources array
+        let mut current_offsets = offsets[..node_count].to_vec();
+        for edge in self.graph.edge_references() {
+            let source = edge.source().index();
+            let target = edge.target().index();
+
+            if target < node_count {
+                let source_id = self.graph.node_weight(edge.source())
+                    .map(|id| id.0)
+                    .unwrap_or(source as u32);
+
+                let offset = current_offsets[target] as usize;
+                if offset < sources.len() {
+                    sources[offset] = source_id;
+                    current_offsets[target] += 1;
+                }
+            }
+        }
+
+        // Combine offsets and sources
+        let mut result = Vec::with_capacity(offsets.len() + sources.len());
+        result.extend(offsets);
+        result.extend(sources);
+        result
+    }
+
+    /// Get node degrees (out-degree, in-degree) as a flat array.
+    ///
+    /// Returns [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...] with 2 * node_count elements.
+    pub fn get_node_degrees(&self) -> Vec<u32> {
+        let node_count = self.graph.node_count();
+        let mut degrees = vec![0u32; node_count * 2];
+
+        // Count out-degrees
+        for node_index in self.graph.node_indices() {
+            let i = node_index.index();
+            if i < node_count {
+                degrees[i * 2] = self.graph.edges(node_index).count() as u32;
+            }
+        }
+
+        // Count in-degrees
+        for edge in self.graph.edge_references() {
+            let target = edge.target().index();
+            if target < node_count {
+                degrees[target * 2 + 1] += 1;
+            }
+        }
+
+        degrees
+    }
 }
 
 impl Default for GraphEngine {

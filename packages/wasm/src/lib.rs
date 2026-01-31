@@ -290,6 +290,25 @@ impl HeroineGraphWasm {
     pub fn get_edges_csr(&self) -> Vec<u32> {
         self.engine.get_edges_csr()
     }
+
+    /// Get the inverse edge list in CSR format (incoming edges).
+    ///
+    /// For each node, lists the source nodes of incoming edges (parents).
+    /// Returns [offsets..., sources...] where offsets has node_count + 1 elements.
+    /// Useful for hierarchical algorithms that need parent relationships.
+    #[wasm_bindgen(js_name = getInverseEdgesCsr)]
+    pub fn get_inverse_edges_csr(&self) -> Vec<u32> {
+        self.engine.get_inverse_edges_csr()
+    }
+
+    /// Get node degrees as [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...].
+    ///
+    /// Returns a flat array with 2 * node_count elements.
+    /// Useful for degree-weighted force calculations.
+    #[wasm_bindgen(js_name = getNodeDegrees)]
+    pub fn get_node_degrees(&self) -> Vec<u32> {
+        self.engine.get_node_degrees()
+    }
 }
 
 impl Default for HeroineGraphWasm {

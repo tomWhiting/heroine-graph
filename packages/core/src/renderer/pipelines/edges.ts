@@ -3,6 +3,7 @@
  *
  * Sets up the WebGPU render pipeline for edge rendering using instanced
  * quad rendering with anti-aliased line rasterization.
+ * Supports both straight and curved (conic Bezier) edges.
  *
  * @module
  */
@@ -18,6 +19,33 @@ import {
 // Import shader source (bundled as text by esbuild)
 import EDGE_VERT_WGSL from "../shaders/edge.vert.wgsl";
 import EDGE_FRAG_WGSL from "../shaders/edge.frag.wgsl";
+
+/**
+ * Configuration for curved edges
+ */
+export interface CurvedEdgeConfig {
+  /** Enable curved edge rendering */
+  enabled: boolean;
+  /** Number of tessellation segments (default 19) */
+  segments: number;
+  /** Rational curve weight (default 0.8) */
+  weight: number;
+}
+
+/**
+ * Default curved edge configuration
+ */
+export const DEFAULT_CURVED_EDGE_CONFIG: CurvedEdgeConfig = {
+  enabled: false,
+  segments: 19,
+  weight: 0.8,
+};
+
+/**
+ * Size of curve config uniform buffer in bytes
+ * Layout: enabled (u32), segments (u32), weight (f32), padding (f32)
+ */
+export const CURVE_CONFIG_UNIFORM_SIZE = 16;
 
 /**
  * Configuration for edge render pipeline
@@ -56,6 +84,10 @@ export interface EdgeRenderPipeline {
   flowUniformBuffer: GPUBuffer;
   /** Flow uniform bind group */
   flowBindGroup: GPUBindGroup;
+  /** Curve config buffer */
+  curveConfigBuffer: GPUBuffer;
+  /** Current curved edge configuration */
+  curveConfig: CurvedEdgeConfig;
   /** Shader module */
   shaderModule: GPUShaderModule;
   /** Pipeline configuration */
@@ -95,10 +127,10 @@ export function createEdgeRenderPipeline(
   });
 
   // Edge data bind group layout (group 1)
-  // - binding 0: positions_x (storage buffer) - node positions for endpoints
-  // - binding 1: positions_y (storage buffer)
-  // - binding 2: edge_indices (storage buffer) - source/target pairs
-  // - binding 3: edge_attrs (storage buffer) - width, color, state
+  // - binding 0: positions (vec2 storage buffer) - node positions for endpoints
+  // - binding 1: edge_indices (storage buffer) - source/target pairs
+  // - binding 2: edge_attrs (storage buffer) - width, color, state, curvature
+  // - binding 3: curve_config (storage buffer) - curve configuration
   const edgeBindGroupLayout = device.createBindGroupLayout({
     label: "Edge Pipeline - Edge Data",
     entries: [
@@ -124,6 +156,22 @@ export function createEdgeRenderPipeline(
       },
     ],
   });
+
+  // Create curve config buffer
+  const curveConfigBuffer = device.createBuffer({
+    label: "Edge Curve Config",
+    size: CURVE_CONFIG_UNIFORM_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // Initialize curve config with defaults
+  const curveConfigData = new ArrayBuffer(CURVE_CONFIG_UNIFORM_SIZE);
+  const curveConfigView = new DataView(curveConfigData);
+  curveConfigView.setUint32(0, DEFAULT_CURVED_EDGE_CONFIG.enabled ? 1 : 0, true);
+  curveConfigView.setUint32(4, DEFAULT_CURVED_EDGE_CONFIG.segments, true);
+  curveConfigView.setFloat32(8, DEFAULT_CURVED_EDGE_CONFIG.weight, true);
+  curveConfigView.setFloat32(12, 0.0, true); // padding
+  device.queue.writeBuffer(curveConfigBuffer, 0, curveConfigData);
 
   // Flow uniform bind group layout (group 2)
   const flowBindGroupLayout = device.createBindGroupLayout({
@@ -211,6 +259,8 @@ export function createEdgeRenderPipeline(
     flowBindGroupLayout,
     flowUniformBuffer,
     flowBindGroup,
+    curveConfigBuffer,
+    curveConfig: { ...DEFAULT_CURVED_EDGE_CONFIG },
     shaderModule,
     config: finalConfig,
   };
@@ -221,8 +271,7 @@ export function createEdgeRenderPipeline(
  *
  * @param device - GPU device
  * @param pipeline - Edge render pipeline
- * @param positionsX - Node X position buffer
- * @param positionsY - Node Y position buffer
+ * @param positions - Node position buffer (vec2 per node)
  * @param edgeIndices - Edge source/target indices buffer
  * @param edgeAttrs - Edge attributes buffer
  * @returns Bind group for edge data
@@ -230,8 +279,7 @@ export function createEdgeRenderPipeline(
 export function createEdgeBindGroup(
   device: GPUDevice,
   pipeline: EdgeRenderPipeline,
-  positionsX: GPUBuffer,
-  positionsY: GPUBuffer,
+  positions: GPUBuffer,
   edgeIndices: GPUBuffer,
   edgeAttrs: GPUBuffer,
 ): GPUBindGroup {
@@ -239,10 +287,10 @@ export function createEdgeBindGroup(
     label: "Edge Data Bind Group",
     layout: pipeline.edgeBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: positionsX } },
-      { binding: 1, resource: { buffer: positionsY } },
-      { binding: 2, resource: { buffer: edgeIndices } },
-      { binding: 3, resource: { buffer: edgeAttrs } },
+      { binding: 0, resource: { buffer: positions } },
+      { binding: 1, resource: { buffer: edgeIndices } },
+      { binding: 2, resource: { buffer: edgeAttrs } },
+      { binding: 3, resource: { buffer: pipeline.curveConfigBuffer } },
     ],
   });
 }
@@ -287,6 +335,34 @@ export function updateEdgeFlowUniforms(
 }
 
 /**
+ * Update curved edge configuration
+ *
+ * @param device - GPU device
+ * @param pipeline - Edge render pipeline
+ * @param config - Curved edge configuration
+ */
+export function updateCurveConfig(
+  device: GPUDevice,
+  pipeline: EdgeRenderPipeline,
+  config: Partial<CurvedEdgeConfig>,
+): void {
+  // Merge with current config
+  pipeline.curveConfig = {
+    ...pipeline.curveConfig,
+    ...config,
+  };
+
+  // Write to GPU buffer
+  const data = new ArrayBuffer(CURVE_CONFIG_UNIFORM_SIZE);
+  const view = new DataView(data);
+  view.setUint32(0, pipeline.curveConfig.enabled ? 1 : 0, true);
+  view.setUint32(4, pipeline.curveConfig.segments, true);
+  view.setFloat32(8, pipeline.curveConfig.weight, true);
+  view.setFloat32(12, 0.0, true); // padding
+  device.queue.writeBuffer(pipeline.curveConfigBuffer, 0, data);
+}
+
+/**
  * Records edge rendering commands
  *
  * @param pass - Render pass encoder
@@ -309,8 +385,13 @@ export function renderEdges(
   pass.setBindGroup(1, edgeBindGroup);
   pass.setBindGroup(2, pipeline.flowBindGroup);
 
-  // 6 vertices per quad (2 triangles), 1 instance per edge
-  pass.draw(6, edgeCount);
+  // For curved edges, we need more vertices per edge to tessellate the curve
+  // 6 vertices per segment, segments per edge
+  const verticesPerEdge = pipeline.curveConfig.enabled
+    ? 6 * pipeline.curveConfig.segments
+    : 6;
+
+  pass.draw(verticesPerEdge, edgeCount);
 }
 
 /**
@@ -319,6 +400,7 @@ export function renderEdges(
  * @param pipeline - Edge render pipeline to destroy
  */
 export function destroyEdgeRenderPipeline(pipeline: EdgeRenderPipeline): void {
-  // Clean up the flow uniform buffer
+  // Clean up buffers
   pipeline.flowUniformBuffer.destroy();
+  pipeline.curveConfigBuffer.destroy();
 }
