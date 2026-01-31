@@ -15,7 +15,8 @@ struct IntegrationUniforms {
     gravity_strength: f32,      // Pull toward center
     center_x: f32,              // Gravity center X
     center_y: f32,              // Gravity center Y
-    _padding: vec2<u32>,
+    _pad0: u32,                 // Padding for 16-byte alignment
+    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: IntegrationUniforms;
@@ -36,12 +37,8 @@ struct IntegrationUniforms {
 @group(0) @binding(9) var<storage, read> forces_x: array<f32>;
 @group(0) @binding(10) var<storage, read> forces_y: array<f32>;
 
-// Node state flags (for pinned nodes)
-@group(0) @binding(11) var<storage, read> node_flags: array<u32>;
-
-// Flag bits
-const FLAG_PINNED: u32 = 1u;
-const FLAG_HIDDEN: u32 = 2u;
+// NOTE: node_flags removed due to WebGPU 10 storage buffer limit per stage
+// When pinning is needed, we should combine X/Y into vec2 buffers to free up slots
 
 // Clamp vector magnitude
 fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
@@ -61,23 +58,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Check if node is pinned
-    let flags = node_flags[node_idx];
-    let is_pinned = (flags & FLAG_PINNED) != 0u;
-
     // Read current state
     let pos = vec2<f32>(positions_x_in[node_idx], positions_y_in[node_idx]);
     var vel = vec2<f32>(velocities_x_in[node_idx], velocities_y_in[node_idx]);
     let force = vec2<f32>(forces_x[node_idx], forces_y[node_idx]);
-
-    // Pinned nodes don't move
-    if (is_pinned) {
-        positions_x_out[node_idx] = pos.x;
-        positions_y_out[node_idx] = pos.y;
-        velocities_x_out[node_idx] = 0.0;
-        velocities_y_out[node_idx] = 0.0;
-        return;
-    }
 
     // Add gravity (pull toward center)
     let to_center = vec2<f32>(uniforms.center_x, uniforms.center_y) - pos;
@@ -103,13 +87,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     velocities_y_out[node_idx] = vel.y;
 }
 
+// Workgroup shared memory for energy reduction (must be at module scope in WGSL)
+var<workgroup> shared_energy: array<f32, 256>;
+
 // Compute kinetic energy for convergence detection
 @compute @workgroup_size(256)
 fn compute_energy(@builtin(global_invocation_id) global_id: vec3<u32>,
                   @builtin(local_invocation_id) local_id: vec3<u32>) {
-    // Shared memory for reduction
-    var<workgroup> shared_energy: array<f32, 256>;
-
     let node_idx = global_id.x;
     let lid = local_id.x;
 
@@ -158,18 +142,12 @@ fn apply_jitter(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let flags = node_flags[node_idx];
-    if ((flags & FLAG_PINNED) != 0u) {
-        return;
-    }
-
-    // Simple pseudo-random jitter based on node index
-    // A better implementation would use a proper RNG
+    // Pseudo-random jitter using hash-based RNG (node index + alpha as seed).
     let seed = f32(node_idx) * 12.9898 + uniforms.alpha * 78.233;
     let random_x = fract(sin(seed) * 43758.5453) * 2.0 - 1.0;
     let random_y = fract(sin(seed + 1.0) * 43758.5453) * 2.0 - 1.0;
 
-    let jitter_strength = 1.0;  // Could be a uniform
+    let jitter_strength = 1.0;
     positions_x_out[node_idx] = positions_x_in[node_idx] + random_x * jitter_strength;
     positions_y_out[node_idx] = positions_y_in[node_idx] + random_y * jitter_strength;
 }

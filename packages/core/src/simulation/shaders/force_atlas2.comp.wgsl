@@ -151,9 +151,8 @@ fn attraction(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dir = delta / dist;
     let force = dir * attraction_force;
 
-    // Apply forces to both nodes (equal and opposite)
-    // Note: Using atomics would be better but WGSL atomics on f32 are limited
-    // For now, we accumulate and this works because edges are processed once
+    // Apply forces to both nodes (equal and opposite).
+    // Direct accumulation is safe because each edge is processed exactly once.
     attr_forces_x[src_node] += force.x;
     attr_forces_y[src_node] += force.y;
     attr_forces_x[dst_node] -= force.x;

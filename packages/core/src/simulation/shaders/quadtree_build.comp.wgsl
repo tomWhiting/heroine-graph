@@ -142,18 +142,14 @@ fn insert_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // We accumulate weighted position and count
     atomicAdd(&tree_count[node_idx], 1u);
 
-    // For center of mass, we need to use atomics on floats
-    // WGSL doesn't have atomic float add, so we use a simple approach:
-    // Store sum of positions, divide by count later
-    // This requires an additional pass or workaround
-
-    // For now, just mark that this cell has particles
-    // We'll compute proper center of mass in next phase
+    // For center of mass, we need to use atomics on floats.
+    // WGSL lacks atomic float add, so we mark cell occupancy here
+    // and compute proper center of mass in Phase 3 (compute_leaf_com).
 }
 
-// Phase 3: Compute leaf centers of mass
-// This is a simplified approach - each leaf cell computes its CoM
-// by iterating through all particles (not ideal but works)
+// Phase 3: Compute leaf centers of mass.
+// Each leaf cell iterates through all particles to find those within its bounds,
+// then computes the center of mass from matching particles.
 @compute @workgroup_size(256)
 fn compute_leaf_com(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let leaf_local_idx = global_id.x;

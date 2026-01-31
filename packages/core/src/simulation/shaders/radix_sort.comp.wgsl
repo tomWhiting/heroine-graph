@@ -120,6 +120,23 @@ fn scatter(@builtin(global_invocation_id) global_id: vec3<u32>,
     }
 }
 
+// Clear histogram buffer before each radix pass
+// Each thread clears multiple histogram entries to cover all workgroup buckets
+// Must be dispatched with enough threads to cover workgroup_count * RADIX_SIZE elements
+@compute @workgroup_size(256)
+fn clear_histogram(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    // Use node_count to derive the maximum histogram index we need to clear
+    // Histogram size = ceil(node_count / WORKGROUP_SIZE) * RADIX_SIZE
+    // We over-clear slightly to ensure all buckets are zeroed
+    let workgroup_count = (uniforms.node_count + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
+    let max_histogram_size = workgroup_count * RADIX_SIZE;
+
+    if (idx < max_histogram_size) {
+        atomicStore(&histogram[idx], 0u);
+    }
+}
+
 // Simple counting sort for small arrays or single-pass fallback
 // Each thread computes its sorted position by counting smaller keys
 // O(n²) but GPU-parallel and works correctly with WGSL uniform control flow
