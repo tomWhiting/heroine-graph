@@ -103,6 +103,13 @@ export interface ForceAlgorithm {
   readonly info: ForceAlgorithmInfo;
 
   /**
+   * Whether this algorithm applies its own center gravity.
+   * When true, the integration shader skips its built-in gravity
+   * to avoid double-applying the center pull.
+   */
+  readonly handlesGravity: boolean;
+
+  /**
    * Create GPU pipelines for this algorithm
    *
    * @param context - GPU context

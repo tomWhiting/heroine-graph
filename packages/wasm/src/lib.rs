@@ -92,6 +92,13 @@ impl HeroineGraphWasm {
         self.engine.node_count()
     }
 
+    /// Get the upper bound on node indices (max index + 1).
+    /// May be larger than nodeCount if nodes have been removed.
+    #[wasm_bindgen(js_name = nodeBound)]
+    pub fn node_bound(&self) -> u32 {
+        self.engine.node_bound()
+    }
+
     /// Get a node's X position.
     #[wasm_bindgen(js_name = getNodeX)]
     pub fn get_node_x(&self, node_id: u32) -> Option<f32> {

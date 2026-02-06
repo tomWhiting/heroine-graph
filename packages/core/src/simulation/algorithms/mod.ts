@@ -45,6 +45,7 @@ export {
   uploadRelativityAtlasEdges,
   validateCSRData,
 } from "./relativity-atlas.ts";
+export type { CSRData } from "./relativity-atlas.ts";
 
 /**
  * Initialize the global algorithm registry with built-in algorithms

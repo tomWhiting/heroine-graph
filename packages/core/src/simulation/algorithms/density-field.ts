@@ -76,6 +76,7 @@ class DensityFieldBuffers implements AlgorithmBuffers {
  */
 export class DensityFieldAlgorithm implements ForceAlgorithm {
   readonly info = DENSITY_FIELD_ALGORITHM_INFO;
+  readonly handlesGravity = false;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;

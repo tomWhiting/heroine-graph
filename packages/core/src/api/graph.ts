@@ -11,12 +11,14 @@ import type {
   BoundingBox,
   EdgeFlowConfig,
   EdgeId,
+  EdgeInput,
   EventHandler,
   EventMap,
   GraphConfig,
   GraphInput,
   GraphTypedInput,
   NodeId,
+  NodeInput,
   SimulationStatus,
   Vec2,
   ViewportState,
@@ -86,12 +88,21 @@ import {
   type CollisionBindGroup,
   type CollisionBuffers,
   type CollisionPipeline,
+  type GridCollisionPipeline,
+  type GridCollisionBuffers,
+  type GridCollisionBindGroups,
   createCollisionBindGroup,
   createCollisionBuffers,
   createCollisionPipeline,
+  createGridCollisionPipeline,
+  createGridCollisionBuffers,
+  createGridCollisionBindGroups,
   destroyCollisionBuffers,
+  destroyGridCollisionBuffers,
   recordCollisionPass,
+  recordGridCollisionPass,
   updateCollisionUniforms,
+  updateGridCollisionUniforms,
   uploadNodeSizes,
 } from "../simulation/collision.ts";
 import {
@@ -151,19 +162,29 @@ import {
   type NodeTypeStyleMap,
   type TypeStyleManager,
 } from "../styling/mod.ts";
+import { initialCapacity, growCapacity } from "./buffer_capacity.ts";
+import { MutableGraphState } from "./graph_state.ts";
 
 /**
- * WASM engine interface for spatial queries and graph data.
+ * WASM engine interface for spatial queries and graph structure.
  * This matches the HeroineGraphWasm API exposed by the WASM module.
  */
 interface WasmEngine extends SpatialQueryEngine {
   findNearestNode(x: number, y: number): number | undefined;
-  /** Get edges in CSR format: [offsets..., targets...] */
-  getEdgesCsr(): Uint32Array;
-  /** Get inverse edges (incoming) in CSR format: [offsets..., sources...] */
-  getInverseEdgesCsr(): Uint32Array;
-  /** Get node degrees: [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...] */
-  getNodeDegrees(): Uint32Array;
+  /** Clear all graph data */
+  clear(): void;
+  /** Add a single node at position */
+  addNode(x: number, y: number): number;
+  /** Add multiple nodes from interleaved positions [x0, y0, x1, y1, ...] */
+  addNodesFromPositions(positions: Float32Array): number;
+  /** Add an edge between two nodes */
+  addEdge(source: number, target: number, weight: number): number | undefined;
+  /** Add edges from interleaved pairs [src0, tgt0, src1, tgt1, ...] */
+  addEdgesFromPairs(edges: Uint32Array): number;
+  /** Remove a node by slot index */
+  removeNode(id: number): boolean;
+  /** Remove an edge by ID */
+  removeEdge(id: number): boolean;
 }
 
 /**
@@ -204,6 +225,10 @@ interface GPUBuffers {
   edgeIndices: GPUBuffer;
   edgeAttributes: GPUBuffer;
   viewportUniforms: GPUBuffer;
+  /** Allocated node capacity (may be > nodeCount for incremental mutations) */
+  nodeCapacity: number;
+  /** Allocated edge capacity (may be > edgeCount for incremental mutations) */
+  edgeCapacity: number;
 }
 
 /**
@@ -278,6 +303,7 @@ export class HeroineGraph {
 
   // State
   private state: GraphState;
+  private graphState: MutableGraphState | null = null;
   private disposed: boolean = false;
 
   // Components
@@ -325,6 +351,13 @@ export class HeroineGraph {
   private collisionPipeline: CollisionPipeline | null = null;
   private collisionBuffers: CollisionBuffers | null = null;
   private collisionBindGroup: CollisionBindGroup | null = null;
+
+  // Grid collision resources (O(n·k) spatial hash for large graphs)
+  private gridCollisionPipeline: GridCollisionPipeline | null = null;
+  private gridCollisionBuffers: GridCollisionBuffers | null = null;
+  private gridCollisionBindGroups: GridCollisionBindGroups | null = null;
+  private maxNodeRadius: number = 5.0;
+  private frameBounds: BoundingBox | undefined;
 
   // Interaction
   private hitTester: HitTester;
@@ -437,12 +470,8 @@ export class HeroineGraph {
       prioritizeNodes: true,
     });
 
-    // Note: WASM spatial engine is not wired up yet - it needs to be populated
-    // with node positions first. Using brute-force fallback for now.
-    // TODO: Populate WASM engine with nodes and wire up for O(log n) hit testing
-    if (this.debug) {
-      console.log("Hit tester using brute-force fallback");
-    }
+    // WASM spatial engine is populated during load() with graph data.
+    // Enables O(log n) spatial queries for hit testing.
 
     // Initialize pointer manager for interaction
     this.pointerManager = createPointerManager({
@@ -515,6 +544,7 @@ export class HeroineGraph {
     this.edgePipeline = createEdgeRenderPipeline(this.gpuContext, { format });
     this.simulationPipeline = createSimulationPipeline(this.gpuContext);
     this.collisionPipeline = createCollisionPipeline(this.gpuContext);
+    this.gridCollisionPipeline = createGridCollisionPipeline(this.gpuContext);
 
     // Create render config buffer
     // Struct layout (must match node.frag.wgsl RenderConfig):
@@ -615,6 +645,14 @@ export class HeroineGraph {
     const { device } = this.gpuContext;
     const alpha = this.simulationController.state.alpha;
 
+    // When the current algorithm handles gravity itself, suppress integration
+    // gravity to avoid double-applying center pull. The algorithm's gravity
+    // pass uses mass-weighted gravity; the integration shader's is uniform.
+    const algorithmHandlesGravity = this.currentAlgorithm?.handlesGravity ?? false;
+    const effectiveForceConfig = algorithmHandlesGravity
+      ? { ...this.forceConfig, centerStrength: 0 }
+      : this.forceConfig;
+
     // Update uniforms with current alpha and force config
     updateSimulationUniforms(
       device,
@@ -622,21 +660,23 @@ export class HeroineGraph {
       this.state.nodeCount,
       this.state.edgeCount,
       alpha,
-      this.forceConfig,
+      effectiveForceConfig,
     );
+
+    // Compute bounds once per frame for all consumers (algorithm context, collision grid).
+    // CPU-side position arrays are synced from GPU every SYNC_INTERVAL frames, so bounds
+    // may be slightly stale. The computeBoundsFromPositions function adds a margin for drift.
+    this.frameBounds = this.state.parsedGraph
+      ? computeBoundsFromPositions(
+          this.state.parsedGraph.positionsX,
+          this.state.parsedGraph.positionsY,
+          this.state.nodeCount,
+        )
+      : undefined;
 
     // Update algorithm uniforms if using custom algorithm
     if (this.currentAlgorithm && this.algorithmBuffers && this.algorithmBindGroups) {
-      // Compute bounds from CPU-side position arrays for spatial algorithms (e.g., Barnes-Hut).
-      // These arrays are synced from GPU every SYNC_INTERVAL frames, so bounds may be slightly
-      // stale. The computeBoundsFromPositions function adds a margin to account for this drift.
-      const bounds = this.state.parsedGraph
-        ? computeBoundsFromPositions(
-            this.state.parsedGraph.positionsX,
-            this.state.parsedGraph.positionsY,
-            this.state.nodeCount,
-          )
-        : undefined;
+      const bounds = this.frameBounds;
 
       // Spatial algorithms (Barnes-Hut, Density Field) require valid bounds.
       // If bounds are undefined, position data is corrupted (all NaN/Infinity).
@@ -692,23 +732,49 @@ export class HeroineGraph {
       this.collisionBuffers &&
       this.collisionBindGroup
     ) {
-      // Update collision uniforms with current config
-      updateCollisionUniforms(
-        device,
-        this.collisionBuffers,
-        this.state.nodeCount,
-        this.forceConfig,
-      );
+      const nodeCount = this.state.nodeCount;
+      const useGridCollision = nodeCount > 5000 &&
+        this.gridCollisionPipeline &&
+        this.gridCollisionBuffers &&
+        this.gridCollisionBindGroups;
 
-      // Record collision pass(es)
-      recordCollisionPass(
-        encoder,
-        this.collisionPipeline,
-        this.collisionBindGroup,
-        this.state.nodeCount,
-        this.forceConfig.collisionIterations,
-        this.state.nodeCount > 5000, // Use tiled version for large graphs
-      );
+      if (useGridCollision) {
+        // Grid collision: O(n·k) spatial hash for large graphs.
+        // Reuse frame bounds computed at top of recordSimulationCommands.
+        if (this.frameBounds) {
+          updateGridCollisionUniforms(
+            device,
+            this.gridCollisionBuffers!,
+            nodeCount,
+            this.forceConfig,
+            this.frameBounds,
+            this.maxNodeRadius,
+          );
+          recordGridCollisionPass(
+            encoder,
+            this.gridCollisionPipeline!,
+            this.gridCollisionBindGroups!,
+            this.gridCollisionBuffers!,
+            nodeCount,
+            this.forceConfig.collisionIterations,
+          );
+        } else {
+          // Bounds unavailable — fall back to tiled collision
+          updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+          recordCollisionPass(
+            encoder, this.collisionPipeline, this.collisionBindGroup,
+            nodeCount, this.forceConfig.collisionIterations, true,
+          );
+        }
+      } else {
+        // Tiled/simple collision: O(n^2) for small graphs (<=5000 nodes)
+        updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+        recordCollisionPass(
+          encoder, this.collisionPipeline, this.collisionBindGroup,
+          nodeCount, this.forceConfig.collisionIterations,
+          nodeCount > 1000,
+        );
+      }
     }
 
     // Tick the simulation controller
@@ -753,17 +819,9 @@ export class HeroineGraph {
 
     // Rebuild algorithm bind groups with swapped position/force buffers
     if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
-      // Compute bounds from CPU-side position arrays for spatial algorithms.
-      // Bind group creation doesn't use bounds, but we include them for consistency
-      // with the AlgorithmRenderContext interface.
-      const bounds = this.state.parsedGraph
-        ? computeBoundsFromPositions(
-            this.state.parsedGraph.positionsX,
-            this.state.parsedGraph.positionsY,
-            this.state.nodeCount,
-          )
-        : undefined;
-
+      // Reuse frame bounds computed in recordSimulationCommands (same frame).
+      // Bind group creation doesn't use bounds, but the AlgorithmRenderContext
+      // interface includes them for consistency.
       const context: AlgorithmRenderContext = {
         device: this.gpuContext.device,
         positions: this.simBuffers.positions,
@@ -771,7 +829,7 @@ export class HeroineGraph {
         nodeCount: this.state.nodeCount,
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
-        bounds,
+        bounds: this.frameBounds,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -782,13 +840,26 @@ export class HeroineGraph {
       );
     }
 
-    // Rebuild collision bind group with swapped position buffers
+    // Rebuild collision bind group with swapped position buffers.
+    // Collision binds to positionsOut (integration's write target) so corrections
+    // persist through the ping-pong swap.
     if (this.collisionPipeline && this.collisionBuffers) {
       this.collisionBindGroup = createCollisionBindGroup(
         this.gpuContext.device,
         this.collisionPipeline,
         this.collisionBuffers,
-        this.simBuffers.positions,
+        this.simBuffers.positionsOut,
+      );
+    }
+
+    // Rebuild grid collision bind groups with swapped position buffers
+    if (this.gridCollisionPipeline && this.gridCollisionBuffers && this.collisionBuffers) {
+      this.gridCollisionBindGroups = createGridCollisionBindGroups(
+        this.gpuContext.device,
+        this.gridCollisionPipeline,
+        this.gridCollisionBuffers,
+        this.collisionBuffers.nodeSizes,
+        this.simBuffers.positionsOut,
       );
     }
 
@@ -1007,8 +1078,14 @@ export class HeroineGraph {
       });
     }
 
-    // Create GPU buffers for rendering
-    this.createBuffers(parsed);
+    // Create mutable graph state from parsed data
+    this.graphState = MutableGraphState.fromParsedGraph(parsed);
+
+    // Populate WASM engine with graph data for spatial indexing
+    this.populateWasmEngine(parsed);
+
+    // Create GPU buffers for rendering (with capacity from graph state)
+    this.createBuffers(parsed, this.graphState.nodeCapacity, this.graphState.edgeCapacity);
 
     // Update state
     this.state.loaded = true;
@@ -1064,11 +1141,15 @@ export class HeroineGraph {
     // causing out-of-bounds reads and NaN propagation that crashes the GPU.
     this.destroySimulationBuffers();
 
-    // Create simulation buffers
+    // Create simulation buffers with capacity headroom for mutations
+    const nodeCap = this.buffers?.nodeCapacity ?? parsed.nodeCount;
+    const edgeCap = this.buffers?.edgeCapacity ?? parsed.edgeCount;
     this.simBuffers = createSimulationBuffers(
       device,
       parsed.nodeCount,
       parsed.edgeCount,
+      nodeCap,
+      edgeCap,
     );
 
     // Copy initial positions to simulation buffers
@@ -1124,11 +1205,11 @@ export class HeroineGraph {
       );
     }
 
-    // Create algorithm-specific buffers and bind groups
+    // Create algorithm-specific buffers and bind groups (use capacity)
     if (this.currentAlgorithm && this.algorithmPipelines) {
       this.algorithmBuffers = this.currentAlgorithm.createBuffers(
         device,
-        parsed.nodeCount,
+        nodeCap,
       );
 
       // Compute initial bounds from the parsed graph positions.
@@ -1160,8 +1241,8 @@ export class HeroineGraph {
       this.uploadAlgorithmEdgeData(device);
     }
 
-    // Create collision detection resources
-    this.initializeCollisionResources(device, parsed.nodeCount, parsed.nodeAttributes);
+    // Create collision detection resources (use capacity, not count)
+    this.initializeCollisionResources(device, nodeCap, parsed.nodeAttributes);
   }
 
   /**
@@ -1184,26 +1265,47 @@ export class HeroineGraph {
     // Create new collision buffers
     this.collisionBuffers = createCollisionBuffers(device, nodeCount);
 
-    // Extract node sizes from attributes (attribute index 2 is radius)
-    // Node attributes layout: [x, y, radius, color_r, color_g, color_b, color_a, state] per node
-    const ATTRIBUTES_PER_NODE = 8;
+    // Extract node sizes from attributes and compute max radius
+    // Node attributes layout: [radius, r, g, b, selected, hovered] per node (6 floats)
+    const ATTRIBUTES_PER_NODE = 6;
     const nodeSizes = new Float32Array(nodeCount);
+    let maxRadius = 0;
     for (let i = 0; i < nodeCount; i++) {
-      const radius = nodeAttributes[i * ATTRIBUTES_PER_NODE + 2];
-      nodeSizes[i] = radius > 0 ? radius : 5.0; // Default radius if not set
+      const radius = nodeAttributes[i * ATTRIBUTES_PER_NODE];
+      const r = radius > 0 ? radius : 5.0; // Default radius if not set
+      nodeSizes[i] = r;
+      if (r > maxRadius) maxRadius = r;
     }
+    this.maxNodeRadius = maxRadius > 0 ? maxRadius : 5.0;
     uploadNodeSizes(device, this.collisionBuffers, nodeSizes);
 
-    // Create collision bind group
+    // Create collision bind group — bind to positionsOut so collision corrections
+    // persist through the ping-pong swap (integration writes positionsOut, collision
+    // modifies positionsOut, swap rotates positionsOut into next frame's read buffer)
     this.collisionBindGroup = createCollisionBindGroup(
       device,
       this.collisionPipeline,
       this.collisionBuffers,
-      this.simBuffers.positions,
+      this.simBuffers.positionsOut,
     );
 
     // Update collision uniforms
     updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+
+    // Create grid collision resources (spatial hash for O(n·k) at >5000 nodes)
+    if (this.gridCollisionPipeline) {
+      if (this.gridCollisionBuffers) {
+        destroyGridCollisionBuffers(this.gridCollisionBuffers);
+      }
+      this.gridCollisionBuffers = createGridCollisionBuffers(device, nodeCount);
+      this.gridCollisionBindGroups = createGridCollisionBindGroups(
+        device,
+        this.gridCollisionPipeline,
+        this.gridCollisionBuffers,
+        this.collisionBuffers.nodeSizes,
+        this.simBuffers.positionsOut,
+      );
+    }
 
     if (this.debug) {
       console.log(`Collision detection initialized for ${nodeCount} nodes`);
@@ -1211,45 +1313,94 @@ export class HeroineGraph {
   }
 
   /**
-   * Upload edge data for algorithm-specific formats (CSR for Relativity Atlas)
+   * Populate the WASM engine with graph data from a ParsedGraph.
+   * Clears any existing data and bulk-loads nodes and edges.
+   * This enables the rstar spatial index for O(log n) hit testing.
+   */
+  private populateWasmEngine(parsed: ParsedGraph): void {
+    if (!this.wasmEngine) return;
+
+    this.wasmEngine.clear();
+
+    // Bulk-add nodes from interleaved positions
+    const nodeCount = parsed.positionsX.length;
+    const positions = new Float32Array(nodeCount * 2);
+    for (let i = 0; i < nodeCount; i++) {
+      positions[i * 2] = parsed.positionsX[i];
+      positions[i * 2 + 1] = parsed.positionsY[i];
+    }
+    this.wasmEngine.addNodesFromPositions(positions);
+
+    // Bulk-add edges from interleaved pairs
+    const edgeCount = parsed.edgeSources.length;
+    if (edgeCount > 0) {
+      const edgePairs = new Uint32Array(edgeCount * 2);
+      for (let i = 0; i < edgeCount; i++) {
+        edgePairs[i * 2] = parsed.edgeSources[i];
+        edgePairs[i * 2 + 1] = parsed.edgeTargets[i];
+      }
+      this.wasmEngine.addEdgesFromPairs(edgePairs);
+    }
+
+    this.wasmEngine.rebuildSpatialIndex();
+
+    if (this.debug) {
+      console.log(`WASM engine populated: ${nodeCount} nodes, ${edgeCount} edges`);
+    }
+  }
+
+  /**
+   * Upload edge data for algorithm-specific formats (CSR for Relativity Atlas).
+   *
+   * CSR data is generated from MutableGraphState's edge arrays, which are the
+   * source of truth for GPU buffer slot indices. This ensures the CSR indices
+   * match the actual position buffer layout.
    */
   private uploadAlgorithmEdgeData(device: GPUDevice): void {
-    if (!this.currentAlgorithm || !this.algorithmBuffers || !this.wasmEngine) {
+    if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
     }
 
-    // Handle Relativity Atlas CSR data upload
     if (this.currentAlgorithm instanceof RelativityAtlasAlgorithm) {
-      const csrData = this.wasmEngine.getEdgesCsr();
-      const inverseCsrData = this.wasmEngine.getInverseEdgesCsr();
+      const gs = this.graphState;
+      const forward = gs.generateForwardCSR();
+      const inverse = gs.generateInverseCSR();
 
       uploadRelativityAtlasEdges(
         device,
         this.algorithmBuffers,
-        csrData,
-        inverseCsrData,
+        { offsets: forward.offsets, indices: forward.targets },
+        { offsets: inverse.offsets, indices: inverse.sources },
+        gs.nodeHighWater,
       );
 
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
       if (this.debug) {
-        console.log(`Relativity Atlas: uploaded CSR data (${csrData.length} forward, ${inverseCsrData.length} inverse elements)`);
+        console.log(
+          `Relativity Atlas: uploaded CSR (${gs.nodeHighWater} nodes, ${gs.edgeCount} edges)`,
+        );
       }
     }
   }
 
   /**
-   * Create GPU buffers from parsed graph
+   * Create GPU buffers from parsed graph.
+   * Allocates with capacity headroom for incremental mutations.
    */
-  private createBuffers(parsed: ParsedGraph): void {
+  private createBuffers(parsed: ParsedGraph, nodeCap?: number, edgeCap?: number): void {
     const { device } = this.gpuContext;
 
     // Destroy old buffers
     this.destroyBuffers();
 
-    // Create position buffer (vec2 per node)
     const nodeCount = parsed.positionsX.length;
+    const edgeCount = parsed.edgeSources.length;
+    const nodeCapacity = Math.max(nodeCap ?? initialCapacity(nodeCount), nodeCount);
+    const edgeCapacity = Math.max(edgeCap ?? initialCapacity(edgeCount), edgeCount);
+
+    // Create position buffer (vec2 per node) — sized to capacity
     const positionsVec2 = new Float32Array(nodeCount * 2);
     for (let i = 0; i < nodeCount; i++) {
       positionsVec2[i * 2] = parsed.positionsX[i];
@@ -1258,27 +1409,27 @@ export class HeroineGraph {
 
     const positions = device.createBuffer({
       label: "Positions",
-      size: positionsVec2.byteLength,
+      size: nodeCapacity * 8, // vec2<f32> = 8 bytes
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(positions, 0, toArrayBuffer(positionsVec2));
 
-    // Create node attributes buffer
+    // Create node attributes buffer (6 floats per node) — sized to capacity
     const nodeAttributes = device.createBuffer({
       label: "Node Attributes",
-      size: parsed.nodeAttributes.byteLength,
+      size: nodeCapacity * 6 * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(nodeAttributes, 0, toArrayBuffer(parsed.nodeAttributes));
 
-    // Create edge buffers
+    // Create edge buffers — sized to capacity
     const edgeIndicesData = createEdgeIndicesBuffer(
       parsed.edgeSources,
       parsed.edgeTargets,
     );
     const edgeIndices = device.createBuffer({
       label: "Edge Indices",
-      size: Math.max(edgeIndicesData.byteLength, 4), // Minimum size
+      size: Math.max(edgeCapacity * 2 * 4, 4), // 2 u32 per edge, minimum 4 bytes
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     if (edgeIndicesData.byteLength > 0) {
@@ -1287,7 +1438,7 @@ export class HeroineGraph {
 
     const edgeAttributes = device.createBuffer({
       label: "Edge Attributes",
-      size: Math.max(parsed.edgeAttributes.byteLength, 4),
+      size: Math.max(edgeCapacity * 8 * 4, 4), // 8 floats per edge
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     if (parsed.edgeAttributes.byteLength > 0) {
@@ -1301,6 +1452,8 @@ export class HeroineGraph {
       edgeIndices,
       edgeAttributes,
       viewportUniforms: this.viewportUniformBuffer.buffer,
+      nodeCapacity,
+      edgeCapacity,
     };
 
     // Create bind groups
@@ -1347,6 +1500,898 @@ export class HeroineGraph {
 
     this.nodeBindGroup = null;
     this.edgeBindGroup = null;
+  }
+
+  // ==========================================================================
+  // Public API - Incremental Mutations
+  // ==========================================================================
+
+  /**
+   * Add a single node to the graph.
+   *
+   * @param node - Node input data
+   * @returns The assigned node ID (the user-provided id)
+   */
+  async addNode(node: NodeInput): Promise<NodeId> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) {
+      throw new HeroineGraphError(ErrorCode.INVALID_GRAPH_DATA, "Cannot add node: graph not loaded");
+    }
+
+    const gs = this.graphState;
+
+    // Check capacity
+    if (gs.needsNodeReallocation(1)) {
+      await this.reallocateNodeBuffers(growCapacity(gs.nodeHighWater + 1, gs.nodeCapacity));
+    }
+
+    // Allocate slot
+    const slot = gs.allocateNodeSlot();
+    const nodeId = node.id;
+    gs.nodeIdMap.add(nodeId);
+
+    // Parse position
+    const x = node.x ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
+    const y = node.y ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
+
+    // Parse attributes
+    const radius = node.radius ?? 5;
+    const [r, g, b] = node.color ? parseColorToRGB(node.color) : [0.4, 0.6, 0.9];
+
+    // Write to CPU shadow
+    gs.positionsX[slot] = x;
+    gs.positionsY[slot] = y;
+    const attrBase = slot * 6;
+    gs.nodeAttributes[attrBase] = radius;
+    gs.nodeAttributes[attrBase + 1] = r;
+    gs.nodeAttributes[attrBase + 2] = g;
+    gs.nodeAttributes[attrBase + 3] = b;
+    gs.nodeAttributes[attrBase + 4] = 0; // selected
+    gs.nodeAttributes[attrBase + 5] = 0; // hovered
+
+    // Write to GPU buffers (targeted writes)
+    const { device } = this.gpuContext;
+    const posVec2 = new Float32Array([x, y]);
+    const attrData = new Float32Array([radius, r, g, b, 0, 0]);
+    const zeroVec2 = new Float32Array([0, 0]);
+
+    device.queue.writeBuffer(this.simBuffers.positions, slot * 8, posVec2);
+    device.queue.writeBuffer(this.simBuffers.positionsOut, slot * 8, posVec2);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * 24, attrData);
+    device.queue.writeBuffer(this.simBuffers.velocities, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
+
+    // Update WASM engine
+    if (this.wasmEngine) {
+      this.wasmEngine.addNode(x, y);
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+
+    // Update counts
+    this.state.nodeCount = gs.nodeCount;
+    this.simBuffers.nodeCount = gs.nodeHighWater;
+
+    // Update parsedGraph reference to point to graphState arrays
+    this.syncParsedGraphFromState();
+
+    // Ensure algorithm buffers can handle the new node count
+    this.ensureAlgorithmCapacity();
+
+    // Reheat simulation
+    this.bumpSimulationAlpha(0.1);
+
+    // Emit event
+    this.events.emit({
+      type: "node:add",
+      timestamp: Date.now(),
+      nodeId: nodeId,
+      index: slot,
+    });
+
+    return slot;
+  }
+
+  /**
+   * Remove a single node and all its connected edges.
+   *
+   * @param id - Node ID to remove
+   * @returns true if the node was found and removed
+   */
+  async removeNode(id: NodeId | string): Promise<boolean> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return false;
+
+    const gs = this.graphState;
+    const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
+    if (slot === undefined) return false;
+
+    // Remove all connected edges first
+    const connectedEdges = new Set(gs.getConnectedEdges(slot));
+    for (const edgeIndex of connectedEdges) {
+      await this.removeEdgeByIndex(edgeIndex);
+    }
+
+    // Free the node slot (zeros CPU shadow)
+    gs.nodeIdMap.remove(gs.nodeIdMap.getId(slot)!);
+    gs.freeNodeSlot(slot);
+
+    // Write zeros to GPU buffers
+    const { device } = this.gpuContext;
+    const zeroVec2 = new Float32Array([0, 0]);
+    const zeroAttrs = new Float32Array(6);
+
+    device.queue.writeBuffer(this.simBuffers.positions, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.simBuffers.positionsOut, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * 24, zeroAttrs);
+    device.queue.writeBuffer(this.simBuffers.velocities, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
+    device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
+
+    // Update WASM engine
+    if (this.wasmEngine) {
+      this.wasmEngine.removeNode(slot);
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+
+    // Update counts
+    this.state.nodeCount = gs.nodeCount;
+    this.simBuffers.nodeCount = gs.nodeHighWater;
+
+    this.syncParsedGraphFromState();
+    this.bumpSimulationAlpha(0.05);
+
+    // Emit event
+    this.events.emit({
+      type: "node:remove",
+      timestamp: Date.now(),
+      nodeId: id,
+      index: slot,
+    });
+
+    return true;
+  }
+
+  /**
+   * Add a single edge between two existing nodes.
+   *
+   * @param edge - Edge input data
+   * @returns The edge index, or undefined if source/target not found
+   */
+  async addEdge(edge: EdgeInput): Promise<EdgeId | undefined> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return undefined;
+
+    const gs = this.graphState;
+
+    // Resolve source/target to slot indices
+    const srcSlot = gs.nodeIdMap.get(edge.source);
+    const tgtSlot = gs.nodeIdMap.get(edge.target);
+    if (srcSlot === undefined || tgtSlot === undefined) return undefined;
+
+    // Check capacity
+    if (gs.needsEdgeReallocation(1)) {
+      await this.reallocateEdgeBuffers(growCapacity(gs.edgeCount + 1, gs.edgeCapacity));
+    }
+
+    // Allocate slot
+    const slot = gs.allocateEdgeSlot();
+    const edgeId = (edge as Record<string, unknown>)["id"] as string | number | undefined ?? `edge_${slot}`;
+    gs.edgeIdMap.add(edgeId);
+
+    // Parse attributes
+    const width = edge.width ?? 1;
+    const [r, g, b] = edge.color ? parseColorToRGB(edge.color) : [0.5, 0.5, 0.5];
+
+    // Write to CPU shadow
+    gs.edgeSources[slot] = srcSlot;
+    gs.edgeTargets[slot] = tgtSlot;
+    const eAttrBase = slot * 8;
+    gs.edgeAttributes[eAttrBase] = width;
+    gs.edgeAttributes[eAttrBase + 1] = r;
+    gs.edgeAttributes[eAttrBase + 2] = g;
+    gs.edgeAttributes[eAttrBase + 3] = b;
+    gs.edgeAttributes[eAttrBase + 4] = 0; // selected
+    gs.edgeAttributes[eAttrBase + 5] = 0; // hovered
+    gs.edgeAttributes[eAttrBase + 6] = 0; // curvature
+    gs.edgeAttributes[eAttrBase + 7] = 0; // reserved
+
+    // Update adjacency
+    gs.addEdgeAdjacency(slot, srcSlot, tgtSlot);
+
+    // Write to GPU buffers
+    const { device } = this.gpuContext;
+    const edgeIndicesData = new Uint32Array([srcSlot, tgtSlot]);
+    const edgeAttrData = new Float32Array([width, r, g, b, 0, 0, 0, 0]);
+    const srcData = new Uint32Array([srcSlot]);
+    const tgtData = new Uint32Array([tgtSlot]);
+
+    device.queue.writeBuffer(this.buffers.edgeIndices, slot * 8, edgeIndicesData);
+    device.queue.writeBuffer(this.buffers.edgeAttributes, slot * 32, edgeAttrData);
+    device.queue.writeBuffer(this.simBuffers.edgeSources, slot * 4, srcData);
+    device.queue.writeBuffer(this.simBuffers.edgeTargets, slot * 4, tgtData);
+
+    // Update WASM engine
+    if (this.wasmEngine) {
+      const weight = edge.weight ?? 1.0;
+      this.wasmEngine.addEdge(srcSlot, tgtSlot, weight);
+    }
+
+    // Update counts
+    this.state.edgeCount = gs.edgeCount;
+
+    this.syncParsedGraphFromState();
+    this.bumpSimulationAlpha(0.05);
+
+    // Emit event
+    this.events.emit({
+      type: "edge:add",
+      timestamp: Date.now(),
+      edgeId: edgeId,
+      sourceId: edge.source,
+      targetId: edge.target,
+    });
+
+    return slot;
+  }
+
+  /**
+   * Remove a single edge.
+   *
+   * @param id - Edge ID to remove
+   * @returns true if the edge was found and removed
+   */
+  async removeEdge(id: EdgeId | string): Promise<boolean> {
+    if (!this.graphState) return false;
+
+    const gs = this.graphState;
+    const slot = typeof id === "number" && id < gs.edgeCount ? id : gs.edgeIdMap.get(id);
+    if (slot === undefined) return false;
+
+    return this.removeEdgeByIndex(slot);
+  }
+
+  /**
+   * Internal: Remove an edge by its slot index using swap-remove.
+   */
+  private async removeEdgeByIndex(index: number): Promise<boolean> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return false;
+
+    const gs = this.graphState;
+    if (index >= gs.edgeCount) return false;
+
+    // Get the ID of the edge being removed
+    const removedId = gs.edgeIdMap.getId(index);
+    if (removedId !== undefined) {
+      gs.edgeIdMap.remove(removedId);
+    }
+
+    // If not the last edge, we need to fix up the swapped edge's ID mapping
+    const lastIndex = gs.edgeCount - 1;
+    const swappedId = index < lastIndex ? gs.edgeIdMap.getId(lastIndex) : undefined;
+
+    // Perform swap-remove on CPU shadow
+    const swappedFromIndex = gs.freeEdgeSlot(index);
+
+    // Update the swapped edge's ID map entry
+    if (swappedId !== undefined && swappedFromIndex >= 0) {
+      gs.edgeIdMap.remove(swappedId);
+      gs.edgeIdMap.add(swappedId); // Re-add at new position
+    }
+
+    // Write the swapped edge data to GPU at the vacated slot
+    if (swappedFromIndex >= 0 && index < gs.edgeCount) {
+      const { device } = this.gpuContext;
+      const edgeIndicesData = new Uint32Array([gs.edgeSources[index], gs.edgeTargets[index]]);
+      const edgeAttrData = gs.edgeAttributes.subarray(index * 8, index * 8 + 8);
+      const srcData = new Uint32Array([gs.edgeSources[index]]);
+      const tgtData = new Uint32Array([gs.edgeTargets[index]]);
+
+      device.queue.writeBuffer(this.buffers.edgeIndices, index * 8, edgeIndicesData);
+      device.queue.writeBuffer(this.buffers.edgeAttributes, index * 32, new Float32Array(edgeAttrData));
+      device.queue.writeBuffer(this.simBuffers.edgeSources, index * 4, srcData);
+      device.queue.writeBuffer(this.simBuffers.edgeTargets, index * 4, tgtData);
+    }
+
+    // Update WASM engine
+    if (this.wasmEngine && removedId !== undefined) {
+      this.wasmEngine.removeEdge(
+        typeof removedId === "number" ? removedId : index,
+      );
+    }
+
+    // Update counts
+    this.state.edgeCount = gs.edgeCount;
+
+    this.syncParsedGraphFromState();
+
+    // Emit event
+    if (removedId !== undefined) {
+      this.events.emit({
+        type: "edge:remove",
+        timestamp: Date.now(),
+        edgeId: typeof removedId === "number" ? removedId : index,
+      });
+    }
+
+    return true;
+  }
+
+  // ---------- Batch Mutations ----------
+
+  /**
+   * Add multiple nodes at once.
+   *
+   * @param nodes - Array of node inputs
+   * @returns Array of assigned node IDs
+   */
+  async addNodes(nodes: NodeInput[]): Promise<NodeId[]> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) {
+      throw new HeroineGraphError(ErrorCode.INVALID_GRAPH_DATA, "Cannot add nodes: graph not loaded");
+    }
+
+    const gs = this.graphState;
+
+    // Check capacity
+    if (gs.needsNodeReallocation(nodes.length)) {
+      await this.reallocateNodeBuffers(
+        growCapacity(gs.nodeHighWater + nodes.length, gs.nodeCapacity),
+      );
+    }
+
+    const ids: NodeId[] = [];
+    for (const node of nodes) {
+      const slot = gs.allocateNodeSlot();
+      gs.nodeIdMap.add(node.id);
+
+      const x = node.x ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
+      const y = node.y ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
+      const radius = node.radius ?? 5;
+      const [r, g, b] = node.color ? parseColorToRGB(node.color) : [0.4, 0.6, 0.9];
+
+      gs.positionsX[slot] = x;
+      gs.positionsY[slot] = y;
+      const attrBase = slot * 6;
+      gs.nodeAttributes[attrBase] = radius;
+      gs.nodeAttributes[attrBase + 1] = r;
+      gs.nodeAttributes[attrBase + 2] = g;
+      gs.nodeAttributes[attrBase + 3] = b;
+      gs.nodeAttributes[attrBase + 4] = 0;
+      gs.nodeAttributes[attrBase + 5] = 0;
+
+      ids.push(slot);
+    }
+
+    // Flush all node data to GPU in bulk
+    this.flushNodeBuffersToGPU();
+
+    // Update WASM engine in batch
+    if (this.wasmEngine) {
+      const positions = new Float32Array(nodes.length * 2);
+      for (let i = 0; i < ids.length; i++) {
+        const slot = ids[i];
+        positions[i * 2] = gs.positionsX[slot];
+        positions[i * 2 + 1] = gs.positionsY[slot];
+      }
+      this.wasmEngine.addNodesFromPositions(positions);
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+
+    this.state.nodeCount = gs.nodeCount;
+    this.simBuffers.nodeCount = gs.nodeHighWater;
+    this.syncParsedGraphFromState();
+    this.ensureAlgorithmCapacity();
+    this.bumpSimulationAlpha(0.2);
+
+    // Emit batch summary
+    this.events.emit({
+      type: "graph:mutate",
+      timestamp: Date.now(),
+      nodesAdded: ids.length,
+      nodesRemoved: 0,
+      edgesAdded: 0,
+      edgesRemoved: 0,
+    });
+
+    return ids;
+  }
+
+  /**
+   * Remove multiple nodes.
+   *
+   * @param ids - Node IDs to remove
+   * @returns Number of nodes actually removed
+   */
+  async removeNodes(ids: (NodeId | string)[]): Promise<number> {
+    let removed = 0;
+    for (const id of ids) {
+      if (await this.removeNode(id)) removed++;
+    }
+
+    if (removed > 0) {
+      this.events.emit({
+        type: "graph:mutate",
+        timestamp: Date.now(),
+        nodesAdded: 0,
+        nodesRemoved: removed,
+        edgesAdded: 0,
+        edgesRemoved: 0,
+      });
+    }
+
+    return removed;
+  }
+
+  /**
+   * Add multiple edges at once.
+   *
+   * @param edges - Array of edge inputs
+   * @returns Array of edge IDs (undefined for edges with invalid source/target)
+   */
+  async addEdges(edges: EdgeInput[]): Promise<(EdgeId | undefined)[]> {
+    const results: (EdgeId | undefined)[] = [];
+    for (const edge of edges) {
+      results.push(await this.addEdge(edge));
+    }
+
+    const added = results.filter((r) => r !== undefined).length;
+    if (added > 0) {
+      this.events.emit({
+        type: "graph:mutate",
+        timestamp: Date.now(),
+        nodesAdded: 0,
+        nodesRemoved: 0,
+        edgesAdded: added,
+        edgesRemoved: 0,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Remove multiple edges.
+   *
+   * @param ids - Edge IDs to remove
+   * @returns Number of edges actually removed
+   */
+  async removeEdges(ids: (EdgeId | string)[]): Promise<number> {
+    let removed = 0;
+    for (const id of ids) {
+      if (await this.removeEdge(id)) removed++;
+    }
+
+    if (removed > 0) {
+      this.events.emit({
+        type: "graph:mutate",
+        timestamp: Date.now(),
+        nodesAdded: 0,
+        nodesRemoved: 0,
+        edgesAdded: 0,
+        edgesRemoved: removed,
+      });
+    }
+
+    return removed;
+  }
+
+  // ---------- Mutation Helpers ----------
+
+  /**
+   * Flush all node position/attribute data to GPU.
+   * Used for batch operations.
+   */
+  private flushNodeBuffersToGPU(): void {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return;
+
+    const gs = this.graphState;
+    const { device } = this.gpuContext;
+    const hw = gs.nodeHighWater;
+
+    // Interleave positions into vec2 format
+    const posVec2 = new Float32Array(hw * 2);
+    for (let i = 0; i < hw; i++) {
+      posVec2[i * 2] = gs.positionsX[i];
+      posVec2[i * 2 + 1] = gs.positionsY[i];
+    }
+
+    device.queue.writeBuffer(this.simBuffers.positions, 0, posVec2);
+    device.queue.writeBuffer(this.simBuffers.positionsOut, 0, posVec2);
+    device.queue.writeBuffer(
+      this.buffers.nodeAttributes,
+      0,
+      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * 6)),
+    );
+
+    // Zero velocities/forces for all slots
+    const zeros = new Float32Array(hw * 2);
+    device.queue.writeBuffer(this.simBuffers.velocities, 0, zeros);
+    device.queue.writeBuffer(this.simBuffers.velocitiesOut, 0, zeros);
+    device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
+  }
+
+  /**
+   * Sync parsedGraph reference to use graphState's arrays.
+   * This keeps the existing code that reads from parsedGraph working.
+   */
+  private syncParsedGraphFromState(): void {
+    if (!this.graphState || !this.state.parsedGraph) return;
+
+    const gs = this.graphState;
+    this.state.parsedGraph.positionsX = gs.positionsX;
+    this.state.parsedGraph.positionsY = gs.positionsY;
+    this.state.parsedGraph.nodeAttributes = gs.nodeAttributes;
+    this.state.parsedGraph.edgeSources = gs.edgeSources.subarray(0, gs.edgeCount);
+    this.state.parsedGraph.edgeTargets = gs.edgeTargets.subarray(0, gs.edgeCount);
+    this.state.parsedGraph.edgeAttributes = gs.edgeAttributes.subarray(0, gs.edgeCount * 8);
+    this.state.parsedGraph.nodeCount = gs.nodeHighWater; // Use highWater for draw calls
+    this.state.parsedGraph.edgeCount = gs.edgeCount;
+    this.state.parsedGraph.nodeIdMap = gs.nodeIdMap;
+    this.state.parsedGraph.edgeIdMap = gs.edgeIdMap;
+  }
+
+  /**
+   * Ensure algorithm buffers can handle the current nodeHighWater.
+   * Recreates algorithm buffers/bind groups if nodeHighWater exceeds their maxNodes.
+   */
+  private ensureAlgorithmCapacity(): void {
+    if (!this.currentAlgorithm || !this.algorithmPipelines || !this.algorithmBuffers || !this.simBuffers || !this.graphState) return;
+
+    const gs = this.graphState;
+    const algMaxNodes = (this.algorithmBuffers as unknown as { maxNodes?: number }).maxNodes;
+    if (algMaxNodes === undefined || gs.nodeHighWater <= algMaxNodes) return;
+
+    // Algorithm buffers are too small — recreate with current nodeCapacity
+    const { device } = this.gpuContext;
+    const newCap = gs.nodeCapacity;
+
+    this.algorithmBuffers.destroy();
+    this.algorithmBuffers = this.currentAlgorithm.createBuffers(device, newCap);
+
+    const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, gs.nodeHighWater);
+    const context: AlgorithmRenderContext = {
+      device,
+      positions: this.simBuffers.positions,
+      forces: this.simBuffers.forces,
+      nodeCount: gs.nodeHighWater,
+      edgeCount: gs.edgeCount,
+      forceConfig: this.forceConfig,
+      bounds,
+    };
+
+    this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
+      device,
+      this.algorithmPipelines,
+      context,
+      this.algorithmBuffers,
+    );
+
+    this.uploadAlgorithmEdgeData(device);
+
+    if (this.debug) {
+      console.log(`Algorithm buffers recreated: capacity ${newCap} (was ${algMaxNodes})`);
+    }
+  }
+
+  /**
+   * Bump simulation alpha for mutations
+   */
+  private bumpSimulationAlpha(minAlpha: number): void {
+    const currentAlpha = this.simulationController.state.alpha;
+    if (currentAlpha < minAlpha) {
+      this.simulationController.setAlpha(minAlpha);
+    }
+    if (this.simulationController.state.status !== "running") {
+      this.simulationController.start();
+    }
+  }
+
+  // ---------- Buffer Reallocation ----------
+
+  /**
+   * Reallocate all node-related GPU buffers to a new capacity.
+   * Re-uploads all data from CPU shadow arrays. Rebuilds all affected bind groups.
+   */
+  private async reallocateNodeBuffers(newCapacity: number): Promise<void> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return;
+
+    const gs = this.graphState;
+    const { device } = this.gpuContext;
+
+    // Grow CPU shadow arrays
+    gs.growNodeCapacity(newCapacity);
+
+    // === Render buffers ===
+    // Destroy old render node buffers
+    this.buffers.positions.destroy();
+    this.buffers.nodeAttributes.destroy();
+
+    // Create new render buffers at new capacity
+    this.buffers.positions = device.createBuffer({
+      label: "Positions",
+      size: newCapacity * 8,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.buffers.nodeAttributes = device.createBuffer({
+      label: "Node Attributes",
+      size: newCapacity * 6 * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.buffers.nodeCapacity = newCapacity;
+
+    // Upload data from CPU shadow
+    const hw = gs.nodeHighWater;
+    const posVec2 = new Float32Array(hw * 2);
+    for (let i = 0; i < hw; i++) {
+      posVec2[i * 2] = gs.positionsX[i];
+      posVec2[i * 2 + 1] = gs.positionsY[i];
+    }
+    device.queue.writeBuffer(this.buffers.positions, 0, posVec2);
+    device.queue.writeBuffer(
+      this.buffers.nodeAttributes,
+      0,
+      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * 6)),
+    );
+
+    // === Simulation buffers ===
+    // Destroy old sim node buffers
+    this.simBuffers.positions.destroy();
+    this.simBuffers.positionsOut.destroy();
+    this.simBuffers.velocities.destroy();
+    this.simBuffers.velocitiesOut.destroy();
+    this.simBuffers.forces.destroy();
+    this.simBuffers.nodeFlags.destroy();
+    this.simBuffers.readback.destroy();
+
+    const nodeVec2Bytes = newCapacity * 8;
+    const nodeFlagBytes = newCapacity * 4;
+
+    // Create new sim buffers at new capacity
+    this.simBuffers.positions = device.createBuffer({
+      label: "Sim Positions",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    this.simBuffers.positionsOut = device.createBuffer({
+      label: "Sim Positions Out",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    this.simBuffers.velocities = device.createBuffer({
+      label: "Sim Velocities",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.velocitiesOut = device.createBuffer({
+      label: "Sim Velocities Out",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.forces = device.createBuffer({
+      label: "Sim Forces",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.nodeFlags = device.createBuffer({
+      label: "Sim Node Flags",
+      size: nodeFlagBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.readback = device.createBuffer({
+      label: "Sim Readback",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.nodeCapacity = newCapacity;
+
+    // Upload position data to both sim ping-pong buffers
+    device.queue.writeBuffer(this.simBuffers.positions, 0, posVec2);
+    device.queue.writeBuffer(this.simBuffers.positionsOut, 0, posVec2);
+
+    // Zero velocities and forces (new capacity may have uninitialized data)
+    const zeros = new Float32Array(hw * 2);
+    device.queue.writeBuffer(this.simBuffers.velocities, 0, zeros);
+    device.queue.writeBuffer(this.simBuffers.velocitiesOut, 0, zeros);
+    device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
+
+    // === Rebuild all affected bind groups ===
+    this.rebuildAllBindGroups();
+
+    // === Rebuild algorithm buffers if they're smaller than new capacity ===
+    if (this.currentAlgorithm && this.algorithmPipelines) {
+      this.algorithmBuffers?.destroy();
+      this.algorithmBuffers = this.currentAlgorithm.createBuffers(device, newCapacity);
+
+      const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, hw);
+      const context: AlgorithmRenderContext = {
+        device,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
+        nodeCount: hw,
+        edgeCount: gs.edgeCount,
+        forceConfig: this.forceConfig,
+        bounds,
+      };
+
+      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
+        device,
+        this.algorithmPipelines,
+        context,
+        this.algorithmBuffers,
+      );
+
+      this.uploadAlgorithmEdgeData(device);
+    }
+
+    // === Rebuild collision buffers ===
+    this.initializeCollisionResources(device, newCapacity, gs.nodeAttributes);
+
+    // === Update layer render contexts ===
+    this.updateLayerRenderContext();
+
+    if (this.debug) {
+      console.log(`Node buffers reallocated: capacity ${newCapacity}`);
+    }
+  }
+
+  /**
+   * Reallocate all edge-related GPU buffers to a new capacity.
+   * Re-uploads all data from CPU shadow arrays. Rebuilds affected bind groups.
+   */
+  private async reallocateEdgeBuffers(newCapacity: number): Promise<void> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return;
+
+    const gs = this.graphState;
+    const { device } = this.gpuContext;
+
+    // Grow CPU shadow arrays
+    gs.growEdgeCapacity(newCapacity);
+
+    // === Render edge buffers ===
+    this.buffers.edgeIndices.destroy();
+    this.buffers.edgeAttributes.destroy();
+
+    this.buffers.edgeIndices = device.createBuffer({
+      label: "Edge Indices",
+      size: Math.max(newCapacity * 2 * 4, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.buffers.edgeAttributes = device.createBuffer({
+      label: "Edge Attributes",
+      size: Math.max(newCapacity * 8 * 4, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.buffers.edgeCapacity = newCapacity;
+
+    // Upload edge data from CPU shadow
+    const ec = gs.edgeCount;
+    if (ec > 0) {
+      const edgeIndicesData = createEdgeIndicesBuffer(
+        gs.edgeSources.subarray(0, ec),
+        gs.edgeTargets.subarray(0, ec),
+      );
+      device.queue.writeBuffer(this.buffers.edgeIndices, 0, toArrayBuffer(edgeIndicesData));
+      device.queue.writeBuffer(
+        this.buffers.edgeAttributes,
+        0,
+        toArrayBuffer(gs.edgeAttributes.subarray(0, ec * 8)),
+      );
+    }
+
+    // === Simulation edge buffers ===
+    this.simBuffers.edgeSources.destroy();
+    this.simBuffers.edgeTargets.destroy();
+
+    const edgeBytes = Math.max(newCapacity * 4, 4);
+    this.simBuffers.edgeSources = device.createBuffer({
+      label: "Sim Edge Sources",
+      size: edgeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.edgeTargets = device.createBuffer({
+      label: "Sim Edge Targets",
+      size: edgeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.edgeCapacity = newCapacity;
+
+    // Upload edge source/target data
+    if (ec > 0) {
+      device.queue.writeBuffer(this.simBuffers.edgeSources, 0, toArrayBuffer(gs.edgeSources.subarray(0, ec)));
+      device.queue.writeBuffer(this.simBuffers.edgeTargets, 0, toArrayBuffer(gs.edgeTargets.subarray(0, ec)));
+    }
+
+    // Rebuild bind groups that reference edge buffers
+    this.rebuildAllBindGroups();
+
+    // Rebuild algorithm edge data if Relativity Atlas is active
+    if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
+      this.uploadAlgorithmEdgeData(device);
+    }
+
+    if (this.debug) {
+      console.log(`Edge buffers reallocated: capacity ${newCapacity}`);
+    }
+  }
+
+  /**
+   * Rebuild all bind groups after buffer reallocation.
+   * This is the same pattern used in swapAndRebuildBindGroups() but
+   * also updates edge bind groups for edge buffer changes.
+   */
+  private rebuildAllBindGroups(): void {
+    if (!this.simBuffers || !this.simulationPipeline) return;
+
+    const { device } = this.gpuContext;
+
+    // Rebuild simulation bind groups
+    this.simBindGroups = createSimulationBindGroups(
+      device,
+      this.simulationPipeline,
+      this.simBuffers,
+    );
+
+    // Rebuild node render bind group
+    if (this.nodePipeline) {
+      this.nodeBindGroup = createNodeBindGroup(
+        device,
+        this.nodePipeline,
+        this.simBuffers.positions,
+        this.buffers!.nodeAttributes,
+      );
+    }
+
+    // Rebuild edge render bind group
+    if (this.edgePipeline && this.buffers) {
+      this.edgeBindGroup = createEdgeBindGroup(
+        device,
+        this.edgePipeline,
+        this.simBuffers.positions,
+        this.buffers.edgeIndices,
+        this.buffers.edgeAttributes,
+      );
+    }
+
+    // Rebuild algorithm bind groups
+    if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
+      const gs = this.graphState!;
+      const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, gs.nodeHighWater);
+
+      const context: AlgorithmRenderContext = {
+        device,
+        positions: this.simBuffers.positions,
+        forces: this.simBuffers.forces,
+        nodeCount: gs.nodeHighWater,
+        edgeCount: gs.edgeCount,
+        forceConfig: this.forceConfig,
+        bounds,
+      };
+
+      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
+        device,
+        this.algorithmPipelines,
+        context,
+        this.algorithmBuffers,
+      );
+    }
+
+    // Rebuild collision bind group — bind to positionsOut for ping-pong consistency
+    if (this.collisionPipeline && this.collisionBuffers) {
+      this.collisionBindGroup = createCollisionBindGroup(
+        device,
+        this.collisionPipeline,
+        this.collisionBuffers,
+        this.simBuffers.positionsOut,
+      );
+    }
+
+    // Rebuild grid collision bind groups
+    if (this.gridCollisionPipeline && this.gridCollisionBuffers && this.collisionBuffers) {
+      this.gridCollisionBindGroups = createGridCollisionBindGroups(
+        device,
+        this.gridCollisionPipeline,
+        this.gridCollisionBuffers,
+        this.collisionBuffers.nodeSizes,
+        this.simBuffers.positionsOut,
+      );
+    }
   }
 
   // ==========================================================================
@@ -1578,9 +2623,11 @@ export class HeroineGraph {
 
     // Create buffers if graph is loaded
     if (this.state.loaded && this.simBuffers) {
+      // Use nodeCapacity (not nodeCount) so algorithm buffers have headroom for mutations
+      const algCapacity = this.buffers?.nodeCapacity ?? this.state.nodeCount;
       this.algorithmBuffers = algorithm.createBuffers(
         this.gpuContext.device,
-        this.state.nodeCount,
+        algCapacity,
       );
 
       // Compute bounds from current positions for spatial algorithms.
@@ -2451,6 +3498,14 @@ export class HeroineGraph {
     // Also update collision buffers if they're initialized
     if (this.collisionBuffers) {
       uploadNodeSizes(device, this.collisionBuffers, sizes);
+
+      // Recompute max radius for grid collision cell sizing
+      let maxRadius = 0;
+      for (let i = 0; i < sizes.length; i++) {
+        if (sizes[i] > maxRadius) maxRadius = sizes[i];
+      }
+      this.maxNodeRadius = maxRadius > 0 ? maxRadius : 5.0;
+
       if (this.debug) {
         console.log(`Updated collision radii for ${sizes.length} nodes`);
       }
@@ -3893,6 +4948,13 @@ export class HeroineGraph {
       this.collisionBuffers = null;
     }
     this.collisionBindGroup = null;
+
+    // Destroy grid collision buffers
+    if (this.gridCollisionBuffers) {
+      destroyGridCollisionBuffers(this.gridCollisionBuffers);
+      this.gridCollisionBuffers = null;
+    }
+    this.gridCollisionBindGroups = null;
   }
 
   // ==========================================================================

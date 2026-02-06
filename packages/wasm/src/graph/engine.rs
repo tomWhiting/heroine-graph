@@ -5,8 +5,8 @@
 //! to enable efficient GPU upload and SIMD operations.
 
 use petgraph::stable_graph::{NodeIndex, EdgeIndex, StableGraph};
-use petgraph::visit::{EdgeRef, IntoEdgeReferences};
-use petgraph::Directed;
+use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
+use petgraph::{Directed, Direction};
 use std::collections::HashMap;
 
 use super::edge::EdgeId;
@@ -143,8 +143,12 @@ impl GraphEngine {
     /// Remove a node and all its connected edges.
     pub fn remove_node(&mut self, id: NodeId) -> bool {
         if let Some(index) = self.node_id_to_index.remove(&id) {
-            // Remove edges connected to this node
-            let edges: Vec<_> = self.graph.edges(index).map(|e| e.id()).collect();
+            // Remove edges connected to this node (both incoming and outgoing)
+            let edges: Vec<_> = self.graph
+                .edges_directed(index, Direction::Outgoing)
+                .chain(self.graph.edges_directed(index, Direction::Incoming))
+                .map(|e| e.id())
+                .collect();
             for edge_index in edges {
                 if let Some((edge_id, _)) = self.edge_id_to_index
                     .iter()
@@ -153,6 +157,16 @@ impl GraphEngine {
                 {
                     self.edge_id_to_index.remove(&edge_id);
                 }
+            }
+
+            // Zero out SoA arrays for the removed node's slot
+            let i = index.index();
+            if i < self.pos_x.len() {
+                self.pos_x[i] = 0.0;
+                self.pos_y[i] = 0.0;
+                self.vel_x[i] = 0.0;
+                self.vel_y[i] = 0.0;
+                self.states[i] = NodeState::new();
             }
 
             self.graph.remove_node(index);
@@ -166,6 +180,13 @@ impl GraphEngine {
     /// Get the number of nodes.
     pub fn node_count(&self) -> u32 {
         self.graph.node_count() as u32
+    }
+
+    /// Get the upper bound on node indices (max index + 1).
+    /// This may be larger than node_count() if nodes have been removed,
+    /// since StableGraph preserves index stability.
+    pub fn node_bound(&self) -> u32 {
+        self.graph.node_bound() as u32
     }
 
     /// Get a node's position.
@@ -345,16 +366,34 @@ impl GraphEngine {
     // Utilities
     // =========================================================================
 
-    /// Get the bounding box of all nodes.
+    /// Get the bounding box of all active nodes.
+    /// Skips dead slots (nodes that have been removed).
     pub fn get_bounds(&self) -> Option<(f32, f32, f32, f32)> {
-        if self.pos_x.is_empty() {
+        if self.graph.node_count() == 0 {
             return None;
         }
 
-        let min_x = self.pos_x.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_x = self.pos_x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let min_y = self.pos_y.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_y = self.pos_y.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+
+        // Only consider active nodes (those still in the graph)
+        for node_index in self.graph.node_indices() {
+            let i = node_index.index();
+            if i < self.pos_x.len() {
+                let x = self.pos_x[i];
+                let y = self.pos_y[i];
+                if x < min_x { min_x = x; }
+                if x > max_x { max_x = x; }
+                if y < min_y { min_y = y; }
+                if y > max_y { max_y = y; }
+            }
+        }
+
+        if min_x == f32::INFINITY {
+            return None;
+        }
 
         Some((min_x, min_y, max_x, max_y))
     }
@@ -375,27 +414,31 @@ impl GraphEngine {
 
     /// Get edge list in CSR format.
     ///
-    /// Returns [offsets..., targets...] where offsets has node_count + 1 elements.
+    /// Returns [offsets..., targets...] where offsets has node_bound + 1 elements.
+    /// Uses node_bound() (max index + 1) instead of node_count() to handle
+    /// StableGraph's stable index space with holes from removals.
     pub fn get_edges_csr(&self) -> Vec<u32> {
-        let node_count = self.graph.node_count();
+        let node_bound = self.graph.node_bound();
         let edge_count = self.graph.edge_count();
 
-        let mut offsets = vec![0u32; node_count + 1];
+        let mut offsets = vec![0u32; node_bound + 1];
         let mut targets = Vec::with_capacity(edge_count);
 
         // Count edges per node
         for node_index in self.graph.node_indices() {
             let i = node_index.index();
-            offsets[i + 1] = self.graph.edges(node_index).count() as u32;
+            if i < node_bound {
+                offsets[i + 1] = self.graph.edges(node_index).count() as u32;
+            }
         }
 
         // Prefix sum
-        for i in 1..=node_count {
+        for i in 1..=node_bound {
             offsets[i] += offsets[i - 1];
         }
 
         // Build targets array
-        let mut current_offsets = offsets[..node_count].to_vec();
+        let mut current_offsets = offsets[..node_bound].to_vec();
         for edge in self.graph.edge_references() {
             let source = edge.source().index();
             let target = edge.target().index();
@@ -403,12 +446,14 @@ impl GraphEngine {
                 .map(|id| id.0)
                 .unwrap_or(target as u32);
 
-            let offset = current_offsets[source] as usize;
-            if offset >= targets.len() {
-                targets.resize(offset + 1, 0);
+            if source < node_bound {
+                let offset = current_offsets[source] as usize;
+                if offset >= targets.len() {
+                    targets.resize(offset + 1, 0);
+                }
+                targets[offset] = target_id;
+                current_offsets[source] += 1;
             }
-            targets[offset] = target_id;
-            current_offsets[source] += 1;
         }
 
         // Combine offsets and targets
@@ -421,25 +466,25 @@ impl GraphEngine {
     /// Get inverse edge list in CSR format (incoming edges).
     ///
     /// For each node, lists the source nodes of incoming edges.
-    /// Returns [offsets..., sources...] where offsets has node_count + 1 elements.
-    /// This is useful for finding "parents" in a directed graph.
+    /// Returns [offsets..., sources...] where offsets has node_bound + 1 elements.
+    /// Uses node_bound() to handle StableGraph's stable index space.
     pub fn get_inverse_edges_csr(&self) -> Vec<u32> {
-        let node_count = self.graph.node_count();
+        let node_bound = self.graph.node_bound();
         let edge_count = self.graph.edge_count();
 
-        let mut offsets = vec![0u32; node_count + 1];
+        let mut offsets = vec![0u32; node_bound + 1];
         let mut sources = Vec::with_capacity(edge_count);
 
         // Count incoming edges per node (edges where this node is the target)
         for edge in self.graph.edge_references() {
             let target = edge.target().index();
-            if target < node_count {
+            if target < node_bound {
                 offsets[target + 1] += 1;
             }
         }
 
         // Prefix sum
-        for i in 1..=node_count {
+        for i in 1..=node_bound {
             offsets[i] += offsets[i - 1];
         }
 
@@ -447,12 +492,12 @@ impl GraphEngine {
         sources.resize(edge_count, 0);
 
         // Build sources array
-        let mut current_offsets = offsets[..node_count].to_vec();
+        let mut current_offsets = offsets[..node_bound].to_vec();
         for edge in self.graph.edge_references() {
             let source = edge.source().index();
             let target = edge.target().index();
 
-            if target < node_count {
+            if target < node_bound {
                 let source_id = self.graph.node_weight(edge.source())
                     .map(|id| id.0)
                     .unwrap_or(source as u32);
@@ -474,15 +519,16 @@ impl GraphEngine {
 
     /// Get node degrees (out-degree, in-degree) as a flat array.
     ///
-    /// Returns [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...] with 2 * node_count elements.
+    /// Returns [out_deg_0, in_deg_0, out_deg_1, in_deg_1, ...] with 2 * node_bound elements.
+    /// Uses node_bound() to handle StableGraph's stable index space.
     pub fn get_node_degrees(&self) -> Vec<u32> {
-        let node_count = self.graph.node_count();
-        let mut degrees = vec![0u32; node_count * 2];
+        let node_bound = self.graph.node_bound();
+        let mut degrees = vec![0u32; node_bound * 2];
 
         // Count out-degrees
         for node_index in self.graph.node_indices() {
             let i = node_index.index();
-            if i < node_count {
+            if i < node_bound {
                 degrees[i * 2] = self.graph.edges(node_index).count() as u32;
             }
         }
@@ -490,7 +536,7 @@ impl GraphEngine {
         // Count in-degrees
         for edge in self.graph.edge_references() {
             let target = edge.target().index();
-            if target < node_count {
+            if target < node_bound {
                 degrees[target * 2 + 1] += 1;
             }
         }
@@ -588,5 +634,77 @@ mod tests {
         engine.clear();
         assert_eq!(engine.node_count(), 0);
         assert_eq!(engine.edge_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_node_zeroes_soa() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(10.0, 20.0);
+        let _b = engine.add_node(30.0, 40.0);
+
+        engine.remove_node(a);
+
+        // SoA slot 0 should be zeroed
+        assert_eq!(engine.positions_x()[0], 0.0);
+        assert_eq!(engine.positions_y()[0], 0.0);
+        assert_eq!(engine.velocities_x()[0], 0.0);
+        assert_eq!(engine.velocities_y()[0], 0.0);
+    }
+
+    #[test]
+    fn test_remove_node_csr_no_panic() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(0.0, 0.0);
+        let b = engine.add_node(1.0, 1.0);
+        let c = engine.add_node(2.0, 2.0);
+
+        engine.add_edge(a, b, 1.0);
+        engine.add_edge(b, c, 1.0);
+
+        // Remove middle node — CSR must not panic despite index hole
+        engine.remove_node(b);
+
+        let csr = engine.get_edges_csr();
+        assert!(!csr.is_empty()); // Should succeed without panic
+
+        let inverse_csr = engine.get_inverse_edges_csr();
+        assert!(!inverse_csr.is_empty());
+
+        let degrees = engine.get_node_degrees();
+        assert!(!degrees.is_empty());
+    }
+
+    #[test]
+    fn test_node_bound() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(0.0, 0.0);
+        let _b = engine.add_node(1.0, 1.0);
+        let _c = engine.add_node(2.0, 2.0);
+
+        assert_eq!(engine.node_bound(), 3);
+
+        engine.remove_node(a);
+        // node_count drops but node_bound stays
+        assert_eq!(engine.node_count(), 2);
+        assert_eq!(engine.node_bound(), 3);
+    }
+
+    #[test]
+    fn test_get_bounds_skips_removed() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(-100.0, -100.0);
+        let _b = engine.add_node(10.0, 10.0);
+        let _c = engine.add_node(20.0, 20.0);
+
+        // Bounds include all nodes
+        let bounds = engine.get_bounds().unwrap();
+        assert_eq!(bounds.0, -100.0); // min_x
+
+        // Remove the outlier node
+        engine.remove_node(a);
+
+        // Bounds should no longer include the removed node
+        let bounds = engine.get_bounds().unwrap();
+        assert_eq!(bounds.0, 10.0); // min_x is now 10
     }
 }

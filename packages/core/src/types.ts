@@ -551,6 +551,43 @@ export interface NodeUnpinEvent extends GraphEvent {
   readonly nodeId: NodeId;
 }
 
+/** Node added event */
+export interface NodeAddEvent extends GraphEvent {
+  readonly type: "node:add";
+  readonly nodeId: string | number;
+  readonly index: number;
+}
+
+/** Node removed event */
+export interface NodeRemoveEvent extends GraphEvent {
+  readonly type: "node:remove";
+  readonly nodeId: string | number;
+  readonly index: number;
+}
+
+/** Edge added event */
+export interface EdgeAddEvent extends GraphEvent {
+  readonly type: "edge:add";
+  readonly edgeId: string | number;
+  readonly sourceId: string | number;
+  readonly targetId: string | number;
+}
+
+/** Edge removed event */
+export interface EdgeRemoveEvent extends GraphEvent {
+  readonly type: "edge:remove";
+  readonly edgeId: string | number;
+}
+
+/** Batch mutation summary event */
+export interface GraphMutateEvent extends GraphEvent {
+  readonly type: "graph:mutate";
+  readonly nodesAdded: number;
+  readonly nodesRemoved: number;
+  readonly edgesAdded: number;
+  readonly edgesRemoved: number;
+}
+
 /** Union of all events */
 export type HeroineGraphEvent =
   | NodeClickEvent
@@ -570,7 +607,12 @@ export type HeroineGraphEvent =
   | BackgroundClickEvent
   | GraphLoadEvent
   | NodePinEvent
-  | NodeUnpinEvent;
+  | NodeUnpinEvent
+  | NodeAddEvent
+  | NodeRemoveEvent
+  | EdgeAddEvent
+  | EdgeRemoveEvent
+  | GraphMutateEvent;
 
 /** Event handler function */
 export type EventHandler<E extends GraphEvent> = (event: E) => void;
@@ -595,4 +637,9 @@ export interface EventMap {
   "selection:change": SelectionChangeEvent;
   "background:click": BackgroundClickEvent;
   "graph:load": GraphLoadEvent;
+  "node:add": NodeAddEvent;
+  "node:remove": NodeRemoveEvent;
+  "edge:add": EdgeAddEvent;
+  "edge:remove": EdgeRemoveEvent;
+  "graph:mutate": GraphMutateEvent;
 }

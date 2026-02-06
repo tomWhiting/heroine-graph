@@ -34,6 +34,7 @@ import DEGREES_WGSL from "../shaders/relativity_degrees.comp.wgsl";
 import MASS_WGSL from "../shaders/relativity_mass.comp.wgsl";
 import SIBLING_WGSL from "../shaders/relativity_sibling.comp.wgsl";
 import GRAVITY_WGSL from "../shaders/relativity_gravity.comp.wgsl";
+import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl?raw";
 
 /**
  * Relativity Atlas algorithm info
@@ -50,6 +51,8 @@ const RELATIVITY_ATLAS_INFO: ForceAlgorithmInfo = {
 
 // Configuration constants
 const WORKGROUP_SIZE = 256;
+const DENSITY_GRID_SIZE = 128; // 128x128 density grid cells
+const DEFAULT_SPLAT_RADIUS = 3.0; // In grid cells
 
 /**
  * Number of mass aggregation iterations to run.
@@ -101,11 +104,17 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   // Gravity
   gravity: GPUComputePipeline;
 
+  // Density field (global repulsion)
+  densityClearGrid: GPUComputePipeline;
+  densityAccumulate: GPUComputePipeline;
+  densityApplyForces: GPUComputePipeline;
+
   // Bind group layouts
   degreesLayout: GPUBindGroupLayout;
   massLayout: GPUBindGroupLayout;
   siblingLayout: GPUBindGroupLayout;
   gravityLayout: GPUBindGroupLayout;
+  densityLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -142,6 +151,10 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
      */
     public converged: GPUBuffer,
 
+    // Density field buffers (global repulsion)
+    public densityUniforms: GPUBuffer,
+    public densityGrid: GPUBuffer,
+
     // Capacities
     public maxNodes: number,
     public maxEdges: number,
@@ -162,6 +175,9 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
     this.mass.destroy();
     this.massOut.destroy();
     this.converged.destroy();
+
+    this.densityUniforms.destroy();
+    this.densityGrid.destroy();
   }
 }
 
@@ -174,6 +190,7 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
   massAggregate: GPUBindGroup[];  // Ping-pong
   sibling: GPUBindGroup;
   gravity: GPUBindGroup;
+  density: GPUBindGroup | null;  // null when bounds unavailable
   // repulsion from base is used for main force pass
 }
 
@@ -182,6 +199,7 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
  */
 export class RelativityAtlasAlgorithm implements ForceAlgorithm {
   readonly info = RELATIVITY_ATLAS_INFO;
+  readonly handlesGravity = true;
 
   // Track whether mass has been initialized for current graph
   private massInitialized = false;
@@ -295,6 +313,29 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       bindGroupLayouts: [gravityLayout],
     });
 
+    // === Density Field Layout ===
+    // Reuses the density_field.comp.wgsl shader for global O(n) repulsion.
+    // Bindings: uniforms, positions (vec2), forces (vec2), density_grid
+    const densityModule = device.createShaderModule({
+      label: "RA Density Field Shader",
+      code: DENSITY_FIELD_WGSL,
+    });
+
+    const densityLayout = device.createBindGroupLayout({
+      label: "RA Density Field Layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ],
+    });
+
+    const densityPipelineLayout = device.createPipelineLayout({
+      label: "RA Density Pipeline Layout",
+      bindGroupLayouts: [densityLayout],
+    });
+
     // Create pipelines
     const pipelines: RelativityAtlasPipelines = {
       computeDegrees: device.createComputePipeline({
@@ -334,10 +375,28 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         compute: { module: siblingModule, entryPoint: "main" },
       }),
 
+      // Density field pipelines (global repulsion)
+      densityClearGrid: device.createComputePipeline({
+        label: "RA Density Clear Grid",
+        layout: densityPipelineLayout,
+        compute: { module: densityModule, entryPoint: "clear_grid" },
+      }),
+      densityAccumulate: device.createComputePipeline({
+        label: "RA Density Accumulate",
+        layout: densityPipelineLayout,
+        compute: { module: densityModule, entryPoint: "accumulate_density" },
+      }),
+      densityApplyForces: device.createComputePipeline({
+        label: "RA Density Apply Forces",
+        layout: densityPipelineLayout,
+        compute: { module: densityModule, entryPoint: "apply_forces" },
+      }),
+
       degreesLayout,
       massLayout,
       siblingLayout,
       gravityLayout,
+      densityLayout,
     };
 
     return pipelines;
@@ -436,6 +495,22 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // Density field buffers for global repulsion
+    // DensityUniforms struct: 48 bytes (12 × f32)
+    const densityUniforms = device.createBuffer({
+      label: "RA Density Uniforms",
+      size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Density grid: DENSITY_GRID_SIZE × DENSITY_GRID_SIZE cells, each atomic u32
+    const gridCells = DENSITY_GRID_SIZE * DENSITY_GRID_SIZE;
+    const densityGrid = device.createBuffer({
+      label: "RA Density Grid",
+      size: gridCells * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     return new RelativityAtlasBuffers(
       degreesUniforms,
       massUniforms,
@@ -449,6 +524,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       mass,
       massOut,
       converged,
+      densityUniforms,
+      densityGrid,
       safeMaxNodes,
       maxEdges,
     );
@@ -554,12 +631,26 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // Density field bind group for global repulsion.
+    // Uses the same position/force buffers as sibling and gravity.
+    const density = device.createBindGroup({
+      label: "RA Density Bind Group",
+      layout: p.densityLayout,
+      entries: [
+        { binding: 0, resource: { buffer: b.densityUniforms } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: b.densityGrid } },
+      ],
+    });
+
     const bindGroups: RelativityAtlasBindGroups = {
       degrees,
       massInit,
       massAggregate,
       sibling,
       gravity,
+      density,
       repulsion: sibling,  // Use sibling as main repulsion
     };
 
@@ -650,6 +741,31 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     gravityView.setFloat32(24, context.forceConfig.relativityGravityExponent, true);
     gravityView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.gravityUniforms, 0, gravityData);
+
+    // Density field uniforms (48 bytes = 12 × f32)
+    // Only meaningful when bounds are available; the shader is skipped otherwise.
+    // DensityUniforms struct: { node_count, grid_width, grid_height, repulsion_strength,
+    //   bounds_min_x, bounds_min_y, bounds_max_x, bounds_max_y, splat_radius, _pad × 3 }
+    if (context.bounds) {
+      const densityRepulsionStrength =
+        Math.abs(context.forceConfig.repulsionStrength) *
+        context.forceConfig.relativityDensityRepulsion;
+      const densityData = new ArrayBuffer(48);
+      const densityView = new DataView(densityData);
+      densityView.setUint32(0, context.nodeCount, true);           // node_count
+      densityView.setUint32(4, DENSITY_GRID_SIZE, true);           // grid_width
+      densityView.setUint32(8, DENSITY_GRID_SIZE, true);           // grid_height
+      densityView.setFloat32(12, densityRepulsionStrength, true);  // repulsion_strength
+      densityView.setFloat32(16, context.bounds.minX, true);       // bounds_min_x
+      densityView.setFloat32(20, context.bounds.minY, true);       // bounds_min_y
+      densityView.setFloat32(24, context.bounds.maxX, true);       // bounds_max_x
+      densityView.setFloat32(28, context.bounds.maxY, true);       // bounds_max_y
+      densityView.setFloat32(32, DEFAULT_SPLAT_RADIUS, true);      // splat_radius
+      densityView.setFloat32(36, 0, true);                         // _pad1
+      densityView.setFloat32(40, 0, true);                         // _pad2
+      densityView.setFloat32(44, 0, true);                         // _pad3
+      device.queue.writeBuffer(b.densityUniforms, 0, densityData);
+    }
   }
 
   recordRepulsionPass(
@@ -711,7 +827,44 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       this.massInitialized = true;
     }
 
-    // === PHASE 4: Sibling repulsion (every frame) ===
+    // === PHASE 4: Density field global repulsion (every frame, when bounds available) ===
+    // Provides O(n) mass-independent repulsion between all nodes regardless of
+    // hierarchy. Without this, nodes in different subtrees have zero mutual
+    // repulsion and can overlap. Runs before sibling repulsion so both forces
+    // contribute to the accumulated force buffer.
+    if (bg.density) {
+      const gridCells = DENSITY_GRID_SIZE * DENSITY_GRID_SIZE;
+      const gridWorkgroups = calculateWorkgroups(gridCells, WORKGROUP_SIZE);
+
+      // Clear density grid
+      {
+        const pass = encoder.beginComputePass({ label: "RA Density Clear Grid" });
+        pass.setPipeline(p.densityClearGrid);
+        pass.setBindGroup(0, bg.density);
+        pass.dispatchWorkgroups(gridWorkgroups);
+        pass.end();
+      }
+
+      // Accumulate density from node positions
+      {
+        const pass = encoder.beginComputePass({ label: "RA Density Accumulate" });
+        pass.setPipeline(p.densityAccumulate);
+        pass.setBindGroup(0, bg.density);
+        pass.dispatchWorkgroups(nodeWorkgroups);
+        pass.end();
+      }
+
+      // Apply density gradient forces (away from high density)
+      {
+        const pass = encoder.beginComputePass({ label: "RA Density Apply Forces" });
+        pass.setPipeline(p.densityApplyForces);
+        pass.setBindGroup(0, bg.density);
+        pass.dispatchWorkgroups(nodeWorkgroups);
+        pass.end();
+      }
+    }
+
+    // === PHASE 5: Sibling repulsion (every frame) ===
     {
       const pass = encoder.beginComputePass({ label: "RA Sibling Repulsion" });
       pass.setPipeline(p.siblingRepulsion);
@@ -720,7 +873,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       pass.end();
     }
 
-    // === PHASE 5: Mass-weighted gravity (every frame) ===
+    // === PHASE 6: Mass-weighted gravity (every frame) ===
     {
       const pass = encoder.beginComputePass({ label: "RA Gravity" });
       pass.setPipeline(p.gravity);
@@ -779,36 +932,35 @@ export class CSRValidationError extends Error {
  * 6. Indices array doesn't exceed buffer capacity (DoS protection)
  * 7. All indices are non-negative (defense-in-depth)
  *
- * @param csrData - Combined CSR data [offsets..., indices...]
+ * @param offsets - CSR offsets array (nodeCount + 1 elements)
+ * @param indices - CSR indices array (edge targets or sources)
  * @param nodeCount - Expected number of nodes
  * @param maxEdges - Maximum allowed edges (buffer capacity)
- * @param label - Label for error messages (e.g., "forward CSR" or "inverse CSR")
+ * @param label - Label for error messages (e.g., "Forward CSR" or "Inverse CSR")
  * @throws CSRValidationError if validation fails
  */
 export function validateCSRData(
-  csrData: Uint32Array,
+  offsets: Uint32Array,
+  indices: Uint32Array,
   nodeCount: number,
   maxEdges: number,
   label: string,
-): { offsets: Uint32Array; indices: Uint32Array; edgeCount: number } {
+): { edgeCount: number } {
   const expectedOffsetsLength = nodeCount + 1;
 
-  // Validation 1: CSR data must have at least the offsets array
-  if (csrData.length < expectedOffsetsLength) {
+  // Validation 1: Offsets array must be correctly sized
+  if (offsets.length < expectedOffsetsLength) {
     throw new CSRValidationError(
-      `${label}: CSR data too small. Expected at least ${expectedOffsetsLength} elements for offsets ` +
-        `(nodeCount + 1), but got ${csrData.length} elements.`,
+      `${label}: Offsets array too small. Expected ${expectedOffsetsLength} elements ` +
+        `(nodeCount + 1), but got ${offsets.length} elements.`,
       {
-        field: "csrData.length",
-        expected: `>= ${expectedOffsetsLength}`,
-        actual: csrData.length,
+        field: "offsets.length",
+        expected: expectedOffsetsLength,
+        actual: offsets.length,
         nodeCount,
       },
     );
   }
-
-  const offsets = csrData.subarray(0, expectedOffsetsLength);
-  const indices = csrData.subarray(expectedOffsetsLength);
 
   // Validation 2: First offset must be 0
   if (offsets[0] !== 0) {
@@ -873,15 +1025,13 @@ export function validateCSRData(
     }
   }
 
-  // Validation 6: DoS protection - verify indices array doesn't exceed buffer capacity
-  // This prevents malformed data from causing excessive iteration in the bounds check loop
-  const MAX_REASONABLE_EDGES = maxEdges;
-  if (indices.length > MAX_REASONABLE_EDGES) {
+  // Validation 6: Indices array doesn't exceed buffer capacity
+  if (indices.length > maxEdges) {
     throw new CSRValidationError(
-      `${label}: Indices array exceeds maximum edge capacity (${indices.length} > ${MAX_REASONABLE_EDGES}).`,
+      `${label}: Indices array exceeds maximum edge capacity (${indices.length} > ${maxEdges}).`,
       {
         field: "indices.length",
-        expected: `<= ${MAX_REASONABLE_EDGES}`,
+        expected: `<= ${maxEdges}`,
         actual: indices.length,
         nodeCount,
         edgeCount: declaredEdgeCount,
@@ -890,12 +1040,10 @@ export function validateCSRData(
   }
 
   // Validation 7: All indices are valid node references (in range [0, nodeCount))
-  // This is critical for GPU safety - out-of-range indices cause memory corruption
-  // Note: The `targetIndex < 0` check is technically redundant for Uint32Array (which
-  // cannot hold negative values), but is included for defense-in-depth and self-documentation
+  // Critical for GPU safety — out-of-range indices cause memory corruption
   for (let i = 0; i < indices.length; i++) {
     const targetIndex = indices[i];
-    if (targetIndex >= nodeCount || targetIndex < 0) {
+    if (targetIndex >= nodeCount) {
       // Find which node this edge belongs to for better error reporting
       let sourceNode = 0;
       for (let n = 0; n < nodeCount; n++) {
@@ -919,81 +1067,84 @@ export function validateCSRData(
     }
   }
 
-  return { offsets, indices, edgeCount: declaredEdgeCount };
+  return { edgeCount: declaredEdgeCount };
+}
+
+/**
+ * CSR data with separate offsets and indices arrays.
+ */
+export interface CSRData {
+  /** Offsets array (nodeCount + 1 elements) */
+  offsets: Uint32Array;
+  /** Indices array (edge targets or sources) */
+  indices: Uint32Array;
 }
 
 /**
  * Upload CSR edge data to algorithm buffers with comprehensive validation.
  *
- * This function validates CSR data integrity before uploading to GPU buffers
- * to prevent memory corruption. Invalid CSR data can cause:
- * - GPU crashes
- * - Memory access violations
- * - Undefined shader behavior
- * - Data corruption in adjacent buffers
+ * Validates CSR data integrity before uploading to GPU buffers to prevent
+ * memory corruption from malformed data.
  *
  * @param device - GPU device
  * @param buffers - Relativity Atlas buffers
- * @param csrData - CSR data [offsets..., targets...]
- * @param inverseCsrData - Inverse CSR data [offsets..., sources...]
- * @param nodeCount - Actual node count for validation (must match buffer expectations)
+ * @param forwardCSR - Forward CSR (outgoing edges: offsets + targets)
+ * @param inverseCSR - Inverse CSR (incoming edges: offsets + sources)
+ * @param nodeCount - Actual node count (must match CSR offsets sizing)
  * @throws CSRValidationError if CSR data is malformed
  */
 export function uploadRelativityAtlasEdges(
   device: GPUDevice,
   buffers: AlgorithmBuffers,
-  csrData: Uint32Array,
-  inverseCsrData: Uint32Array,
-  nodeCount?: number,
+  forwardCSR: CSRData,
+  inverseCSR: CSRData,
+  nodeCount: number,
 ): void {
   const b = buffers as RelativityAtlasBuffers;
 
-  // Use provided nodeCount or fall back to buffer capacity
-  const effectiveNodeCount = nodeCount ?? b.maxNodes;
-
   // Validate node count doesn't exceed buffer capacity
-  if (effectiveNodeCount > b.maxNodes) {
+  if (nodeCount > b.maxNodes) {
     throw new CSRValidationError(
-      `Node count ${effectiveNodeCount} exceeds buffer capacity ${b.maxNodes}. ` +
+      `Node count ${nodeCount} exceeds buffer capacity ${b.maxNodes}. ` +
         `Recreate buffers with createBuffers() using a larger maxNodes value.`,
       {
         field: "nodeCount",
         expected: `<= ${b.maxNodes}`,
-        actual: effectiveNodeCount,
-        nodeCount: effectiveNodeCount,
+        actual: nodeCount,
+        nodeCount,
       },
     );
   }
 
-  // Validate and parse forward CSR data
-  const forwardCSR = validateCSRData(
-    csrData,
-    effectiveNodeCount,
+  // Validate forward and inverse CSR data
+  const forwardResult = validateCSRData(
+    forwardCSR.offsets,
+    forwardCSR.indices,
+    nodeCount,
     b.maxEdges,
     "Forward CSR",
   );
 
-  // Validate and parse inverse CSR data
-  const inverseCSR = validateCSRData(
-    inverseCsrData,
-    effectiveNodeCount,
+  const inverseResult = validateCSRData(
+    inverseCSR.offsets,
+    inverseCSR.indices,
+    nodeCount,
     b.maxEdges,
     "Inverse CSR",
   );
 
   // Cross-validation: forward and inverse CSR should have same edge count
-  // (they represent the same graph from different directions)
-  if (forwardCSR.edgeCount !== inverseCSR.edgeCount) {
+  if (forwardResult.edgeCount !== inverseResult.edgeCount) {
     throw new CSRValidationError(
       `Edge count mismatch between forward and inverse CSR. ` +
-        `Forward CSR has ${forwardCSR.edgeCount} edges, inverse CSR has ${inverseCSR.edgeCount} edges. ` +
+        `Forward CSR has ${forwardResult.edgeCount} edges, inverse CSR has ${inverseResult.edgeCount} edges. ` +
         `Both must represent the same graph and have identical edge counts.`,
       {
         field: "edgeCount",
-        expected: forwardCSR.edgeCount,
-        actual: inverseCSR.edgeCount,
-        nodeCount: effectiveNodeCount,
-        edgeCount: forwardCSR.edgeCount,
+        expected: forwardResult.edgeCount,
+        actual: inverseResult.edgeCount,
+        nodeCount,
+        edgeCount: forwardResult.edgeCount,
       },
     );
   }
@@ -1003,7 +1154,7 @@ export function uploadRelativityAtlasEdges(
   new Uint32Array(forwardOffsetBuffer).set(forwardCSR.offsets);
   device.queue.writeBuffer(b.csrOffsets, 0, forwardOffsetBuffer);
 
-  // Upload forward CSR targets (indices)
+  // Upload forward CSR targets
   if (forwardCSR.indices.length > 0) {
     const forwardTargetBuffer = new ArrayBuffer(forwardCSR.indices.byteLength);
     new Uint32Array(forwardTargetBuffer).set(forwardCSR.indices);
@@ -1015,7 +1166,7 @@ export function uploadRelativityAtlasEdges(
   new Uint32Array(inverseOffsetBuffer).set(inverseCSR.offsets);
   device.queue.writeBuffer(b.csrInverseOffsets, 0, inverseOffsetBuffer);
 
-  // Upload inverse CSR sources (indices)
+  // Upload inverse CSR sources
   if (inverseCSR.indices.length > 0) {
     const inverseSourceBuffer = new ArrayBuffer(inverseCSR.indices.byteLength);
     new Uint32Array(inverseSourceBuffer).set(inverseCSR.indices);

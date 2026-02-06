@@ -9,8 +9,10 @@
 import {
   createHeroineGraph,
   getSupportInfo,
+  type EdgeInput,
   type GraphInput,
   type HeroineGraph,
+  type NodeInput,
 } from "../../packages/core/mod.ts";
 
 // ============================================================================
@@ -1028,7 +1030,7 @@ async function main(): Promise<void> {
     });
   });
 
-  // Add cross-talk button handler - add edges to existing graph in real-time
+  // Add cross-talk button handler - add edges incrementally (no reload!)
   $("add-crosstalk-btn").addEventListener("click", async () => {
     if (!state.graph || !state.graphData || state.graphData.nodes.length === 0) {
       console.log("No graph loaded - generate one first");
@@ -1036,7 +1038,7 @@ async function main(): Promise<void> {
     }
 
     const count = parseInt(($("crosstalk-count") as HTMLInputElement)?.value ?? "50", 10);
-    console.log(`Adding ${count} cross-talk edges...`);
+    console.log(`Adding ${count} cross-talk edges (incremental)...`);
 
     try {
       // Generate new cross-talk edges
@@ -1047,22 +1049,20 @@ async function main(): Promise<void> {
         return;
       }
 
-      // Create updated graph data with new edges (edges array is readonly)
+      // Use incremental addEdges instead of full reload
+      const results = await state.graph.addEdges(newEdges);
+      const added = results.filter((r) => r !== undefined).length;
+
+      // Track in graphData for future cross-talk generation
       state.graphData = {
         ...state.graphData,
         edges: [...state.graphData.edges, ...newEdges],
       };
 
-      // Reload the graph with merged data
-      await state.graph.load(state.graphData);
-
-      state.edgeCount = state.graphData.edges.length;
+      state.edgeCount += added;
       $("stat-edges").textContent = formatNumber(state.edgeCount);
 
-      // Reheat simulation to integrate new edges
-      state.graph.restartSimulation();
-
-      console.log(`Added ${totalAdded} cross-talk edges successfully`);
+      console.log(`Added ${added} cross-talk edges incrementally`);
     } catch (err) {
       console.error("Failed to add cross-talk edges:", err);
     }
@@ -1088,6 +1088,121 @@ async function main(): Promise<void> {
       await loadCodebase();
     } catch (err) {
       console.error("Failed to load codebase:", err);
+    }
+  });
+
+  // ========================================================================
+  // Incremental Mutation Buttons
+  // ========================================================================
+
+  // Add 10 nodes incrementally
+  $("mutate-add-nodes").addEventListener("click", async () => {
+    if (!state.graph || !state.graphData) return;
+
+    const newNodes: NodeInput[] = [];
+    const existingCount = state.nodeCount;
+    for (let i = 0; i < 10; i++) {
+      const id = `mutated_node_${existingCount + i}_${Date.now()}`;
+      const colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#96e6a1", "#dda0dd"];
+      newNodes.push({
+        id,
+        color: colors[i % colors.length],
+        radius: 4 + Math.random() * 6,
+      });
+    }
+
+    try {
+      const ids = await state.graph.addNodes(newNodes);
+      state.nodeCount += ids.length;
+      $("stat-nodes").textContent = formatNumber(state.nodeCount);
+      console.log(`Incrementally added ${ids.length} nodes`);
+
+      // Also add some edges from new nodes to existing ones
+      if (state.graphData.nodes.length > 0) {
+        const edgesToAdd: EdgeInput[] = [];
+        for (const nodeInput of newNodes) {
+          const targetIdx = Math.floor(Math.random() * state.graphData.nodes.length);
+          edgesToAdd.push({
+            source: nodeInput.id,
+            target: state.graphData.nodes[targetIdx].id,
+            weight: 0.5,
+          });
+        }
+        const edgeResults = await state.graph.addEdges(edgesToAdd);
+        const addedEdges = edgeResults.filter((r) => r !== undefined).length;
+        state.edgeCount += addedEdges;
+        $("stat-edges").textContent = formatNumber(state.edgeCount);
+      }
+
+      // Track in graphData
+      state.graphData = {
+        ...state.graphData,
+        nodes: [...state.graphData.nodes, ...newNodes],
+      };
+    } catch (err) {
+      console.error("Failed to add nodes:", err);
+    }
+  });
+
+  // Add 20 random edges incrementally
+  $("mutate-add-edges").addEventListener("click", async () => {
+    if (!state.graph || !state.graphData || state.graphData.nodes.length < 2) return;
+
+    const newEdges: EdgeInput[] = [];
+    const nodes = state.graphData.nodes;
+    for (let i = 0; i < 20; i++) {
+      const srcIdx = Math.floor(Math.random() * nodes.length);
+      let tgtIdx = Math.floor(Math.random() * nodes.length);
+      if (tgtIdx === srcIdx) tgtIdx = (srcIdx + 1) % nodes.length;
+      newEdges.push({
+        source: nodes[srcIdx].id,
+        target: nodes[tgtIdx].id,
+        weight: 0.3 + Math.random() * 0.7,
+      });
+    }
+
+    try {
+      const results = await state.graph.addEdges(newEdges);
+      const added = results.filter((r) => r !== undefined).length;
+      state.edgeCount += added;
+      $("stat-edges").textContent = formatNumber(state.edgeCount);
+      console.log(`Incrementally added ${added} edges`);
+    } catch (err) {
+      console.error("Failed to add edges:", err);
+    }
+  });
+
+  // Remove 5 random nodes incrementally
+  $("mutate-remove-nodes").addEventListener("click", async () => {
+    if (!state.graph || !state.graphData || state.graphData.nodes.length < 5) return;
+
+    const nodesToRemove = [];
+    const nodesCopy = [...state.graphData.nodes];
+    for (let i = 0; i < Math.min(5, nodesCopy.length); i++) {
+      const idx = Math.floor(Math.random() * nodesCopy.length);
+      nodesToRemove.push(nodesCopy[idx].id);
+      nodesCopy.splice(idx, 1);
+    }
+
+    try {
+      const removed = await state.graph.removeNodes(nodesToRemove);
+      state.nodeCount -= removed;
+      $("stat-nodes").textContent = formatNumber(state.nodeCount);
+
+      // Update graphData (remove nodes and their edges)
+      const removedSet = new Set(nodesToRemove);
+      state.graphData = {
+        nodes: state.graphData.nodes.filter((n) => !removedSet.has(n.id)),
+        edges: state.graphData.edges.filter(
+          (e) => !removedSet.has(e.source) && !removedSet.has(e.target),
+        ),
+      };
+      state.edgeCount = state.graphData.edges.length;
+      $("stat-edges").textContent = formatNumber(state.edgeCount);
+
+      console.log(`Incrementally removed ${removed} nodes`);
+    } catch (err) {
+      console.error("Failed to remove nodes:", err);
     }
   });
 

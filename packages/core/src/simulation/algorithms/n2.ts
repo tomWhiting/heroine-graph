@@ -39,6 +39,7 @@ const N2_ALGORITHM_INFO: ForceAlgorithmInfo = {
  */
 export class N2ForceAlgorithm implements ForceAlgorithm {
   readonly info = N2_ALGORITHM_INFO;
+  readonly handlesGravity = false;
 
   private uniformBuffer: GPUBuffer | null = null;
 

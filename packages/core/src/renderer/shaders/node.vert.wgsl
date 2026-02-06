@@ -85,8 +85,14 @@ fn vs_main(
     let selected = node_attrs[attr_base + 4u];
     let hovered = node_attrs[attr_base + 5u];
 
-    // Use default radius if not specified (0 or NaN)
-    let actual_radius = select(DEFAULT_RADIUS, radius, radius > 0.0);
+    // Clip removed nodes (radius <= 0) by placing behind near plane
+    if (radius <= 0.0) {
+        output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+        return output;
+    }
+
+    // Use default radius if not specified
+    let actual_radius = radius;
 
     // Calculate radius in screen pixels
     let radius_px = max(actual_radius * viewport.scale, MIN_RADIUS_PX);

@@ -81,6 +81,8 @@ export interface FullForceConfig extends ForceConfig {
   relativityPhantomZone: boolean;
   /** How much mass affects phantom zone radius (default: 0.5) */
   relativityPhantomMultiplier: number;
+  /** Density field global repulsion strength relative to repulsionStrength (default: 0.5) */
+  relativityDensityRepulsion: number;
 }
 
 /**
@@ -88,7 +90,7 @@ export interface FullForceConfig extends ForceConfig {
  */
 export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   // Base ForceConfig properties (required by interface)
-  repulsion: -30,
+  repulsion: -50,
   attraction: 0.1,
   gravity: 0.01,
   linkDistance: 30,
@@ -97,7 +99,7 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   centerY: 0,
 
   // Extended repulsion settings
-  repulsionStrength: -30,
+  repulsionStrength: -50,
   repulsionDistanceMax: 1000,
   repulsionDistanceMin: 1,
 
@@ -110,7 +112,7 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   centerStrength: 0.01,
 
   // Collision
-  collisionEnabled: false,
+  collisionEnabled: true,
   collisionRadiusMultiplier: 1.0,
   collisionStrength: 0.7,
   collisionIterations: 1,
@@ -125,13 +127,14 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   relativityChildMassFactor: 0.5,
   relativityMassExponent: 0.5,
   relativityMaxSiblings: 100,
-  relativityParentChildMultiplier: 0.3,
-  relativityGravityCurve: "linear",
+  relativityParentChildMultiplier: 0.15,
+  relativityGravityCurve: "soft",
   relativityGravityExponent: 1.0,
   relativityCousinRepulsion: false,
   relativityCousinStrength: 0.5,
   relativityPhantomZone: false,
   relativityPhantomMultiplier: 0.5,
+  relativityDensityRepulsion: 0.5,
 };
 
 /**
@@ -160,7 +163,7 @@ export const FORCE_PRESETS = {
   /** Clustered layout (stronger repulsion between groups) */
   clustered: {
     ...DEFAULT_FORCE_CONFIG,
-    repulsionStrength: -50,
+    repulsionStrength: -80,
     springLength: 50,
     centerStrength: 0.005,
   },
@@ -168,14 +171,14 @@ export const FORCE_PRESETS = {
   /** Dense layout (nodes closer together) */
   dense: {
     ...DEFAULT_FORCE_CONFIG,
-    repulsionStrength: -15,
+    repulsionStrength: -25,
     springLength: 20,
   },
 
   /** Sparse layout (nodes spread apart) */
   sparse: {
     ...DEFAULT_FORCE_CONFIG,
-    repulsionStrength: -50,
+    repulsionStrength: -80,
     springLength: 80,
     repulsionDistanceMax: 2000,
   },
@@ -184,7 +187,7 @@ export const FORCE_PRESETS = {
   radial: {
     ...DEFAULT_FORCE_CONFIG,
     centerStrength: 0.1,
-    repulsionStrength: -20,
+    repulsionStrength: -35,
   },
 } as const;
 
@@ -311,6 +314,7 @@ export function validateForceConfig(
   result.relativityGravityExponent = Math.max(-2, Math.min(2, result.relativityGravityExponent));
   result.relativityCousinStrength = Math.max(0, Math.min(1, result.relativityCousinStrength));
   result.relativityPhantomMultiplier = Math.max(0, Math.min(2, result.relativityPhantomMultiplier));
+  result.relativityDensityRepulsion = Math.max(0, Math.min(2, result.relativityDensityRepulsion));
 
   return result;
 }

@@ -17,6 +17,8 @@ export type {
   ColorScale,
   ContourLayerConfig,
   Edge,
+  // Mutation event types
+  EdgeAddEvent,
   EdgeClickEvent,
   // Edge flow types
   EdgeFlowConfig,
@@ -28,6 +30,7 @@ export type {
   EdgeInput,
   // Edge types
   EdgeMetadata,
+  EdgeRemoveEvent,
   EdgeState,
   EventHandler,
   EventMap,
@@ -37,6 +40,7 @@ export type {
   // Event types
   GraphEvent,
   GraphInput,
+  GraphMutateEvent,
   GraphTypedInput,
   HeatmapLayerConfig,
   HeroineGraphEvent,
@@ -47,6 +51,7 @@ export type {
   LayerType,
   MetaballLayerConfig,
   Node,
+  NodeAddEvent,
   NodeClickEvent,
   NodeDoubleClickEvent,
   NodeDragEndEvent,
@@ -60,6 +65,7 @@ export type {
   NodeInput,
   // Node types
   NodeMetadata,
+  NodeRemoveEvent,
   NodeState,
   SelectionChangeEvent,
   SimulationEndEvent,
@@ -398,6 +404,10 @@ export type { CreateHeroineGraphOptions, InitResult } from "./src/api/factory.ts
 
 export { HeroineGraph } from "./src/api/graph.ts";
 export type { HeroineGraphConfig } from "./src/api/graph.ts";
+
+export { MutableGraphState } from "./src/api/graph_state.ts";
+export { growCapacity, initialCapacity } from "./src/api/buffer_capacity.ts";
+export type { BufferCapacity } from "./src/api/buffer_capacity.ts";
 
 // =============================================================================
 // Interaction

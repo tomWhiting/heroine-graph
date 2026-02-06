@@ -62,6 +62,7 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
  */
 export class ForceAtlas2Algorithm implements ForceAlgorithm {
   readonly info = FORCE_ATLAS2_ALGORITHM_INFO;
+  readonly handlesGravity = true;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;

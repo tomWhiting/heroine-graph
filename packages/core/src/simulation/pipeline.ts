@@ -86,6 +86,9 @@ export interface SimulationBuffers {
   readback: GPUBuffer;
   // Node count for readback sizing
   nodeCount: number;
+  // Allocated capacity (may be larger than count for incremental mutations)
+  nodeCapacity: number;
+  edgeCapacity: number;
 }
 
 /**
@@ -356,15 +359,24 @@ export function createSimulationBindGroups(
  *
  * All position, velocity, force, and readback buffers use vec2<f32> layout
  * (8 bytes per node) for consolidated X/Y data.
+ *
+ * @param nodeCapacity - GPU buffer capacity for nodes (defaults to nodeCount).
+ *                       Set larger than nodeCount to enable incremental additions.
+ * @param edgeCapacity - GPU buffer capacity for edges (defaults to edgeCount).
  */
 export function createSimulationBuffers(
   device: GPUDevice,
   nodeCount: number,
   edgeCount: number,
+  nodeCapacity?: number,
+  edgeCapacity?: number,
 ): SimulationBuffers {
-  const nodeVec2Bytes = nodeCount * 8; // vec2<f32> = 8 bytes
-  const nodeFlagBytes = nodeCount * 4; // u32 = 4 bytes
-  const edgeBytes = Math.max(edgeCount * 4, 4); // Minimum 4 bytes
+  const effectiveNodeCap = Math.max(nodeCapacity ?? nodeCount, nodeCount);
+  const effectiveEdgeCap = Math.max(edgeCapacity ?? edgeCount, edgeCount);
+
+  const nodeVec2Bytes = effectiveNodeCap * 8; // vec2<f32> = 8 bytes
+  const nodeFlagBytes = effectiveNodeCap * 4; // u32 = 4 bytes
+  const edgeBytes = Math.max(effectiveEdgeCap * 4, 4); // Minimum 4 bytes
 
   // Position buffers (ping-pong) - vec2<f32> per node
   const positions = device.createBuffer({
@@ -469,6 +481,8 @@ export function createSimulationBuffers(
     nodeFlags,
     readback,
     nodeCount,
+    nodeCapacity: effectiveNodeCap,
+    edgeCapacity: effectiveEdgeCap,
   };
 }
 
