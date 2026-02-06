@@ -19,7 +19,8 @@ import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
  *     screen_size: vec2<f32>,  // 8 bytes
  *     scale: f32,              // 4 bytes
  *     inv_scale: f32,          // 4 bytes
- *     padding: vec2<f32>,      // 8 bytes for alignment
+ *     dpr: f32,                // 4 bytes (device pixel ratio)
+ *     padding: f32,            // 4 bytes for alignment
  * }
  * ```
  * Total: 72 bytes, aligned to 16 = 80 bytes
@@ -40,7 +41,7 @@ export class ViewportUniformBuffer {
     this.dirty = true;
 
     // mat3x3 is stored as 3 x vec4 (with padding) = 12 floats
-    // + screen_size (2) + scale (1) + inv_scale (1) + padding (4)
+    // + screen_size (2) + scale (1) + inv_scale (1) + dpr (1) + padding (3)
     this.data = new Float32Array(20);
 
     this._buffer = device.createBuffer({
@@ -66,19 +67,23 @@ export class ViewportUniformBuffer {
     state?: ViewportState,
     width?: number,
     height?: number,
+    dpr?: number,
   ): void {
     // Handle both signatures
     let viewport: ViewportState;
+    let devicePixelRatio: number;
     if (state !== undefined) {
-      // Called as update(device, state, width, height)
+      // Called as update(device, state, width, height, dpr)
       viewport = {
         ...state,
         width: width ?? state.width,
         height: height ?? state.height,
       };
+      devicePixelRatio = dpr ?? 1.0;
     } else {
       // Called as update(state)
       viewport = deviceOrState as ViewportState;
+      devicePixelRatio = 1.0;
     }
 
     const transform = graphToClipMatrix(viewport);
@@ -110,7 +115,8 @@ export class ViewportUniformBuffer {
     this.data[14] = viewport.scale;
     this.data[15] = 1.0 / viewport.scale;
 
-    // padding (already zero)
+    // device pixel ratio
+    this.data[16] = devicePixelRatio;
 
     // Write to GPU immediately
     this._device.queue.writeBuffer(this._buffer, 0, toArrayBuffer(this.data));
@@ -189,8 +195,11 @@ struct ViewportUniforms {
     // Inverse scale (1.0 / scale)
     inv_scale: f32,
 
+    // Device pixel ratio for DPR-aware anti-aliasing
+    dpr: f32,
+
     // Padding for alignment
-    _padding: vec2<f32>,
+    _padding: f32,
 }
 
 // Helper function to apply the transformation

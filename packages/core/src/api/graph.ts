@@ -581,11 +581,18 @@ export class HeroineGraph {
     const cssWidth = this.canvas.clientWidth || this.canvas.width;
     const cssHeight = this.canvas.clientHeight || this.canvas.height;
 
+    // Compute DPR from canvas buffer vs CSS dimensions.
+    // This is more reliable than globalThis.devicePixelRatio because it reflects
+    // the actual ratio between the GPU texture and the CSS layout, which may differ
+    // if the caller set non-standard canvas dimensions.
+    const dpr = cssWidth > 0 ? this.canvas.width / cssWidth : (globalThis.devicePixelRatio || 1);
+
     this.viewportUniformBuffer.update(
       this.gpuContext.device,
       state,
       cssWidth,
       cssHeight,
+      dpr,
     );
   }
 

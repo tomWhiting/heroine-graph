@@ -6,6 +6,7 @@ struct FragmentInput {
     @location(1) color: vec3<f32>,
     @location(2) half_width: f32,        // Half width in pixels
     @location(3) state: vec2<f32>,       // (selected, hovered)
+    @location(4) dpr: f32,              // Device pixel ratio for AA
 }
 
 // Flow layer uniforms
@@ -111,7 +112,8 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     let hovered = input.state.y;
 
     // Anti-aliasing: smooth falloff at edges
-    let aa_width = 1.0;  // pixels
+    // DPR-aware: constant physical-pixel AA width regardless of display density
+    let aa_width = 1.0 / input.dpr;
     let edge_dist = perp_dist - half_width;
     let alpha = 1.0 - smoothstep(-aa_width, aa_width, edge_dist);
 

@@ -9,7 +9,8 @@ struct ViewportUniforms {
     screen_size: vec2<f32>,
     scale: f32,
     inv_scale: f32,
-    _padding: vec2<f32>,
+    dpr: f32,
+    _padding: f32,
 }
 
 // Per-node attributes for rendering
@@ -38,6 +39,7 @@ struct VertexOutput {
     @location(1) color: vec3<f32>,         // Node color
     @location(2) radius_px: f32,           // Radius in pixels for AA
     @location(3) state: vec2<f32>,         // (selected, hovered)
+    @location(4) dpr: f32,                 // Device pixel ratio for AA
 }
 
 // Quad vertices for instanced rendering
@@ -108,7 +110,8 @@ fn vs_main(
     let offset_clip = quad_vertex * (radius_px * 2.0 / viewport.screen_size);
 
     // Final vertex position (with slight expansion for AA)
-    let aa_padding = 1.5 / radius_px; // Anti-aliasing padding
+    // DPR-aware: aa_padding is in physical pixels, not CSS pixels
+    let aa_padding = 1.5 / (viewport.dpr * radius_px);
     output.position = vec4<f32>(
         center_clip + offset_clip * (1.0 + aa_padding),
         0.0,
@@ -126,6 +129,9 @@ fn vs_main(
 
     // Pass selection/hover state
     output.state = vec2<f32>(selected, hovered);
+
+    // Pass DPR for fragment shader AA
+    output.dpr = viewport.dpr;
 
     return output;
 }

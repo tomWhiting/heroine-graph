@@ -9,7 +9,8 @@ struct ViewportUniforms {
     screen_size: vec2<f32>,
     scale: f32,
     inv_scale: f32,
-    _padding: vec2<f32>,
+    dpr: f32,
+    _padding: f32,
 }
 
 // Curved edge configuration
@@ -41,6 +42,7 @@ struct VertexOutput {
     @location(1) color: vec3<f32>,      // Edge color
     @location(2) half_width: f32,       // Half line width in pixels
     @location(3) state: vec2<f32>,      // (selected, hovered)
+    @location(4) dpr: f32,              // Device pixel ratio for AA
 }
 
 // Each edge segment is rendered as a quad (2 triangles, 6 vertices)
@@ -195,7 +197,7 @@ fn vs_main(
     // Add width offset (perpendicular)
     // Convert width from pixels to clip space
     let width_clip = half_width * 2.0 / viewport.screen_size;
-    let aa_padding = 1.5;  // Extra pixels for anti-aliasing
+    let aa_padding = 1.5 / viewport.dpr;  // DPR-aware: physical-pixel AA
     let total_width = width_clip + vec2<f32>(aa_padding * 2.0 / viewport.screen_size);
     let offset = perp * total_width * quad_offset.y;
 
@@ -210,6 +212,7 @@ fn vs_main(
     output.color = vec3<f32>(color_r, color_g, color_b);
     output.half_width = half_width;
     output.state = vec2<f32>(selected, hovered);
+    output.dpr = viewport.dpr;
 
     return output;
 }

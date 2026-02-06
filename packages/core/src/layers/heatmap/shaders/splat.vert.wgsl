@@ -13,7 +13,8 @@ struct ViewportUniforms {
     // Scale factor
     scale: f32,
     inv_scale: f32,
-    _padding: vec2<f32>,
+    dpr: f32,
+    _padding: f32,
 }
 
 struct HeatmapUniforms {

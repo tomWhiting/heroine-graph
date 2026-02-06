@@ -25,6 +25,7 @@ struct FragmentInput {
     @location(1) color: vec3<f32>,
     @location(2) radius_px: f32,
     @location(3) state: vec2<f32>,  // (selected, hovered)
+    @location(4) dpr: f32,          // Device pixel ratio for AA
 }
 
 // SDF circle: distance from edge (negative inside)
@@ -44,9 +45,9 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     let selected = input.state.x;
     let hovered = input.state.y;
 
-    // Calculate anti-aliasing width based on radius
-    // Larger nodes need proportionally smaller AA
-    let aa_width = 1.5 / radius_px;
+    // Calculate anti-aliasing width based on radius and DPR
+    // DPR-aware: constant physical-pixel AA width regardless of display density
+    let aa_width = 1.5 / (input.dpr * input.radius_px);
 
     // Distance from circle edge (in normalized space where radius = 1)
     let d = sdf_circle(uv, 1.0);
