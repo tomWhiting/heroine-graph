@@ -379,6 +379,15 @@ export class HeroineGraph {
   private syncInProgress: boolean = false;
   private readonly SYNC_INTERVAL: number = 5; // Sync every N frames
 
+  // Convergence detection — monitors actual node movement instead of using
+  // a fixed alpha decay timer. When max displacement per frame drops below
+  // threshold, the graph has genuinely settled and alpha is clamped to 0.
+  private prevSyncPositionsX: Float32Array | null = null;
+  private prevSyncPositionsY: Float32Array | null = null;
+  private convergenceCheckCount: number = 0;
+  private readonly CONVERGENCE_THRESHOLD: number = 0.15; // max px/frame displacement
+  private readonly CONVERGENCE_CHECKS_REQUIRED: number = 3; // consecutive checks needed
+
   // Layer system
   private layerManager: LayerManager;
 
@@ -1015,6 +1024,9 @@ export class HeroineGraph {
         this.state.parsedGraph.positionsX,
         this.state.parsedGraph.positionsY,
       );
+
+      // Convergence detection: compare with previous sync positions
+      this.checkConvergence();
     } catch (e) {
       // Readback failed - might happen if buffers are destroyed
       if (this.debug) {
@@ -1023,6 +1035,61 @@ export class HeroineGraph {
     } finally {
       this.syncInProgress = false;
     }
+  }
+
+  /**
+   * Check whether nodes have stopped moving by comparing positions
+   * between consecutive GPU→CPU syncs. When max displacement per frame
+   * drops below threshold for several consecutive checks, clamp alpha to 0.
+   */
+  private checkConvergence(): void {
+    const pg = this.state.parsedGraph;
+    if (!pg) return;
+
+    const nodeCount = this.state.nodeCount;
+    if (nodeCount === 0) return;
+
+    // Already converged (alpha = 0) — nothing to do
+    const alpha = this.simulationController.state.alpha;
+    if (alpha === 0) return;
+
+    const posX = pg.positionsX;
+    const posY = pg.positionsY;
+
+    // First sync — just store positions, can't compare yet
+    if (!this.prevSyncPositionsX || this.prevSyncPositionsX.length < nodeCount) {
+      this.prevSyncPositionsX = new Float32Array(posX.subarray(0, nodeCount));
+      this.prevSyncPositionsY = new Float32Array(posY.subarray(0, nodeCount));
+      this.convergenceCheckCount = 0;
+      return;
+    }
+
+    // Find max displacement since last sync
+    let maxDisplSq = 0;
+    for (let i = 0; i < nodeCount; i++) {
+      const dx = posX[i] - this.prevSyncPositionsX[i];
+      const dy = posY[i] - this.prevSyncPositionsY[i];
+      const dSq = dx * dx + dy * dy;
+      if (dSq > maxDisplSq) maxDisplSq = dSq;
+    }
+
+    // Convert to per-frame displacement (sync happens every SYNC_INTERVAL frames)
+    const maxDisplPerFrame = Math.sqrt(maxDisplSq) / this.SYNC_INTERVAL;
+
+    if (maxDisplPerFrame < this.CONVERGENCE_THRESHOLD) {
+      this.convergenceCheckCount++;
+      if (this.convergenceCheckCount >= this.CONVERGENCE_CHECKS_REQUIRED) {
+        // Graph has genuinely converged — clamp alpha to 0
+        this.simulationController.setAlpha(0);
+      }
+    } else {
+      // Still moving — reset counter
+      this.convergenceCheckCount = 0;
+    }
+
+    // Store current positions for next comparison
+    this.prevSyncPositionsX.set(posX.subarray(0, nodeCount));
+    this.prevSyncPositionsY.set(posY.subarray(0, nodeCount));
   }
 
   // ==========================================================================
@@ -2088,6 +2155,8 @@ export class HeroineGraph {
     if (this.simulationController.state.status !== "running") {
       this.simulationController.start();
     }
+    // Reset convergence detection — new data means the graph needs to re-settle
+    this.convergenceCheckCount = 0;
   }
 
   // ---------- Buffer Reallocation ----------
