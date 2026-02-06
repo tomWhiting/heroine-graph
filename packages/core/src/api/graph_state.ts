@@ -60,6 +60,12 @@ export class MutableGraphState {
   /** nodeSlotIndex → set of edge slot indices */
   nodeEdges: Map<number, Set<number>>;
 
+  // Hidden node tracking for visibility filtering
+  /** Original radius values for hidden nodes (slot → radius) */
+  nodeHiddenRadii: Map<number, number>;
+  /** Set of currently hidden node slot indices */
+  nodeHiddenSlots: Set<number>;
+
   private constructor() {
     this.nodeCount = 0;
     this.nodeCapacity = 0;
@@ -80,6 +86,8 @@ export class MutableGraphState {
     this.nodeTypes = [];
     this.edgeTypes = [];
     this.nodeEdges = new Map();
+    this.nodeHiddenRadii = new Map();
+    this.nodeHiddenSlots = new Set();
   }
 
   /**
@@ -181,6 +189,10 @@ export class MutableGraphState {
 
     // Clean up adjacency
     this.nodeEdges.delete(index);
+
+    // Clean up hidden state
+    this.nodeHiddenRadii.delete(index);
+    this.nodeHiddenSlots.delete(index);
   }
 
   /**

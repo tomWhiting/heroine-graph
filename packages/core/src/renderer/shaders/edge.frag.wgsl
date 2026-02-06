@@ -7,6 +7,7 @@ struct FragmentInput {
     @location(2) half_width: f32,        // Half width in pixels
     @location(3) state: vec2<f32>,       // (selected, hovered)
     @location(4) dpr: f32,              // Device pixel ratio for AA
+    @location(5) opacity: f32,          // Edge opacity (0.0 = hidden, 1.0 = fully visible)
 }
 
 // Flow layer uniforms
@@ -171,5 +172,11 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     // Apply combined brightness
     final_color = min(final_color * flow_brightness, vec3<f32>(1.0));
 
-    return vec4<f32>(final_color, alpha);
+    // Apply edge opacity (from type styles)
+    let final_alpha = alpha * input.opacity;
+    if (final_alpha < 0.01) {
+        discard;
+    }
+
+    return vec4<f32>(final_color, final_alpha);
 }

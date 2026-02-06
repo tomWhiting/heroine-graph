@@ -29,7 +29,7 @@ struct CurveConfig {
 // Edge data: pairs of (source_idx, target_idx) packed as u32
 @group(1) @binding(1) var<storage, read> edge_indices: array<u32>;
 
-// Edge attributes (width, color, selected, hovered, curvature, reserved)
+// Edge attributes (width, color, selected, hovered, curvature, opacity)
 // Layout: 8 floats per edge
 @group(1) @binding(2) var<storage, read> edge_attrs: array<f32>;
 
@@ -43,6 +43,7 @@ struct VertexOutput {
     @location(2) half_width: f32,       // Half line width in pixels
     @location(3) state: vec2<f32>,      // (selected, hovered)
     @location(4) dpr: f32,              // Device pixel ratio for AA
+    @location(5) opacity: f32,          // Edge opacity (0.0 = hidden, 1.0 = fully visible)
 }
 
 // Each edge segment is rendered as a quad (2 triangles, 6 vertices)
@@ -119,7 +120,13 @@ fn vs_main(
     let selected = edge_attrs[attr_base + 4u];
     let hovered = edge_attrs[attr_base + 5u];
     let curvature = edge_attrs[attr_base + 6u];
-    // attr_base + 7u is reserved
+    let opacity = edge_attrs[attr_base + 7u];
+
+    // Discard fully transparent edges early (push behind camera)
+    if (opacity <= 0.0) {
+        output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+        return output;
+    }
 
     // Use default width if not specified
     let actual_width = select(DEFAULT_WIDTH, width, width > 0.0);
@@ -213,6 +220,7 @@ fn vs_main(
     output.half_width = half_width;
     output.state = vec2<f32>(selected, hovered);
     output.dpr = viewport.dpr;
+    output.opacity = opacity;
 
     return output;
 }

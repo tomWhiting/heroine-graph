@@ -42,7 +42,7 @@ export interface ParsedGraph {
   /** Edge target indices (Uint32Array) */
   edgeTargets: Uint32Array;
 
-  /** Edge attributes (6 floats per edge: width, r, g, b, selected, hovered) */
+  /** Edge attributes (8 floats per edge: width, r, g, b, selected, hovered, curvature, opacity) */
   edgeAttributes: Float32Array;
 
   /** Original node metadata (for lookup) */
@@ -130,7 +130,7 @@ export function parseGraphInput(
   const nodeAttributes = new Float32Array(nodeCount * 6);
   const edgeSources = new Uint32Array(edgeCount);
   const edgeTargets = new Uint32Array(edgeCount);
-  // 8 floats per edge: width, r, g, b, selected, hovered, curvature, reserved
+  // 8 floats per edge: width, r, g, b, selected, hovered, curvature, opacity
   const edgeAttributes = new Float32Array(edgeCount * 8);
 
   // Metadata storage
@@ -216,7 +216,7 @@ export function parseGraphInput(
     edgeAttributes[attrBase + 4] = 0; // selected
     edgeAttributes[attrBase + 5] = 0; // hovered
     edgeAttributes[attrBase + 6] = 0; // curvature (default: straight)
-    edgeAttributes[attrBase + 7] = 0; // reserved
+    edgeAttributes[attrBase + 7] = 1.0; // opacity (default: fully visible)
 
     // Store metadata (accessed via index signature)
     const edgeMetadataValue = edge["metadata"] as Record<string, unknown> | undefined;

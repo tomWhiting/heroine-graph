@@ -1771,7 +1771,7 @@ export class HeroineGraph {
     gs.edgeAttributes[eAttrBase + 4] = 0; // selected
     gs.edgeAttributes[eAttrBase + 5] = 0; // hovered
     gs.edgeAttributes[eAttrBase + 6] = 0; // curvature
-    gs.edgeAttributes[eAttrBase + 7] = 0; // reserved
+    gs.edgeAttributes[eAttrBase + 7] = 1.0; // opacity (default: fully visible)
 
     // Update adjacency
     gs.addEdgeAdjacency(slot, srcSlot, tgtSlot);
@@ -1779,7 +1779,7 @@ export class HeroineGraph {
     // Write to GPU buffers
     const { device } = this.gpuContext;
     const edgeIndicesData = new Uint32Array([srcSlot, tgtSlot]);
-    const edgeAttrData = new Float32Array([width, r, g, b, 0, 0, 0, 0]);
+    const edgeAttrData = new Float32Array([width, r, g, b, 0, 0, 0, 1.0]);
     const srcData = new Uint32Array([srcSlot]);
     const tgtData = new Uint32Array([tgtSlot]);
 
@@ -1964,6 +1964,10 @@ export class HeroineGraph {
     this.simBuffers.nodeCount = gs.nodeHighWater;
     this.syncParsedGraphFromState();
     this.ensureAlgorithmCapacity();
+
+    // Re-apply type styles after GPU flush to prevent CPU shadow from clobbering styled data
+    this.applyTypeStyles();
+
     this.bumpSimulationAlpha(0.2);
 
     // Emit batch summary
@@ -2006,6 +2010,237 @@ export class HeroineGraph {
   }
 
   /**
+   * Batch-optimized node removal with compact layout.
+   *
+   * Unlike removeNodes (which calls removeNode per-ID), this method:
+   * - Resolves all IDs to slots upfront
+   * - Collects ALL connected edges across all removed nodes
+   * - Compacts edge arrays in a single pass (no swap-remove instability)
+   * - Compacts node arrays — shifts surviving nodes down to eliminate gaps
+   * - Remaps edge source/target indices to use new compact node slots
+   * - Performs a single GPU flush for nodes and edges
+   * - Rebuilds the WASM engine once
+   * - Returns a slot remap so callers can update external slot references
+   * - Emits a single batch event
+   *
+   * After this call, nodeCount == nodeHighWater (no holes) and nodeFreeList is empty.
+   *
+   * Performance: O(N + E) CPU work, ~12 GPU writes total (vs 6N + 4DN for removeNodes).
+   *
+   * @param ids - Node IDs to remove
+   * @returns Object with removedCount and nodeSlotRemap (oldSlot → newSlot for surviving nodes)
+   */
+  async removeNodesBatch(
+    ids: (NodeId | string)[],
+  ): Promise<{ removedCount: number; nodeSlotRemap: Map<number, number> }> {
+    const emptyResult = { removedCount: 0, nodeSlotRemap: new Map<number, number>() };
+    if (!this.graphState || !this.buffers || !this.simBuffers) return emptyResult;
+
+    const gs = this.graphState;
+
+    // 1. Resolve all IDs to valid slot indices
+    const slotsToRemove = new Set<number>();
+    for (const id of ids) {
+      const slot =
+        typeof id === "number" && id < gs.nodeHighWater
+          ? id
+          : gs.nodeIdMap.get(id);
+      if (slot !== undefined && !gs.nodeFreeList.includes(slot)) {
+        slotsToRemove.add(slot);
+      }
+    }
+    if (slotsToRemove.size === 0) return emptyResult;
+
+    // 2. Scan ALL edges — remove any where either endpoint is being removed.
+    // This is O(E) but bypasses the nodeEdges adjacency map which can accumulate
+    // stale entries from previous swap-remove operations in freeEdgeSlot.
+    const edgesToRemove = new Set<number>();
+    for (let i = 0; i < gs.edgeCount; i++) {
+      if (slotsToRemove.has(gs.edgeSources[i]!) || slotsToRemove.has(gs.edgeTargets[i]!)) {
+        edgesToRemove.add(i);
+      }
+    }
+
+    // 3. Compact edge arrays — single-pass filter keeping only surviving edges
+    const prevEdgeCount = gs.edgeCount;
+    let removedEdgeCount = 0;
+
+    if (edgesToRemove.size > 0) {
+      removedEdgeCount = edgesToRemove.size;
+
+      // Collect surviving edge IDs and types in compact order
+      const survivingEdgeIds: (string | number | undefined)[] = [];
+      const survivingEdgeTypes: (string | undefined)[] = [];
+
+      let writeIdx = 0;
+      for (let readIdx = 0; readIdx < prevEdgeCount; readIdx++) {
+        if (edgesToRemove.has(readIdx)) continue;
+
+        survivingEdgeIds.push(gs.edgeIdMap.getId(readIdx));
+        survivingEdgeTypes.push(gs.edgeTypes[readIdx]);
+
+        if (readIdx !== writeIdx) {
+          gs.edgeSources[writeIdx] = gs.edgeSources[readIdx]!;
+          gs.edgeTargets[writeIdx] = gs.edgeTargets[readIdx]!;
+          const srcAttr = readIdx * 8;
+          const dstAttr = writeIdx * 8;
+          for (let k = 0; k < 8; k++) {
+            gs.edgeAttributes[dstAttr + k] = gs.edgeAttributes[srcAttr + k]!;
+          }
+        }
+        writeIdx++;
+      }
+
+      gs.edgeCount = writeIdx;
+
+      // Rebuild edge ID map with compact indices
+      gs.edgeIdMap.clear();
+      for (const eid of survivingEdgeIds) {
+        if (eid !== undefined) gs.edgeIdMap.add(eid);
+      }
+
+      // Restore edge types
+      gs.edgeTypes = survivingEdgeTypes;
+
+      // Edge metadata uses slot indices — clear stale entries
+      gs.edgeMetadata.clear();
+    }
+
+    // 4. Compact node arrays — single-pass filter shifting survivors down
+    // deadSlots includes both the nodes being removed AND any pre-existing
+    // holes from prior freeNodeSlot() calls, so compaction eliminates all gaps.
+    const deadSlots = new Set<number>([...slotsToRemove, ...gs.nodeFreeList]);
+    const nodeSlotRemap = new Map<number, number>(); // oldSlot → newSlot
+    const survivingNodeIds: (string | number | undefined)[] = [];
+    const survivingNodeTypes: (string | undefined)[] = [];
+    const survivingNodeMeta = new Map<number, Record<string, unknown>>();
+    const survivingHiddenRadii = new Map<number, number>();
+    const survivingHiddenSlots = new Set<number>();
+
+    let nodeWriteIdx = 0;
+    for (let readIdx = 0; readIdx < gs.nodeHighWater; readIdx++) {
+      if (deadSlots.has(readIdx)) continue;
+
+      survivingNodeIds.push(gs.nodeIdMap.getId(readIdx));
+      survivingNodeTypes.push(gs.nodeTypes[readIdx]);
+
+      const meta = gs.nodeMetadata.get(readIdx);
+      if (meta) survivingNodeMeta.set(nodeWriteIdx, meta);
+
+      const hiddenRadius = gs.nodeHiddenRadii.get(readIdx);
+      if (hiddenRadius !== undefined) survivingHiddenRadii.set(nodeWriteIdx, hiddenRadius);
+      if (gs.nodeHiddenSlots.has(readIdx)) survivingHiddenSlots.add(nodeWriteIdx);
+
+      nodeSlotRemap.set(readIdx, nodeWriteIdx);
+
+      if (readIdx !== nodeWriteIdx) {
+        gs.positionsX[nodeWriteIdx] = gs.positionsX[readIdx]!;
+        gs.positionsY[nodeWriteIdx] = gs.positionsY[readIdx]!;
+        const srcAttr = readIdx * 6;
+        const dstAttr = nodeWriteIdx * 6;
+        for (let k = 0; k < 6; k++) {
+          gs.nodeAttributes[dstAttr + k] = gs.nodeAttributes[srcAttr + k]!;
+        }
+      }
+      nodeWriteIdx++;
+    }
+
+    // Zero trailing data (previously occupied slots now beyond nodeWriteIdx)
+    for (let i = nodeWriteIdx; i < gs.nodeHighWater; i++) {
+      gs.positionsX[i] = 0;
+      gs.positionsY[i] = 0;
+      const attrBase = i * 6;
+      for (let k = 0; k < 6; k++) gs.nodeAttributes[attrBase + k] = 0;
+    }
+
+    // Update node tracking — compact, no holes
+    gs.nodeCount = nodeWriteIdx;
+    gs.nodeHighWater = nodeWriteIdx;
+    gs.nodeFreeList = [];
+
+    // Rebuild nodeIdMap with compact indices
+    gs.nodeIdMap.clear();
+    for (const nid of survivingNodeIds) {
+      if (nid !== undefined) gs.nodeIdMap.add(nid);
+    }
+
+    // Restore metadata maps with new slot indices
+    gs.nodeTypes = survivingNodeTypes;
+    gs.nodeMetadata = survivingNodeMeta;
+    gs.nodeHiddenRadii = survivingHiddenRadii;
+    gs.nodeHiddenSlots = survivingHiddenSlots;
+
+    // 5. Remap edge source/target to use new compact node slot indices
+    // Safe: edge compaction already removed edges touching dead nodes,
+    // so all surviving edges reference nodes present in nodeSlotRemap.
+    for (let i = 0; i < gs.edgeCount; i++) {
+      const newSrc = nodeSlotRemap.get(gs.edgeSources[i]!);
+      const newTgt = nodeSlotRemap.get(gs.edgeTargets[i]!);
+      if (newSrc !== undefined) gs.edgeSources[i] = newSrc;
+      if (newTgt !== undefined) gs.edgeTargets[i] = newTgt;
+    }
+
+    // 6. Rebuild adjacency from compact edges (using remapped node slots)
+    gs.nodeEdges.clear();
+    for (let i = 0; i < gs.edgeCount; i++) {
+      // Safe: i < edgeCount guarantees valid index
+      gs.addEdgeAdjacency(i, gs.edgeSources[i]!, gs.edgeTargets[i]!);
+    }
+
+    // 7. Single GPU flush for all data
+    this.flushNodeBuffersToGPU();
+    this.flushEdgeBuffersToGPU();
+
+    // 8. Rebuild WASM engine from current state (single rebuild instead of N removes)
+    if (this.wasmEngine) {
+      this.wasmEngine.clear();
+
+      const positions = new Float32Array(gs.nodeHighWater * 2);
+      for (let i = 0; i < gs.nodeHighWater; i++) {
+        positions[i * 2] = gs.positionsX[i]!;
+        positions[i * 2 + 1] = gs.positionsY[i]!;
+      }
+      this.wasmEngine.addNodesFromPositions(positions);
+
+      if (gs.edgeCount > 0) {
+        const edgePairs = new Uint32Array(gs.edgeCount * 2);
+        for (let i = 0; i < gs.edgeCount; i++) {
+          edgePairs[i * 2] = gs.edgeSources[i]!;
+          edgePairs[i * 2 + 1] = gs.edgeTargets[i]!;
+        }
+        this.wasmEngine.addEdgesFromPairs(edgePairs);
+      }
+
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+
+    // 9. Update counts and sync
+    this.state.nodeCount = gs.nodeCount;
+    this.state.edgeCount = gs.edgeCount;
+    this.simBuffers.nodeCount = gs.nodeHighWater;
+
+    this.syncParsedGraphFromState();
+    this.uploadAlgorithmEdgeData(this.gpuContext.device);
+
+    // Re-apply type styles after GPU flush to prevent CPU shadow from clobbering styled data
+    this.applyTypeStyles();
+
+    this.bumpSimulationAlpha(0.3);
+
+    // 10. Emit batch summary
+    this.events.emit({
+      type: "graph:mutate",
+      timestamp: Date.now(),
+      nodesAdded: 0,
+      nodesRemoved: slotsToRemove.size,
+      edgesAdded: 0,
+      edgesRemoved: removedEdgeCount,
+    });
+
+    return { removedCount: slotsToRemove.size, nodeSlotRemap };
+  }
+
+  /**
    * Add multiple edges at once.
    *
    * @param edges - Array of edge inputs
@@ -2033,6 +2268,112 @@ export class HeroineGraph {
   }
 
   /**
+   * Batch-optimized edge addition.
+   *
+   * Unlike addEdges (which calls addEdge per-edge), this method:
+   * - Checks capacity once for all edges
+   * - Populates CPU shadow arrays in a tight loop
+   * - Performs a single GPU flush
+   * - Batch-adds to WASM engine via addEdgesFromPairs
+   * - Emits a single event
+   *
+   * Performance: O(E) CPU work, ~4 GPU writes total (vs 4E for addEdges).
+   *
+   * @param edges - Array of edge inputs
+   * @returns Array of edge IDs (undefined for edges with invalid source/target)
+   */
+  async addEdgesBatch(edges: EdgeInput[]): Promise<(EdgeId | undefined)[]> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return [];
+    if (edges.length === 0) return [];
+
+    const gs = this.graphState;
+
+    // Check capacity once for all edges
+    if (gs.needsEdgeReallocation(edges.length)) {
+      await this.reallocateEdgeBuffers(
+        growCapacity(gs.edgeCount + edges.length, gs.edgeCapacity),
+      );
+    }
+
+    const ids: (EdgeId | undefined)[] = [];
+    const newEdgePairs: number[] = []; // For WASM batch
+
+    for (const edge of edges) {
+      const srcSlot = gs.nodeIdMap.get(edge.source);
+      const tgtSlot = gs.nodeIdMap.get(edge.target);
+      if (srcSlot === undefined || tgtSlot === undefined) {
+        ids.push(undefined);
+        continue;
+      }
+
+      const slot = gs.allocateEdgeSlot();
+      const edgeId =
+        ((edge as Record<string, unknown>)["id"] as string | number | undefined) ??
+        `edge_${slot}`;
+      gs.edgeIdMap.add(edgeId);
+
+      const width = edge.width ?? 1;
+      const [r, g, b] = edge.color ? parseColorToRGB(edge.color) : [0.5, 0.5, 0.5];
+
+      gs.edgeSources[slot] = srcSlot;
+      gs.edgeTargets[slot] = tgtSlot;
+      const eAttrBase = slot * 8;
+      gs.edgeAttributes[eAttrBase] = width;
+      gs.edgeAttributes[eAttrBase + 1] = r;
+      gs.edgeAttributes[eAttrBase + 2] = g;
+      gs.edgeAttributes[eAttrBase + 3] = b;
+      gs.edgeAttributes[eAttrBase + 4] = 0;
+      gs.edgeAttributes[eAttrBase + 5] = 0;
+      gs.edgeAttributes[eAttrBase + 6] = 0;
+      gs.edgeAttributes[eAttrBase + 7] = 1.0; // opacity (default: fully visible)
+
+      gs.addEdgeAdjacency(slot, srcSlot, tgtSlot);
+
+      // Record edge type
+      const edgeType = (edge as Record<string, unknown>)["type"] as
+        | string
+        | undefined;
+      if (edgeType) gs.edgeTypes[slot] = edgeType;
+
+      newEdgePairs.push(srcSlot, tgtSlot);
+      ids.push(slot);
+    }
+
+    // Single GPU flush for all edge data
+    this.flushEdgeBuffersToGPU();
+
+    // Batch WASM update
+    if (this.wasmEngine && newEdgePairs.length > 0) {
+      this.wasmEngine.addEdgesFromPairs(new Uint32Array(newEdgePairs));
+    }
+
+    // Update counts
+    this.state.edgeCount = gs.edgeCount;
+
+    this.syncParsedGraphFromState();
+    this.uploadAlgorithmEdgeData(this.gpuContext.device);
+
+    // Re-apply type styles after GPU flush to prevent CPU shadow from clobbering styled data
+    this.applyTypeStyles();
+
+    this.bumpSimulationAlpha(0.1);
+
+    const added = ids.filter((r) => r !== undefined).length;
+    if (added > 0) {
+      this.events.emit({
+        type: "graph:mutate",
+        timestamp: Date.now(),
+        nodesAdded: 0,
+        nodesRemoved: 0,
+        edgesAdded: added,
+        edgesRemoved: 0,
+      });
+    }
+
+    return ids;
+  }
+
+  /**
    * Remove multiple edges.
    *
    * @param ids - Edge IDs to remove
@@ -2056,6 +2397,136 @@ export class HeroineGraph {
     }
 
     return removed;
+  }
+
+  /**
+   * Batch-optimized edge removal.
+   *
+   * Unlike removeEdges (which calls removeEdge per-edge with swap-remove),
+   * this method:
+   * - Resolves all IDs to slot indices in one pass
+   * - Single-pass compact: shifts surviving edges down
+   * - Rebuilds edge ID map, types, adjacency from compact data
+   * - Single GPU flush
+   * - WASM clear + full rebuild (positions unchanged, surviving edges only)
+   * - Re-applies type styles to preserve styled GPU data
+   *
+   * Performance: O(E) CPU scan + ~4 GPU writes + 1 WASM rebuild.
+   *
+   * @param ids - Edge IDs to remove (string or number)
+   * @returns Number of edges actually removed
+   */
+  async removeEdgesBatch(ids: (EdgeId | string)[]): Promise<number> {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return 0;
+    if (ids.length === 0) return 0;
+
+    const gs = this.graphState;
+
+    // 1. Resolve all IDs to valid edge slot indices
+    const slotsToRemove = new Set<number>();
+    for (const id of ids) {
+      const slot = gs.edgeIdMap.get(id);
+      if (slot !== undefined) {
+        slotsToRemove.add(slot);
+      }
+    }
+    if (slotsToRemove.size === 0) return 0;
+
+    const removedCount = slotsToRemove.size;
+
+    // 2. Single-pass compact: iterate edges, skip removed, shift survivors down
+    const survivingEdgeIds: (string | number | undefined)[] = [];
+    const survivingEdgeTypes: (string | undefined)[] = [];
+
+    let writeIdx = 0;
+    for (let readIdx = 0; readIdx < gs.edgeCount; readIdx++) {
+      if (slotsToRemove.has(readIdx)) continue;
+
+      survivingEdgeIds.push(gs.edgeIdMap.getId(readIdx));
+      survivingEdgeTypes.push(gs.edgeTypes[readIdx]);
+
+      if (readIdx !== writeIdx) {
+        gs.edgeSources[writeIdx] = gs.edgeSources[readIdx]!;
+        gs.edgeTargets[writeIdx] = gs.edgeTargets[readIdx]!;
+        const srcAttr = readIdx * 8;
+        const dstAttr = writeIdx * 8;
+        for (let k = 0; k < 8; k++) {
+          gs.edgeAttributes[dstAttr + k] = gs.edgeAttributes[srcAttr + k]!;
+        }
+      }
+      writeIdx++;
+    }
+
+    gs.edgeCount = writeIdx;
+
+    // 3. Rebuild edge ID map with compact indices
+    gs.edgeIdMap.clear();
+    for (const eid of survivingEdgeIds) {
+      if (eid !== undefined) gs.edgeIdMap.add(eid);
+    }
+
+    // 4. Restore edge types
+    gs.edgeTypes = survivingEdgeTypes;
+
+    // 5. Clear stale edge metadata
+    gs.edgeMetadata.clear();
+
+    // 6. Rebuild adjacency from compact edges
+    gs.nodeEdges.clear();
+    for (let i = 0; i < gs.edgeCount; i++) {
+      gs.addEdgeAdjacency(i, gs.edgeSources[i]!, gs.edgeTargets[i]!);
+    }
+
+    // 7. Single GPU flush
+    this.flushEdgeBuffersToGPU();
+
+    // 8. Rebuild WASM engine (edges changed, nodes stay the same)
+    if (this.wasmEngine) {
+      this.wasmEngine.clear();
+
+      // Re-add all node positions (unchanged)
+      const positions = new Float32Array(gs.nodeHighWater * 2);
+      for (let i = 0; i < gs.nodeHighWater; i++) {
+        positions[i * 2] = gs.positionsX[i]!;
+        positions[i * 2 + 1] = gs.positionsY[i]!;
+      }
+      this.wasmEngine.addNodesFromPositions(positions);
+
+      // Re-add surviving edges
+      if (gs.edgeCount > 0) {
+        const edgePairs = new Uint32Array(gs.edgeCount * 2);
+        for (let i = 0; i < gs.edgeCount; i++) {
+          edgePairs[i * 2] = gs.edgeSources[i]!;
+          edgePairs[i * 2 + 1] = gs.edgeTargets[i]!;
+        }
+        this.wasmEngine.addEdgesFromPairs(edgePairs);
+      }
+
+      this.wasmEngine.rebuildSpatialIndex();
+    }
+
+    // 9. Update counts and sync
+    this.state.edgeCount = gs.edgeCount;
+
+    this.syncParsedGraphFromState();
+    this.uploadAlgorithmEdgeData(this.gpuContext.device);
+
+    // Re-apply type styles after GPU flush to prevent CPU shadow from clobbering styled data
+    this.applyTypeStyles();
+
+    this.bumpSimulationAlpha(0.3);
+
+    // 10. Emit batch summary
+    this.events.emit({
+      type: "graph:mutate",
+      timestamp: Date.now(),
+      nodesAdded: 0,
+      nodesRemoved: 0,
+      edgesAdded: 0,
+      edgesRemoved: removedCount,
+    });
+
+    return removedCount;
   }
 
   // ---------- Mutation Helpers ----------
@@ -2091,6 +2562,45 @@ export class HeroineGraph {
     device.queue.writeBuffer(this.simBuffers.velocities, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
+  }
+
+  /**
+   * Flush all edge source/target/attribute data to GPU.
+   * Used for batch operations. Writes the entire live edge range.
+   */
+  private flushEdgeBuffersToGPU(): void {
+    if (!this.graphState || !this.buffers || !this.simBuffers) return;
+
+    const gs = this.graphState;
+    const { device } = this.gpuContext;
+    const ec = gs.edgeCount;
+
+    // Interleave sources/targets for the render edge-indices buffer
+    const edgeIndices = new Uint32Array(ec * 2);
+    for (let i = 0; i < ec; i++) {
+      edgeIndices[i * 2] = gs.edgeSources[i]!;
+      edgeIndices[i * 2 + 1] = gs.edgeTargets[i]!;
+    }
+    device.queue.writeBuffer(this.buffers.edgeIndices, 0, toArrayBuffer(edgeIndices));
+
+    // Edge attributes
+    device.queue.writeBuffer(
+      this.buffers.edgeAttributes,
+      0,
+      toArrayBuffer(gs.edgeAttributes.subarray(0, ec * 8)),
+    );
+
+    // Simulation edge data
+    device.queue.writeBuffer(
+      this.simBuffers.edgeSources,
+      0,
+      toArrayBuffer(gs.edgeSources.subarray(0, ec)),
+    );
+    device.queue.writeBuffer(
+      this.simBuffers.edgeTargets,
+      0,
+      toArrayBuffer(gs.edgeTargets.subarray(0, ec)),
+    );
   }
 
   /**
@@ -4234,6 +4744,100 @@ export class HeroineGraph {
     this.applyTypeStyles();
   }
 
+  // ============================================================================
+  // Node Visibility API
+  // ============================================================================
+
+  /**
+   * Show or hide nodes by ID.
+   *
+   * Hidden nodes have their radius zeroed in the GPU buffer (making them invisible
+   * to the shader). Their original radius is preserved so they can be restored.
+   * Edges connected to hidden nodes are effectively invisible since both endpoints
+   * are clipped behind the near plane.
+   *
+   * @param ids - Node IDs to show or hide
+   * @param visible - `true` to show, `false` to hide
+   *
+   * @example
+   * ```typescript
+   * // Hide all "json" nodes
+   * graph.setNodeVisibility(jsonNodeIds, false);
+   * // Show them again
+   * graph.setNodeVisibility(jsonNodeIds, true);
+   * ```
+   */
+  setNodeVisibility(ids: (string | number)[], visible: boolean): void {
+    if (!this.buffers || !this.state.parsedGraph || !this.graphState) return;
+
+    const gs = this.graphState;
+    const parsed = this.state.parsedGraph;
+    const { device } = this.gpuContext;
+
+    // Prepare a scratch buffer for per-node writes (6 floats = 24 bytes)
+    const scratch = new Float32Array(6);
+
+    for (const id of ids) {
+      const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
+      if (slot === undefined) continue;
+
+      const baseOffset = slot * 6;
+
+      if (!visible) {
+        // Hide: save original radius, zero the slot
+        if (gs.nodeHiddenSlots.has(slot)) continue; // already hidden
+
+        const currentRadius = parsed.nodeAttributes[baseOffset];
+        if (currentRadius === 0) continue; // freed slot, nothing to hide
+
+        gs.nodeHiddenRadii.set(slot, currentRadius);
+        gs.nodeHiddenSlots.add(slot);
+
+        // Zero all visual attributes (radius, r, g, b) — preserve selected/hovered
+        scratch[0] = 0; // radius
+        scratch[1] = 0; // r
+        scratch[2] = 0; // g
+        scratch[3] = 0; // b
+        scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
+        scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
+
+        device.queue.writeBuffer(
+          this.buffers.nodeAttributes,
+          baseOffset * 4,
+          scratch.buffer,
+          0,
+          24,
+        );
+      } else {
+        // Show: restore original radius and re-apply type style
+        if (!gs.nodeHiddenSlots.has(slot)) continue; // not hidden
+
+        const savedRadius = gs.nodeHiddenRadii.get(slot) ?? 0;
+        gs.nodeHiddenRadii.delete(slot);
+        gs.nodeHiddenSlots.delete(slot);
+
+        // Resolve the type style for this node to get color + size multiplier
+        const nodeType = parsed.nodeTypes?.[slot];
+        const style = this.typeStyleManager.resolveNodeStyle(nodeType);
+
+        scratch[0] = savedRadius * style.size; // radius × style multiplier
+        scratch[1] = style.color[0]; // r
+        scratch[2] = style.color[1]; // g
+        scratch[3] = style.color[2]; // b
+        scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
+        scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
+
+        device.queue.writeBuffer(
+          this.buffers.nodeAttributes,
+          baseOffset * 4,
+          scratch.buffer,
+          0,
+          24,
+        );
+      }
+    }
+  }
+
   /**
    * Apply type-based styles to nodes and edges.
    * Called internally after type style changes.
@@ -4243,6 +4847,9 @@ export class HeroineGraph {
 
     const parsed = this.state.parsedGraph;
     const { device } = this.gpuContext;
+
+    // Hidden slots set — skip these when applying styles so they stay invisible
+    const hiddenSlots = this.graphState?.nodeHiddenSlots;
 
     // Update node attributes buffer with type-based colors and sizes
     if (this.buffers && this.typeStyleManager.hasNodeStyles()) {
@@ -4257,6 +4864,11 @@ export class HeroineGraph {
 
         // Skip freed slots (radius 0)
         if (originalRadius === 0) {
+          continue;
+        }
+
+        // Skip hidden slots — they stay zeroed (invisible)
+        if (hiddenSlots?.has(i)) {
           continue;
         }
 
@@ -4292,7 +4904,7 @@ export class HeroineGraph {
         const style = this.typeStyleManager.resolveEdgeStyle(edgeType);
 
         const baseOffset = i * 8;
-        // Layout: [width, r, g, b, selected, hovered, curvature, reserved]
+        // Layout: [width, r, g, b, selected, hovered, curvature, opacity]
         edgeAttributes[baseOffset + 0] = style.width;
         edgeAttributes[baseOffset + 1] = style.color[0]; // r
         edgeAttributes[baseOffset + 2] = style.color[1]; // g
@@ -4300,7 +4912,7 @@ export class HeroineGraph {
         edgeAttributes[baseOffset + 4] = 0; // selected
         edgeAttributes[baseOffset + 5] = 0; // hovered
         edgeAttributes[baseOffset + 6] = 0; // curvature (default: straight)
-        edgeAttributes[baseOffset + 7] = 0; // reserved
+        edgeAttributes[baseOffset + 7] = style.color[3]; // opacity from resolved alpha (0.0 = hidden)
       }
 
       device.queue.writeBuffer(
