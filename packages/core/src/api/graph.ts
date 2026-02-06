@@ -2530,6 +2530,27 @@ export class HeroineGraph {
   }
 
   /**
+   * Set simulation alpha target.
+   *
+   * Set to 0 for full convergence (simulation cools to rest, reheats on mutation).
+   * Set to a positive value (e.g. 0.1) for continuous mode (never fully stops).
+   */
+  setAlphaTarget(target: number): void {
+    this.simulationController.setAlphaTarget(target);
+  }
+
+  /**
+   * Set simulation alpha decay rate.
+   *
+   * Controls how quickly the simulation cools down.
+   * Lower values = slower cooling = more time to organize.
+   * Default is 0.0228 (~300 iterations). Use calculateAlphaDecay() for target iteration counts.
+   */
+  setAlphaDecay(decay: number): void {
+    this.simulationController.setConfig({ alphaDecay: decay });
+  }
+
+  /**
    * Set force configuration parameters.
    * Updates take effect immediately on the running simulation.
    *

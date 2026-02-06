@@ -202,6 +202,16 @@ export function createSimulationController(
     // Alpha decay toward target
     state.alpha += (state.alphaTarget - state.alpha) * state.alphaDecay;
 
+    // Snap alpha to exactly 0 when below threshold and target is also low.
+    // Without this, residual alpha (~0.0005) keeps GPU forces nonzero,
+    // causing visible sub-pixel jitter at equilibrium. With alpha = 0,
+    // the integration shader produces zero acceleration and damping
+    // zeroes out remaining velocities within a few frames.
+    // bumpSimulationAlpha() reheats above alphaMin when new data arrives.
+    if (state.alpha < state.alphaMin && state.alphaTarget <= state.alphaMin) {
+      state.alpha = 0;
+    }
+
     // Check for warm-up completion
     if (state.isWarmingUp && state.tickCount >= finalConfig.warmUpTicks) {
       state.isWarmingUp = false;
@@ -262,7 +272,8 @@ export function createSimulationController(
   function restart(): void {
     state.status = "running";
     state.alpha = finalConfig.alpha;
-    state.alphaTarget = finalConfig.alphaTarget;
+    // Note: alphaTarget is NOT reset here. It's a caller-configured setting
+    // (e.g. 0 for convergence mode) that should survive restarts.
     state.tickCount = 0;
     state.isWarmingUp = finalConfig.warmUpTicks > 0;
     events.emit("restart", { alpha: state.alpha });
@@ -279,7 +290,9 @@ export function createSimulationController(
    * Set alpha target
    */
   function setAlphaTarget(target: number): void {
-    state.alphaTarget = Math.max(0, Math.min(1, target));
+    const clamped = Math.max(0, Math.min(1, target));
+    state.alphaTarget = clamped;
+    finalConfig.alphaTarget = clamped;
   }
 
   /**
