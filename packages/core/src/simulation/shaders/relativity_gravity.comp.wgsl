@@ -14,7 +14,9 @@ struct GravityUniforms {
     center_x: f32,
     center_y: f32,
     mass_exponent: f32,    // How much mass affects gravity (0 = uniform, 1 = linear)
-    _padding: vec3<u32>,
+    gravity_curve: u32,    // 0=linear, 1=inverse, 2=soft, 3=custom
+    gravity_exponent: f32, // Exponent for custom curve
+    _padding: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: GravityUniforms;
@@ -59,79 +61,33 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let mass_factor = pow(mass, uniforms.mass_exponent);
     let gravity = uniforms.gravity_strength / max(mass_factor, 0.1);
 
-    // Linear pull (not inverse-square, for stability)
-    let force = to_center * gravity;
+    // Calculate distance for curve calculations
+    let dist = sqrt(dist_sq);
+
+    // Apply gravity curve to modulate force based on distance
+    var distance_factor: f32;
+    switch (uniforms.gravity_curve) {
+        case 0u: {
+            // Linear (current behavior): force scales with distance
+            distance_factor = dist;
+        }
+        case 1u: {
+            // Inverse-square: stable "orbits", weakens with distance
+            distance_factor = 1.0 / max(dist, 1.0);
+        }
+        case 2u: {
+            // Soft: gentle at close range, sqrt falloff
+            distance_factor = sqrt(dist);
+        }
+        default: {
+            // Custom: distance^exponent
+            distance_factor = pow(dist, uniforms.gravity_exponent);
+        }
+    }
+
+    // Apply gravity with distance curve
+    let force = normalize(to_center) * gravity * distance_factor;
 
     forces[node_idx] += force;
 }
 
-// Compute center of mass for the entire graph
-// Uses workgroup reduction
-var<workgroup> shared_sum_x: array<f32, 256>;
-var<workgroup> shared_sum_y: array<f32, 256>;
-var<workgroup> shared_mass: array<f32, 256>;
-
-@compute @workgroup_size(256)
-fn compute_center_of_mass(@builtin(global_invocation_id) global_id: vec3<u32>,
-                          @builtin(local_invocation_id) local_id: vec3<u32>,
-                          @builtin(workgroup_id) group_id: vec3<u32>) {
-    let node_idx = global_id.x;
-    let tid = local_id.x;
-
-    // Load data (or zero if out of bounds)
-    if (node_idx < uniforms.node_count) {
-        let mass = max(node_mass[node_idx], 1.0);
-        let pos = positions[node_idx];
-        shared_sum_x[tid] = pos.x * mass;
-        shared_sum_y[tid] = pos.y * mass;
-        shared_mass[tid] = mass;
-    } else {
-        shared_sum_x[tid] = 0.0;
-        shared_sum_y[tid] = 0.0;
-        shared_mass[tid] = 0.0;
-    }
-
-    workgroupBarrier();
-
-    // Parallel reduction
-    for (var stride = 128u; stride > 0u; stride /= 2u) {
-        if (tid < stride) {
-            shared_sum_x[tid] += shared_sum_x[tid + stride];
-            shared_sum_y[tid] += shared_sum_y[tid + stride];
-            shared_mass[tid] += shared_mass[tid + stride];
-        }
-        workgroupBarrier();
-    }
-
-    // Thread 0 holds the partial sum for this workgroup.
-    // The host code performs final reduction across workgroups.
-}
-
-// Apply gravity toward computed center of mass (requires pre-computed center)
-@compute @workgroup_size(256)
-fn apply_gravity_to_com(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
-
-    // Use pre-computed center of mass from uniforms
-    let com = vec2<f32>(uniforms.center_x, uniforms.center_y);
-
-    let pos = positions[node_idx];
-    let mass = max(node_mass[node_idx], 1.0);
-
-    let delta = com - pos;
-    let dist = length(delta);
-
-    if (dist < EPSILON) {
-        return;
-    }
-
-    // Mass-weighted attraction
-    let mass_factor = pow(mass, uniforms.mass_exponent);
-    let force_mag = uniforms.gravity_strength / max(mass_factor, 0.1);
-
-    forces[node_idx] += delta * force_mag;
-}

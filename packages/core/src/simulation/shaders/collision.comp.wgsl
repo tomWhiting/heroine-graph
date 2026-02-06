@@ -105,19 +105,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 }
 
-// Simplified version for small graphs - processes all pairs
-@compute @workgroup_size(256)
-fn resolve_simple(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    main(global_id);
-}
-
-// Multi-iteration version - caller dispatches multiple times
-// Each iteration relaxes collisions progressively
-@compute @workgroup_size(256)
-fn resolve_iteration(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    main(global_id);
-}
-
 // Workgroup-optimized version using shared memory for positions
 // More efficient for medium-sized graphs
 var<workgroup> shared_pos: array<vec2<f32>, 256>;
@@ -130,17 +117,21 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
     let node_idx = global_id.x;
     let tid = local_id.x;
 
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
+    // CRITICAL: All threads must reach workgroupBarrier() calls.
+    // Out-of-bounds threads participate in barriers but skip actual work.
+    let is_valid = node_idx < uniforms.node_count;
 
-    // Load this node's data
-    let pos = positions[node_idx];
-    var radius = node_sizes[node_idx];
-    if (radius <= EPSILON) {
-        radius = uniforms.default_radius;
+    // Load this node's data (only valid threads read from global memory)
+    var pos = vec2<f32>(0.0, 0.0);
+    var radius = 0.0;
+    if (is_valid) {
+        pos = positions[node_idx];
+        radius = node_sizes[node_idx];
+        if (radius <= EPSILON) {
+            radius = uniforms.default_radius;
+        }
+        radius *= uniforms.radius_multiplier;
     }
-    radius *= uniforms.radius_multiplier;
 
     var disp = vec2<f32>(0.0, 0.0);
 
@@ -149,6 +140,7 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
 
     for (var tile = 0u; tile < num_tiles; tile++) {
         // Load tile data into shared memory
+        // All threads participate in loading to ensure shared memory is populated
         let tile_idx = tile * 256u + tid;
         if (tile_idx < uniforms.node_count) {
             shared_pos[tid] = positions[tile_idx];
@@ -162,35 +154,46 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
             shared_radius[tid] = 0.0;
         }
 
+        // ALL threads must reach this barrier
         workgroupBarrier();
 
-        // Process all nodes in this tile
-        let tile_start = tile * 256u;
-        for (var j = 0u; j < 256u; j++) {
-            let other_idx = tile_start + j;
-            if (other_idx >= uniforms.node_count || other_idx == node_idx) {
-                continue;
-            }
+        // Process all nodes in this tile (only valid threads compute)
+        if (is_valid) {
+            let tile_start = tile * 256u;
+            for (var j = 0u; j < 256u; j++) {
+                let other_idx = tile_start + j;
+                if (other_idx >= uniforms.node_count || other_idx == node_idx) {
+                    continue;
+                }
 
-            let other_pos = shared_pos[j];
-            let other_radius = shared_radius[j];
+                let other_pos = shared_pos[j];
+                let other_radius = shared_radius[j];
 
-            let delta = pos - other_pos;
-            let dist_sq = dot(delta, delta);
-            let dist = sqrt(dist_sq);
-            let min_dist = radius + other_radius;
+                let delta = pos - other_pos;
+                let dist_sq = dot(delta, delta);
+                let dist = sqrt(dist_sq);
+                let min_dist = radius + other_radius;
 
-            if (dist < min_dist && dist > EPSILON) {
-                let overlap = min_dist - dist;
-                let n = delta / dist;
-                let push = overlap * 0.5 * uniforms.collision_strength;
-                disp += n * push;
+                if (dist < min_dist && dist > EPSILON) {
+                    let overlap = min_dist - dist;
+                    let n = delta / dist;
+                    let push = overlap * 0.5 * uniforms.collision_strength;
+                    disp += n * push;
+                } else if (dist <= EPSILON && other_idx > node_idx) {
+                    // Nodes at exact same position - use deterministic offset to break symmetry
+                    // Only one node (the one with smaller index) applies the offset to avoid double-push
+                    let angle = f32(node_idx) * 0.618033988749895 * 6.28318530718;  // Golden ratio
+                    disp += vec2<f32>(cos(angle), sin(angle)) * uniforms.default_radius * uniforms.collision_strength;
+                }
             }
         }
 
+        // ALL threads must reach this barrier
         workgroupBarrier();
     }
 
-    // Apply displacement
-    positions[node_idx] = pos + disp;
+    // Apply displacement (only valid threads write)
+    if (is_valid) {
+        positions[node_idx] = pos + disp;
+    }
 }

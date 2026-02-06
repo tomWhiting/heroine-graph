@@ -62,9 +62,14 @@ interface BarnesHutPipelines extends AlgorithmPipelines {
   // Radix sort pipelines
   radixClearHistogram: GPUComputePipeline; // Clear histogram before each pass
   radixHistogram: GPUComputePipeline;
-  radixScan: GPUComputePipeline;
   radixScatter: GPUComputePipeline;
   radixSimple: GPUComputePipeline; // Fallback for small arrays
+
+  // Prefix scan pipelines (three-phase for large arrays, single-pass for small)
+  scanSinglePass: GPUComputePipeline; // For small arrays (up to 512 histogram elements)
+  scanReduce: GPUComputePipeline; // Phase 1: reduce per-workgroup histogram to sums
+  scanWorkgroupSums: GPUComputePipeline; // Phase 2: scan workgroup sums
+  scanPropagate: GPUComputePipeline; // Phase 3: propagate prefixes to all elements
 
   // Karras tree construction
   clearTree: GPUComputePipeline;
@@ -115,8 +120,7 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     public parent: GPUBuffer,
 
     // Node properties (2N-1 total: internal + leaves)
-    public nodeComX: GPUBuffer,
-    public nodeComY: GPUBuffer,
+    public nodeCom: GPUBuffer,  // vec2<f32> per node (center of mass)
     public nodeMass: GPUBuffer,
     public nodeSize: GPUBuffer,
 
@@ -147,8 +151,7 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     this.rightChild.destroy();
     this.parent.destroy();
 
-    this.nodeComX.destroy();
-    this.nodeComY.destroy();
+    this.nodeCom.destroy();
     this.nodeMass.destroy();
     this.nodeSize.destroy();
 
@@ -248,8 +251,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // === Karras Tree Layout ===
     // Bindings: uniforms, morton_codes, sorted_indices, positions (vec2),
-    //           left_child, right_child, parent, node_com_x, node_com_y,
+    //           left_child, right_child, parent, node_com (vec2),
     //           node_mass, node_size, visit_count
+    // Total: 11 entries (1 uniform + 10 storage buffers - at WebGPU limit)
     const treeLayout = device.createBindGroupLayout({
       label: "Karras Tree Layout",
       entries: [
@@ -264,13 +268,12 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
     // === Traversal Layout ===
     // Bindings: uniforms, positions (vec2), forces (vec2),
-    //           left_child, right_child, node_com_x, node_com_y, node_mass, node_size
+    //           left_child, right_child, node_com (vec2), node_mass, node_size
     const traverseLayout = device.createBindGroupLayout({
       label: "Barnes-Hut Traversal Layout",
       entries: [
@@ -282,7 +285,6 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -332,11 +334,6 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         layout: sortPipelineLayout,
         compute: { module: radixSortModule, entryPoint: "histogram_count" },
       }),
-      radixScan: device.createComputePipeline({
-        label: "Radix Scan Pipeline",
-        layout: scanPipelineLayout,
-        compute: { module: prefixScanModule, entryPoint: "scan_sequential" },
-      }),
       radixScatter: device.createComputePipeline({
         label: "Radix Scatter Pipeline",
         layout: sortPipelineLayout,
@@ -346,6 +343,28 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         label: "Radix Simple Sort Pipeline",
         layout: sortPipelineLayout,
         compute: { module: radixSortModule, entryPoint: "simple_sort" },
+      }),
+
+      // Prefix scan pipelines - three-phase for large arrays, single-pass for small
+      scanSinglePass: device.createComputePipeline({
+        label: "Prefix Scan Single Pass Pipeline",
+        layout: scanPipelineLayout,
+        compute: { module: prefixScanModule, entryPoint: "scan" },
+      }),
+      scanReduce: device.createComputePipeline({
+        label: "Prefix Scan Reduce Pipeline",
+        layout: scanPipelineLayout,
+        compute: { module: prefixScanModule, entryPoint: "reduce" },
+      }),
+      scanWorkgroupSums: device.createComputePipeline({
+        label: "Prefix Scan Workgroup Sums Pipeline",
+        layout: scanPipelineLayout,
+        compute: { module: prefixScanModule, entryPoint: "scan_workgroup_sums" },
+      }),
+      scanPropagate: device.createComputePipeline({
+        label: "Prefix Scan Propagate Pipeline",
+        layout: scanPipelineLayout,
+        compute: { module: prefixScanModule, entryPoint: "propagate" },
       }),
 
       // Karras tree construction
@@ -394,7 +413,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // Calculate buffer sizes
     const nodeBytes = safeMaxNodes * 4;
-    const treeNodeBytes = (2 * safeMaxNodes - 1) * 4; // Internal + leaves
+    const treeNodeBytes = (2 * safeMaxNodes - 1) * 4; // 2N-1 total nodes: N-1 internal (0 to N-2) + N leaves (N-1 to 2N-2)
     const internalNodeBytes = Math.max((safeMaxNodes - 1) * 4, 4);
 
     // Calculate histogram size: workgroups * RADIX_SIZE
@@ -402,9 +421,11 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     const histogramBytes = workgroupCount * RADIX_SIZE * 4;
 
     // Uniform buffers
+    // SimulationUniforms: { bounds_min: vec2<f32>, bounds_max: vec2<f32>, node_count: u32, _padding: vec3<u32> }
+    // Note: vec3<u32> has 16-byte alignment, so _padding starts at offset 32 and struct is 48 bytes total
     const mortonUniforms = device.createBuffer({
       label: "BH Morton Uniforms",
-      size: 32, // SimulationUniforms: bounds (vec2 x2), node_count, padding
+      size: 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -470,9 +491,13 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       size: Math.max(histogramBytes, 64), // Minimum size for small arrays
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // Prefix sums buffer needs extra space for workgroup sums during three-phase scan
+    // Layout: [prefix_sums (workgroupCount * RADIX_SIZE)] [workgroup_sums (workgroupCount)]
+    // Total elements: workgroupCount * RADIX_SIZE + workgroupCount = workgroupCount * (RADIX_SIZE + 1)
+    const prefixSumsBytes = workgroupCount * (RADIX_SIZE + 1) * 4;
     const prefixSums = device.createBuffer({
       label: "BH Prefix Sums",
-      size: Math.max(histogramBytes, 64),
+      size: Math.max(prefixSumsBytes, 64),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -494,14 +519,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     });
 
     // Node properties (2N-1 total)
-    const nodeComX = device.createBuffer({
-      label: "BH Node CoM X",
-      size: treeNodeBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const nodeComY = device.createBuffer({
-      label: "BH Node CoM Y",
-      size: treeNodeBytes,
+    // nodeCom stores vec2<f32> per node, so size is 2x treeNodeBytes (8 bytes per node)
+    const nodeCom = device.createBuffer({
+      label: "BH Node CoM",
+      size: treeNodeBytes * 2,  // vec2<f32> = 8 bytes per node
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const nodeMass = device.createBuffer({
@@ -538,8 +559,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       leftChild,
       rightChild,
       parent,
-      nodeComX,
-      nodeComY,
+      nodeCom,
       nodeMass,
       nodeSize,
       visitCount,
@@ -616,11 +636,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 4, resource: { buffer: b.leftChild } },
         { binding: 5, resource: { buffer: b.rightChild } },
         { binding: 6, resource: { buffer: b.parent } },
-        { binding: 7, resource: { buffer: b.nodeComX } },
-        { binding: 8, resource: { buffer: b.nodeComY } },
-        { binding: 9, resource: { buffer: b.nodeMass } },
-        { binding: 10, resource: { buffer: b.nodeSize } },
-        { binding: 11, resource: { buffer: b.visitCount } },
+        { binding: 7, resource: { buffer: b.nodeCom } },
+        { binding: 8, resource: { buffer: b.nodeMass } },
+        { binding: 9, resource: { buffer: b.nodeSize } },
+        { binding: 10, resource: { buffer: b.visitCount } },
       ],
     });
 
@@ -636,11 +655,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 4, resource: { buffer: b.leftChild } },
         { binding: 5, resource: { buffer: b.rightChild } },
         { binding: 6, resource: { buffer: b.parent } },
-        { binding: 7, resource: { buffer: b.nodeComX } },
-        { binding: 8, resource: { buffer: b.nodeComY } },
-        { binding: 9, resource: { buffer: b.nodeMass } },
-        { binding: 10, resource: { buffer: b.nodeSize } },
-        { binding: 11, resource: { buffer: b.visitCount } },
+        { binding: 7, resource: { buffer: b.nodeCom } },
+        { binding: 8, resource: { buffer: b.nodeMass } },
+        { binding: 9, resource: { buffer: b.nodeSize } },
+        { binding: 10, resource: { buffer: b.visitCount } },
       ],
     });
 
@@ -654,10 +672,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: b.leftChild } },
         { binding: 4, resource: { buffer: b.rightChild } },
-        { binding: 5, resource: { buffer: b.nodeComX } },
-        { binding: 6, resource: { buffer: b.nodeComY } },
-        { binding: 7, resource: { buffer: b.nodeMass } },
-        { binding: 8, resource: { buffer: b.nodeSize } },
+        { binding: 5, resource: { buffer: b.nodeCom } },
+        { binding: 6, resource: { buffer: b.nodeMass } },
+        { binding: 7, resource: { buffer: b.nodeSize } },
       ],
     });
 
@@ -683,25 +700,54 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
   ): void {
     const b = algorithmBuffers as BarnesHutBuffers;
 
-    // Use large bounds to accommodate spread-out graphs
-    const boundsMinX = context.bounds?.minX ?? -5000.0;
-    const boundsMinY = context.bounds?.minY ?? -5000.0;
-    const boundsMaxX = context.bounds?.maxX ?? 5000.0;
-    const boundsMaxY = context.bounds?.maxY ?? 5000.0;
+    // CRITICAL: Validate node count doesn't exceed buffer capacity.
+    // Buffer overflow from undersized buffers is a security issue that can corrupt
+    // GPU memory, cause crashes, or produce undefined behavior.
+    if (context.nodeCount > b.maxNodes) {
+      throw new Error(
+        `Barnes-Hut buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${b.maxNodes}). ` +
+        `Buffers must be recreated with createBuffers() when node count increases.`
+      );
+    }
+
+    // Barnes-Hut REQUIRES bounds for correct Morton code computation.
+    // Without proper bounds, Morton codes cannot map positions to the [0,1] normalized
+    // space, causing spatial tree degeneration and incorrect force calculations.
+    // The caller MUST provide bounds computed from actual node positions.
+    if (!context.bounds) {
+      throw new Error(
+        "Barnes-Hut algorithm requires bounds to be provided in AlgorithmRenderContext. " +
+        "Bounds must be computed from actual node positions. Without bounds, Morton codes " +
+        "cannot correctly encode spatial locality, causing tree degeneration and incorrect forces."
+      );
+    }
+
+    const boundsMinX = context.bounds.minX;
+    const boundsMinY = context.bounds.minY;
+    const boundsMaxX = context.bounds.maxX;
+    const boundsMaxY = context.bounds.maxY;
     const rootSize = Math.max(boundsMaxX - boundsMinX, boundsMaxY - boundsMinY);
 
-    // Morton uniforms (32 bytes)
+    // Morton uniforms (48 bytes due to vec3 alignment)
     // struct SimulationUniforms { bounds_min: vec2<f32>, bounds_max: vec2<f32>, node_count: u32, _padding: vec3<u32> }
-    const mortonData = new ArrayBuffer(32);
+    // Layout: bounds_min at 0, bounds_max at 8, node_count at 16, _padding at 32 (16-byte aligned)
+    const mortonData = new ArrayBuffer(48);
     const mortonView = new DataView(mortonData);
     mortonView.setFloat32(0, boundsMinX, true);   // bounds_min.x
     mortonView.setFloat32(4, boundsMinY, true);   // bounds_min.y
     mortonView.setFloat32(8, boundsMaxX, true);   // bounds_max.x
     mortonView.setFloat32(12, boundsMaxY, true);  // bounds_max.y
     mortonView.setUint32(16, context.nodeCount, true);  // node_count
-    mortonView.setUint32(20, 0, true);  // _padding[0]
-    mortonView.setUint32(24, 0, true);  // _padding[1]
-    mortonView.setUint32(28, 0, true);  // _padding[2]
+    // Implicit padding at offsets 20, 24, 28 to align vec3 at offset 32
+    mortonView.setUint32(20, 0, true);
+    mortonView.setUint32(24, 0, true);
+    mortonView.setUint32(28, 0, true);
+    // _padding vec3<u32> at offset 32 (16-byte aligned)
+    mortonView.setUint32(32, 0, true);  // _padding[0]
+    mortonView.setUint32(36, 0, true);  // _padding[1]
+    mortonView.setUint32(40, 0, true);  // _padding[2]
+    // Final padding to 48 bytes
+    mortonView.setUint32(44, 0, true);
     device.queue.writeBuffer(b.mortonUniforms, 0, mortonData);
 
     // Tree uniforms (32 bytes)
@@ -797,6 +843,14 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     if (useSimpleSort) {
       // Simple counting sort for small arrays
       // This writes to keys_out/values_out (the Out buffers)
+      // Copy uniforms (node_count) from staging buffer - same as radix sort does per-pass
+      encoder.copyBufferToBuffer(
+        bg.sortUniformsStaging,  // source
+        0,                       // source offset (pass 0 uniforms)
+        bg.sortUniforms,         // destination
+        0,                       // destination offset
+        16,                      // size
+      );
       const pass = encoder.beginComputePass({ label: "BH Simple Sort" });
       pass.setPipeline(p.radixSimple);
       pass.setBindGroup(0, bg.sortPass[0]);
@@ -810,6 +864,19 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       // histogram_count uses atomicAdd to accumulate counts. Without clearing,
       // counts from previous passes would corrupt the current pass's histogram,
       // leading to incorrect prefix sums and wrong scatter positions.
+      //
+      // Validate workgroup count doesn't exceed prefix scan capacity (512 workgroups max).
+      // This limit comes from the Blelloch scan's 512-element shared memory array.
+      // 512 workgroups × 256 threads = 131,072 nodes maximum for Barnes-Hut.
+      const MAX_SCAN_WORKGROUPS = 512;
+      if (nodeWorkgroups > MAX_SCAN_WORKGROUPS) {
+        console.error(
+          `Barnes-Hut: Node count ${nodeCount} requires ${nodeWorkgroups} workgroups, ` +
+          `but prefix scan supports max ${MAX_SCAN_WORKGROUPS} (~131K nodes). ` +
+          `Use N² or Force Atlas 2 algorithm for larger datasets.`
+        );
+        return; // Skip repulsion pass rather than produce corrupt results
+      }
       const histogramWorkgroups = calculateWorkgroups(nodeWorkgroups * RADIX_SIZE, WORKGROUP_SIZE);
 
       for (let pass = 0; pass < RADIX_PASSES; pass++) {
@@ -845,12 +912,46 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         }
 
         // Step 2: Prefix scan on histogram - compute output positions for each bucket
-        {
-          const computePass = encoder.beginComputePass({ label: `BH Prefix Scan ${pass}` });
-          computePass.setPipeline(p.radixScan);
+        // Use single-pass scan for small arrays (up to 32 workgroups = 512 histogram elements)
+        // Use three-phase reduce-scan-propagate for larger arrays to avoid GPU watchdog timeout
+        const totalHistogramElements = nodeWorkgroups * RADIX_SIZE;
+        const useSinglePassScan = totalHistogramElements <= 512;
+
+        if (useSinglePassScan) {
+          // Single workgroup Blelloch scan for small histograms
+          const computePass = encoder.beginComputePass({ label: `BH Prefix Scan Single ${pass}` });
+          computePass.setPipeline(p.scanSinglePass);
           computePass.setBindGroup(0, bg.scan);
-          computePass.dispatchWorkgroups(1);  // Sequential scan uses single workgroup
+          computePass.dispatchWorkgroups(1);
           computePass.end();
+        } else {
+          // Three-phase parallel scan for large histograms
+          // Phase 1: Reduce - each workgroup computes sum of its 16 histogram buckets
+          {
+            const computePass = encoder.beginComputePass({ label: `BH Scan Reduce ${pass}` });
+            computePass.setPipeline(p.scanReduce);
+            computePass.setBindGroup(0, bg.scan);
+            computePass.dispatchWorkgroups(nodeWorkgroups);
+            computePass.end();
+          }
+
+          // Phase 2: Scan workgroup sums - single workgroup scans up to 512 workgroup totals
+          {
+            const computePass = encoder.beginComputePass({ label: `BH Scan Workgroup Sums ${pass}` });
+            computePass.setPipeline(p.scanWorkgroupSums);
+            computePass.setBindGroup(0, bg.scan);
+            computePass.dispatchWorkgroups(1);
+            computePass.end();
+          }
+
+          // Phase 3: Propagate - each workgroup computes local prefix sums and adds base offset
+          {
+            const computePass = encoder.beginComputePass({ label: `BH Scan Propagate ${pass}` });
+            computePass.setPipeline(p.scanPropagate);
+            computePass.setBindGroup(0, bg.scan);
+            computePass.dispatchWorkgroups(nodeWorkgroups);
+            computePass.end();
+          }
         }
 
         // Step 3: Scatter to sorted positions - move elements to their sorted locations

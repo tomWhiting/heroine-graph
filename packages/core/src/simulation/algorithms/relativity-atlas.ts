@@ -50,9 +50,39 @@ const RELATIVITY_ATLAS_INFO: ForceAlgorithmInfo = {
 
 // Configuration constants
 const WORKGROUP_SIZE = 256;
-const MASS_CONVERGENCE_THRESHOLD = 0.01;
-const DEFAULT_MAX_SIBLINGS = 100;
+
+/**
+ * Number of mass aggregation iterations to run.
+ *
+ * DESIGN NOTE: We use a fixed iteration count rather than GPU-to-CPU convergence
+ * readback for the following reasons:
+ *
+ * 1. GPU-to-CPU readback is expensive: Reading the convergence flag from GPU
+ *    requires a buffer map operation with synchronization, adding significant
+ *    latency (often more than the cost of extra iterations).
+ *
+ * 2. Fixed iteration approach: We use 10 iterations as the default.
+ *    For hierarchies deeper than 10 levels, increase MAX_MASS_ITERATIONS
+ *    to match the maximum tree depth.
+ *
+ * 3. Per-frame overhead is negligible: Mass initialization only runs when the
+ *    graph changes, not every frame. The force passes (sibling repulsion, gravity)
+ *    run every frame and dominate the cost.
+ *
+ * 4. Complexity cost: Async readback would require restructuring the rendering
+ *    pipeline, adding state management for in-flight reads, and complicating
+ *    the frame timing. The benefit doesn't justify this complexity.
+ *
+ * The shader still writes to a convergence flag buffer (for potential future use
+ * or debugging), but it is not read back on the CPU side.
+ */
 const MAX_MASS_ITERATIONS = 10;
+
+/**
+ * Threshold below which mass changes are considered converged.
+ * Used by the shader to set the convergence flag (for debugging/future use).
+ */
+const MASS_CONVERGENCE_THRESHOLD = 0.01;
 
 /**
  * Extended pipelines for Relativity Atlas
@@ -101,7 +131,16 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
     public degrees: GPUBuffer,        // [out_deg, in_deg] pairs
     public mass: GPUBuffer,           // Ping buffer
     public massOut: GPUBuffer,        // Pong buffer
-    public converged: GPUBuffer,      // Atomic convergence flag
+    /**
+     * Atomic convergence flag buffer (written by shader, not read by CPU).
+     *
+     * NOTE: This buffer is NOT initialized to 1 before iterations. The shader
+     * atomically stores 0 when mass values haven't converged, but we don't
+     * read it back due to the high cost of GPU-to-CPU sync. Instead, we run
+     * a fixed number of iterations (MAX_MASS_ITERATIONS). This buffer is
+     * retained for shader binding compatibility and potential future debugging use.
+     */
+    public converged: GPUBuffer,
 
     // Capacities
     public maxNodes: number,
@@ -320,18 +359,27 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // MassUniforms: { node_count: u32, edge_count: u32, iteration: u32, convergence_threshold: f32,
+    //                 base_mass: f32, child_mass_factor: f32, _padding: vec2<u32> }
+    // Total: 32 bytes
     const massUniforms = device.createBuffer({
       label: "RA Mass Uniforms",
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // SiblingUniforms: { node_count: u32, edge_count: u32, repulsion_strength: f32, min_distance: f32,
+    //                   max_siblings: u32, parent_child_multiplier: f32, _padding: vec2<u32> }
+    // Total: 32 bytes
     const siblingUniforms = device.createBuffer({
       label: "RA Sibling Uniforms",
       size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // GravityUniforms: { node_count: u32, gravity_strength: f32, center_x: f32, center_y: f32,
+    //                   mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, _padding: u32 }
+    // Total: 32 bytes
     const gravityUniforms = device.createBuffer({
       label: "RA Gravity Uniforms",
       size: 32,
@@ -525,48 +573,82 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
   ): void {
     const b = algorithmBuffers as RelativityAtlasBuffers;
 
+    // CRITICAL: Validate node count doesn't exceed buffer capacity.
+    // Buffer overflow from undersized buffers is a security issue that can corrupt
+    // GPU memory, cause crashes, or produce undefined behavior.
+    if (context.nodeCount > b.maxNodes) {
+      throw new Error(
+        `RelativityAtlas buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${b.maxNodes}). ` +
+        `Buffers must be recreated with createBuffers() when node count increases.`
+      );
+    }
+
+    // Validate edge count doesn't exceed buffer capacity
+    if (context.edgeCount > b.maxEdges) {
+      throw new Error(
+        `RelativityAtlas buffer overflow: edgeCount (${context.edgeCount}) exceeds buffer capacity (${b.maxEdges}). ` +
+        `Buffers must be recreated with createBuffers() when edge count increases.`
+      );
+    }
+
+    const edgeCount = context.edgeCount;
+
     // Degrees uniforms (16 bytes)
+    // Struct layout: { node_count: u32, edge_count: u32, _padding: vec2<u32> }
     const degreesData = new ArrayBuffer(16);
     const degreesView = new DataView(degreesData);
     degreesView.setUint32(0, context.nodeCount, true);
-    degreesView.setUint32(4, 0, true);  // edge_count (set during edge upload)
-    degreesView.setUint32(8, 0, true);
-    degreesView.setUint32(12, 0, true);
+    degreesView.setUint32(4, edgeCount, true);
+    degreesView.setUint32(8, 0, true);  // padding
+    degreesView.setUint32(12, 0, true); // padding
     device.queue.writeBuffer(b.degreesUniforms, 0, degreesData);
 
-    // Mass uniforms (16 bytes)
-    const massData = new ArrayBuffer(16);
+    // Mass uniforms (32 bytes)
+    // Struct layout: { node_count: u32, edge_count: u32, iteration: u32, convergence_threshold: f32,
+    //                  base_mass: f32, child_mass_factor: f32, _padding: vec2<u32> }
+    const massData = new ArrayBuffer(32);
     const massView = new DataView(massData);
     massView.setUint32(0, context.nodeCount, true);
-    massView.setUint32(4, 0, true);  // edge_count
-    massView.setUint32(8, 0, true);  // iteration
+    massView.setUint32(4, edgeCount, true);
+    massView.setUint32(8, 0, true);  // iteration (updated per-iteration if needed)
     massView.setFloat32(12, MASS_CONVERGENCE_THRESHOLD, true);
+    massView.setFloat32(16, context.forceConfig.relativityBaseMass, true);
+    massView.setFloat32(20, context.forceConfig.relativityChildMassFactor, true);
+    massView.setUint32(24, 0, true);  // _padding
+    massView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.massUniforms, 0, massData);
 
     // Sibling uniforms (32 bytes)
+    // Struct layout: { node_count: u32, edge_count: u32, repulsion_strength: f32, min_distance: f32,
+    //                  max_siblings: u32, parent_child_multiplier: f32, _padding: vec2<u32> }
     const siblingData = new ArrayBuffer(32);
     const siblingView = new DataView(siblingData);
     siblingView.setUint32(0, context.nodeCount, true);
-    siblingView.setUint32(4, 0, true);  // edge_count
+    siblingView.setUint32(4, edgeCount, true);
     siblingView.setFloat32(8, Math.abs(context.forceConfig.repulsionStrength), true);
     siblingView.setFloat32(12, context.forceConfig.repulsionDistanceMin, true);
-    siblingView.setUint32(16, DEFAULT_MAX_SIBLINGS, true);
-    siblingView.setUint32(20, 0, true);
-    siblingView.setUint32(24, 0, true);
-    siblingView.setUint32(28, 0, true);
+    siblingView.setUint32(16, context.forceConfig.relativityMaxSiblings, true);
+    siblingView.setFloat32(20, context.forceConfig.relativityParentChildMultiplier, true);
+    siblingView.setUint32(24, 0, true);  // _padding
+    siblingView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.siblingUniforms, 0, siblingData);
 
     // Gravity uniforms (32 bytes)
+    // Struct layout: { node_count: u32, gravity_strength: f32, center_x: f32, center_y: f32,
+    //                  mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, _padding: u32 }
     const gravityData = new ArrayBuffer(32);
     const gravityView = new DataView(gravityData);
     gravityView.setUint32(0, context.nodeCount, true);
     gravityView.setFloat32(4, context.forceConfig.centerStrength, true);
     gravityView.setFloat32(8, context.forceConfig.centerX, true);
     gravityView.setFloat32(12, context.forceConfig.centerY, true);
-    gravityView.setFloat32(16, 0.5, true);  // mass_exponent
-    gravityView.setUint32(20, 0, true);
-    gravityView.setUint32(24, 0, true);
-    gravityView.setUint32(28, 0, true);
+    gravityView.setFloat32(16, context.forceConfig.relativityMassExponent, true);
+    // Map gravity curve string to u32: linear=0, inverse=1, soft=2, custom=3
+    const gravityCurveMap: Record<string, number> = { linear: 0, inverse: 1, soft: 2, custom: 3 };
+    const gravityCurveValue = gravityCurveMap[context.forceConfig.relativityGravityCurve] ?? 0;
+    gravityView.setUint32(20, gravityCurveValue, true);
+    gravityView.setFloat32(24, context.forceConfig.relativityGravityExponent, true);
+    gravityView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.gravityUniforms, 0, gravityData);
   }
 
@@ -608,8 +690,15 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       }
 
       // === PHASE 3: Iterative mass aggregation ===
-      // Run multiple iterations to propagate mass through the hierarchy
-      // Each iteration aggregates child masses to parents
+      // Run a fixed number of iterations to propagate mass through the hierarchy.
+      // Each iteration aggregates child masses to parents (mass = 1 + 0.5 * sum(child_mass)).
+      //
+      // We use fixed iterations rather than convergence checking because:
+      // - GPU-to-CPU readback for the convergence flag would add more latency than
+      //   running extra iterations
+      // - This phase only runs when the graph changes, not every frame
+      //
+      // See MAX_MASS_ITERATIONS constant for detailed rationale.
       for (let iter = 0; iter < MAX_MASS_ITERATIONS; iter++) {
         const pass = encoder.beginComputePass({ label: `RA Aggregate Mass ${iter}` });
         pass.setPipeline(p.aggregateMass);
@@ -654,54 +743,282 @@ export function createRelativityAtlasAlgorithm(): ForceAlgorithm {
 }
 
 /**
- * Upload CSR edge data to algorithm buffers
+ * CSR validation error with detailed diagnostic information
+ */
+export class CSRValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly details: {
+      field: string;
+      expected?: number | string;
+      actual?: number | string;
+      nodeCount?: number;
+      edgeCount?: number;
+    },
+  ) {
+    super(message);
+    this.name = "CSRValidationError";
+  }
+}
+
+/**
+ * Validates CSR (Compressed Sparse Row) data structure integrity.
+ *
+ * CSR format stores a sparse graph as:
+ * - offsets: Array of length (nodeCount + 1) where offsets[i] is the start index
+ *   of node i's adjacency list in the indices array, and offsets[nodeCount] equals
+ *   the total edge count.
+ * - indices: Array of length edgeCount containing target/source node indices.
+ *
+ * This validation prevents GPU memory corruption by ensuring:
+ * 1. Array sizes match expected dimensions
+ * 2. Offsets array has exactly nodeCount + 1 elements
+ * 3. Indices don't exceed valid node ranges
+ * 4. Edge count matches actual data size
+ * 5. Offsets are monotonically non-decreasing
+ * 6. Indices array doesn't exceed buffer capacity (DoS protection)
+ * 7. All indices are non-negative (defense-in-depth)
+ *
+ * @param csrData - Combined CSR data [offsets..., indices...]
+ * @param nodeCount - Expected number of nodes
+ * @param maxEdges - Maximum allowed edges (buffer capacity)
+ * @param label - Label for error messages (e.g., "forward CSR" or "inverse CSR")
+ * @throws CSRValidationError if validation fails
+ */
+export function validateCSRData(
+  csrData: Uint32Array,
+  nodeCount: number,
+  maxEdges: number,
+  label: string,
+): { offsets: Uint32Array; indices: Uint32Array; edgeCount: number } {
+  const expectedOffsetsLength = nodeCount + 1;
+
+  // Validation 1: CSR data must have at least the offsets array
+  if (csrData.length < expectedOffsetsLength) {
+    throw new CSRValidationError(
+      `${label}: CSR data too small. Expected at least ${expectedOffsetsLength} elements for offsets ` +
+        `(nodeCount + 1), but got ${csrData.length} elements.`,
+      {
+        field: "csrData.length",
+        expected: `>= ${expectedOffsetsLength}`,
+        actual: csrData.length,
+        nodeCount,
+      },
+    );
+  }
+
+  const offsets = csrData.subarray(0, expectedOffsetsLength);
+  const indices = csrData.subarray(expectedOffsetsLength);
+
+  // Validation 2: First offset must be 0
+  if (offsets[0] !== 0) {
+    throw new CSRValidationError(
+      `${label}: First offset must be 0, but got ${offsets[0]}. ` +
+        `CSR offsets must start at 0 as the base index into the indices array.`,
+      {
+        field: "offsets[0]",
+        expected: 0,
+        actual: offsets[0],
+        nodeCount,
+      },
+    );
+  }
+
+  // Validation 3: Last offset equals edge count and matches indices array length
+  const declaredEdgeCount = offsets[nodeCount];
+  if (declaredEdgeCount !== indices.length) {
+    throw new CSRValidationError(
+      `${label}: Edge count mismatch. Offsets array declares ${declaredEdgeCount} edges ` +
+        `(offsets[${nodeCount}] = ${declaredEdgeCount}), but indices array has ${indices.length} elements. ` +
+        `These must match exactly.`,
+      {
+        field: "edgeCount",
+        expected: declaredEdgeCount,
+        actual: indices.length,
+        nodeCount,
+        edgeCount: declaredEdgeCount,
+      },
+    );
+  }
+
+  // Validation 4: Edge count doesn't exceed buffer capacity
+  if (declaredEdgeCount > maxEdges) {
+    throw new CSRValidationError(
+      `${label}: Edge count ${declaredEdgeCount} exceeds buffer capacity ${maxEdges}. ` +
+        `Buffers must be recreated with larger capacity before uploading this data.`,
+      {
+        field: "edgeCount",
+        expected: `<= ${maxEdges}`,
+        actual: declaredEdgeCount,
+        nodeCount,
+        edgeCount: declaredEdgeCount,
+      },
+    );
+  }
+
+  // Validation 5: Offsets are monotonically non-decreasing
+  for (let i = 1; i <= nodeCount; i++) {
+    if (offsets[i] < offsets[i - 1]) {
+      throw new CSRValidationError(
+        `${label}: Offsets must be monotonically non-decreasing. ` +
+          `Found offsets[${i}] = ${offsets[i]} < offsets[${i - 1}] = ${offsets[i - 1]}. ` +
+          `This indicates corrupted CSR data.`,
+        {
+          field: `offsets[${i}]`,
+          expected: `>= ${offsets[i - 1]}`,
+          actual: offsets[i],
+          nodeCount,
+        },
+      );
+    }
+  }
+
+  // Validation 6: DoS protection - verify indices array doesn't exceed buffer capacity
+  // This prevents malformed data from causing excessive iteration in the bounds check loop
+  const MAX_REASONABLE_EDGES = maxEdges;
+  if (indices.length > MAX_REASONABLE_EDGES) {
+    throw new CSRValidationError(
+      `${label}: Indices array exceeds maximum edge capacity (${indices.length} > ${MAX_REASONABLE_EDGES}).`,
+      {
+        field: "indices.length",
+        expected: `<= ${MAX_REASONABLE_EDGES}`,
+        actual: indices.length,
+        nodeCount,
+        edgeCount: declaredEdgeCount,
+      },
+    );
+  }
+
+  // Validation 7: All indices are valid node references (in range [0, nodeCount))
+  // This is critical for GPU safety - out-of-range indices cause memory corruption
+  // Note: The `targetIndex < 0` check is technically redundant for Uint32Array (which
+  // cannot hold negative values), but is included for defense-in-depth and self-documentation
+  for (let i = 0; i < indices.length; i++) {
+    const targetIndex = indices[i];
+    if (targetIndex >= nodeCount || targetIndex < 0) {
+      // Find which node this edge belongs to for better error reporting
+      let sourceNode = 0;
+      for (let n = 0; n < nodeCount; n++) {
+        if (offsets[n + 1] > i) {
+          sourceNode = n;
+          break;
+        }
+      }
+      throw new CSRValidationError(
+        `${label}: Invalid node index at indices[${i}] = ${targetIndex}. ` +
+          `Index must be < ${nodeCount} (nodeCount). This edge originates from node ${sourceNode}. ` +
+          `Out-of-range indices cause GPU memory corruption.`,
+        {
+          field: `indices[${i}]`,
+          expected: `< ${nodeCount}`,
+          actual: targetIndex,
+          nodeCount,
+          edgeCount: declaredEdgeCount,
+        },
+      );
+    }
+  }
+
+  return { offsets, indices, edgeCount: declaredEdgeCount };
+}
+
+/**
+ * Upload CSR edge data to algorithm buffers with comprehensive validation.
+ *
+ * This function validates CSR data integrity before uploading to GPU buffers
+ * to prevent memory corruption. Invalid CSR data can cause:
+ * - GPU crashes
+ * - Memory access violations
+ * - Undefined shader behavior
+ * - Data corruption in adjacent buffers
  *
  * @param device - GPU device
  * @param buffers - Relativity Atlas buffers
  * @param csrData - CSR data [offsets..., targets...]
  * @param inverseCsrData - Inverse CSR data [offsets..., sources...]
+ * @param nodeCount - Actual node count for validation (must match buffer expectations)
+ * @throws CSRValidationError if CSR data is malformed
  */
 export function uploadRelativityAtlasEdges(
   device: GPUDevice,
   buffers: AlgorithmBuffers,
   csrData: Uint32Array,
   inverseCsrData: Uint32Array,
+  nodeCount?: number,
 ): void {
   const b = buffers as RelativityAtlasBuffers;
 
-  // Parse CSR data (offsets are first nodeCount+1 elements)
-  const nodeCount = b.maxNodes;
-  const offsetsEnd = nodeCount + 1;
+  // Use provided nodeCount or fall back to buffer capacity
+  const effectiveNodeCount = nodeCount ?? b.maxNodes;
 
-  // Upload forward CSR
-  if (csrData.length >= offsetsEnd) {
-    const offsets = csrData.subarray(0, offsetsEnd);
-    const targets = csrData.subarray(offsetsEnd);
-
-    const offsetBuffer = new ArrayBuffer(offsets.byteLength);
-    new Uint32Array(offsetBuffer).set(offsets);
-    device.queue.writeBuffer(b.csrOffsets, 0, offsetBuffer);
-
-    if (targets.length > 0) {
-      const targetBuffer = new ArrayBuffer(targets.byteLength);
-      new Uint32Array(targetBuffer).set(targets);
-      device.queue.writeBuffer(b.csrTargets, 0, targetBuffer);
-    }
+  // Validate node count doesn't exceed buffer capacity
+  if (effectiveNodeCount > b.maxNodes) {
+    throw new CSRValidationError(
+      `Node count ${effectiveNodeCount} exceeds buffer capacity ${b.maxNodes}. ` +
+        `Recreate buffers with createBuffers() using a larger maxNodes value.`,
+      {
+        field: "nodeCount",
+        expected: `<= ${b.maxNodes}`,
+        actual: effectiveNodeCount,
+        nodeCount: effectiveNodeCount,
+      },
+    );
   }
 
-  // Upload inverse CSR
-  if (inverseCsrData.length >= offsetsEnd) {
-    const offsets = inverseCsrData.subarray(0, offsetsEnd);
-    const sources = inverseCsrData.subarray(offsetsEnd);
+  // Validate and parse forward CSR data
+  const forwardCSR = validateCSRData(
+    csrData,
+    effectiveNodeCount,
+    b.maxEdges,
+    "Forward CSR",
+  );
 
-    const offsetBuffer = new ArrayBuffer(offsets.byteLength);
-    new Uint32Array(offsetBuffer).set(offsets);
-    device.queue.writeBuffer(b.csrInverseOffsets, 0, offsetBuffer);
+  // Validate and parse inverse CSR data
+  const inverseCSR = validateCSRData(
+    inverseCsrData,
+    effectiveNodeCount,
+    b.maxEdges,
+    "Inverse CSR",
+  );
 
-    if (sources.length > 0) {
-      const sourceBuffer = new ArrayBuffer(sources.byteLength);
-      new Uint32Array(sourceBuffer).set(sources);
-      device.queue.writeBuffer(b.csrInverseSources, 0, sourceBuffer);
-    }
+  // Cross-validation: forward and inverse CSR should have same edge count
+  // (they represent the same graph from different directions)
+  if (forwardCSR.edgeCount !== inverseCSR.edgeCount) {
+    throw new CSRValidationError(
+      `Edge count mismatch between forward and inverse CSR. ` +
+        `Forward CSR has ${forwardCSR.edgeCount} edges, inverse CSR has ${inverseCSR.edgeCount} edges. ` +
+        `Both must represent the same graph and have identical edge counts.`,
+      {
+        field: "edgeCount",
+        expected: forwardCSR.edgeCount,
+        actual: inverseCSR.edgeCount,
+        nodeCount: effectiveNodeCount,
+        edgeCount: forwardCSR.edgeCount,
+      },
+    );
+  }
+
+  // Upload forward CSR offsets
+  const forwardOffsetBuffer = new ArrayBuffer(forwardCSR.offsets.byteLength);
+  new Uint32Array(forwardOffsetBuffer).set(forwardCSR.offsets);
+  device.queue.writeBuffer(b.csrOffsets, 0, forwardOffsetBuffer);
+
+  // Upload forward CSR targets (indices)
+  if (forwardCSR.indices.length > 0) {
+    const forwardTargetBuffer = new ArrayBuffer(forwardCSR.indices.byteLength);
+    new Uint32Array(forwardTargetBuffer).set(forwardCSR.indices);
+    device.queue.writeBuffer(b.csrTargets, 0, forwardTargetBuffer);
+  }
+
+  // Upload inverse CSR offsets
+  const inverseOffsetBuffer = new ArrayBuffer(inverseCSR.offsets.byteLength);
+  new Uint32Array(inverseOffsetBuffer).set(inverseCSR.offsets);
+  device.queue.writeBuffer(b.csrInverseOffsets, 0, inverseOffsetBuffer);
+
+  // Upload inverse CSR sources (indices)
+  if (inverseCSR.indices.length > 0) {
+    const inverseSourceBuffer = new ArrayBuffer(inverseCSR.indices.byteLength);
+    new Uint32Array(inverseSourceBuffer).set(inverseCSR.indices);
+    device.queue.writeBuffer(b.csrInverseSources, 0, inverseSourceBuffer);
   }
 }

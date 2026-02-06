@@ -13,8 +13,9 @@ struct SiblingUniforms {
     edge_count: u32,
     repulsion_strength: f32,
     min_distance: f32,
-    max_siblings: u32,       // Cap on siblings to check (perf limit for high-degree nodes)
-    _padding: vec3<u32>,
+    max_siblings: u32,              // Cap on siblings to check (perf limit for high-degree nodes)
+    parent_child_multiplier: f32,   // Weaker repulsion for connected pairs (default: 0.3)
+    _padding: vec2<u32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SiblingUniforms;
@@ -83,16 +84,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Get siblings (children of this parent)
         let sibling_start = csr_offsets[parent_idx];
         let sibling_end = csr_offsets[parent_idx + 1u];
-        let sibling_count = sibling_end - sibling_start;
 
-        // Cap the number of siblings we check for performance
-        let max_check = min(sibling_count, uniforms.max_siblings);
+        // CRITICAL: Limit loop iterations to prevent infinite loops
+        // If sibling_end is corrupted (very large), or if max_siblings skipped entries
+        // never increment `checked`, the loop could run forever.
+        // Use loop counter (s - sibling_start) as the primary limit, not checked count.
+        let max_iterations = min(sibling_end - sibling_start, uniforms.max_siblings);
         var checked = 0u;
 
-        for (var s = sibling_start; s < sibling_end && checked < max_check; s++) {
+        for (var s = sibling_start; s < sibling_start + max_iterations; s++) {
             let sibling_idx = csr_targets[s];
 
-            // Skip self
+            // Skip self and invalid indices
             if (sibling_idx == node_idx || sibling_idx >= uniforms.node_count) {
                 continue;
             }
@@ -119,7 +122,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let child_start = csr_offsets[node_idx];
     let child_end = csr_offsets[node_idx + 1u];
 
-    for (var c = child_start; c < child_end; c++) {
+    // SAFETY: Limit iterations in case CSR data is corrupted
+    let max_children = min(child_end - child_start, uniforms.max_siblings);
+    for (var c = child_start; c < child_start + max_children; c++) {
         let child_idx = csr_targets[c];
 
         if (child_idx >= uniforms.node_count) {
@@ -137,58 +142,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         // Weaker repulsion for parent-child (they're connected by spring)
-        force += compute_repulsion(delta, mass_i, mass_j) * 0.3;
+        force += compute_repulsion(delta, mass_i, mass_j) * uniforms.parent_child_multiplier;
     }
 
     // Accumulate forces
     forces[node_idx] += force;
 }
 
-// Simplified version: only direct neighbors repel (no sibling lookup)
-@compute @workgroup_size(256)
-fn repel_neighbors(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
-
-    let pos = positions[node_idx];
-    let mass_i = max(node_mass[node_idx], 1.0);
-
-    var force = vec2<f32>(0.0, 0.0);
-
-    // Repel against children
-    let child_start = csr_offsets[node_idx];
-    let child_end = csr_offsets[node_idx + 1u];
-
-    for (var c = child_start; c < child_end; c++) {
-        let child_idx = csr_targets[c];
-        if (child_idx >= uniforms.node_count) { continue; }
-
-        let delta = pos - positions[child_idx];
-        let dist_sq = dot(delta, delta);
-        if (dist_sq < EPSILON) { continue; }
-
-        let mass_j = max(node_mass[child_idx], 1.0);
-        force += compute_repulsion(delta, mass_i, mass_j);
-    }
-
-    // Repel against parents
-    let parent_start = csr_inverse_offsets[node_idx];
-    let parent_end = csr_inverse_offsets[node_idx + 1u];
-
-    for (var p = parent_start; p < parent_end; p++) {
-        let parent_idx = csr_inverse_sources[p];
-        if (parent_idx >= uniforms.node_count) { continue; }
-
-        let delta = pos - positions[parent_idx];
-        let dist_sq = dot(delta, delta);
-        if (dist_sq < EPSILON) { continue; }
-
-        let mass_j = max(node_mass[parent_idx], 1.0);
-        force += compute_repulsion(delta, mass_i, mass_j);
-    }
-
-    forces[node_idx] += force;
-}

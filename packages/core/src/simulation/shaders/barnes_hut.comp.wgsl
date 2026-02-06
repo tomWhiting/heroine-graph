@@ -37,7 +37,11 @@ struct ForceUniforms {
 @group(0) @binding(6) var<storage, read> tree_sizes: array<f32>;    // Cell sizes
 
 const MAX_TREE_SIZE: u32 = 262144u;
-const MAX_STACK_DEPTH: u32 = 64u;
+// Stack depth for quadtree traversal. In worst-case unbalanced trees, we accumulate
+// ~3 pending nodes per level (push 4 children, descend into 1). For 131K nodes
+// (depth log₄(131K) ≈ 8.5 levels), we need ~25 entries. We use 128 to provide
+// ~5× safety margin for pathological tree structures.
+const MAX_STACK_DEPTH: u32 = 128u;
 
 // Compute repulsive force between a node and a cell/body
 fn compute_repulsion(delta: vec2<f32>, mass: f32) -> vec2<f32> {
@@ -67,7 +71,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var total_force = vec2<f32>(0.0, 0.0);
 
     // Iterative tree traversal using explicit stack
-    var stack: array<u32, 64>;
+    var stack: array<u32, 128>;
     var stack_ptr = 1u;
     stack[0] = 0u;  // Start with root node
 
@@ -121,6 +125,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 stack[stack_ptr + 2u] = child_base + 2u;
                 stack[stack_ptr + 3u] = child_base + 3u;
                 stack_ptr += 4u;
+            } else {
+                // Stack overflow: cannot descend further into this subtree.
+                // Fall back to treating the current cell as an approximation.
+                // This is the mathematically correct fallback - we use the
+                // aggregate mass/center-of-mass of the entire subtree rather
+                // than computing individual contributions.
+                //
+                // With MAX_STACK_DEPTH=128, this should never occur in practice
+                // (supports trees up to 128 levels deep, far exceeding the ~8.5 levels needed for 131K nodes).
+                total_force += compute_repulsion(delta, cell_mass);
             }
         }
     }

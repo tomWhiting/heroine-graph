@@ -51,19 +51,3 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     degrees[node_idx * 2u + 1u] = in_degree;
 }
 
-// Alternative: compute total degree only
-@compute @workgroup_size(256)
-fn compute_total_degree(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
-
-    let out_degree = csr_offsets[node_idx + 1u] - csr_offsets[node_idx];
-    let in_degree = csr_inverse_offsets[node_idx + 1u] - csr_inverse_offsets[node_idx];
-
-    // Store total degree in first slot, 0 in second
-    degrees[node_idx * 2u] = out_degree + in_degree;
-    degrees[node_idx * 2u + 1u] = 0u;
-}

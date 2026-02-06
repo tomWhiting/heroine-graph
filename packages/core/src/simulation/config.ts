@@ -57,6 +57,30 @@ export interface FullForceConfig extends ForceConfig {
   maxVelocity: number;
   /** Time step for integration */
   timeStep: number;
+
+  // Relativity Atlas specific parameters
+  /** Base mass for all nodes (default: 1.0) */
+  relativityBaseMass: number;
+  /** Factor for child mass contribution (default: 0.5) */
+  relativityChildMassFactor: number;
+  /** How much mass affects gravity resistance (default: 0.5) */
+  relativityMassExponent: number;
+  /** Cap on sibling checks per node (default: 100) */
+  relativityMaxSiblings: number;
+  /** Weaker repulsion multiplier for parent-child pairs (default: 0.3) */
+  relativityParentChildMultiplier: number;
+  /** Gravity curve type: 'linear' | 'inverse' | 'soft' | 'custom' */
+  relativityGravityCurve: "linear" | "inverse" | "soft" | "custom";
+  /** Exponent for custom gravity curve (default: 1.0) */
+  relativityGravityExponent: number;
+  /** Enable cousin repulsion (2-hop neighbors) */
+  relativityCousinRepulsion: boolean;
+  /** Cousin repulsion strength relative to sibling (default: 0.5) */
+  relativityCousinStrength: number;
+  /** Enable phantom zones (mass-based collision boundaries) */
+  relativityPhantomZone: boolean;
+  /** How much mass affects phantom zone radius (default: 0.5) */
+  relativityPhantomMultiplier: number;
 }
 
 /**
@@ -95,6 +119,19 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   velocityDecay: 0.4,
   maxVelocity: 50,
   timeStep: 1.0,
+
+  // Relativity Atlas defaults
+  relativityBaseMass: 1.0,
+  relativityChildMassFactor: 0.5,
+  relativityMassExponent: 0.5,
+  relativityMaxSiblings: 100,
+  relativityParentChildMultiplier: 0.3,
+  relativityGravityCurve: "linear",
+  relativityGravityExponent: 1.0,
+  relativityCousinRepulsion: false,
+  relativityCousinStrength: 0.5,
+  relativityPhantomZone: false,
+  relativityPhantomMultiplier: 0.5,
 };
 
 /**
@@ -264,6 +301,16 @@ export function validateForceConfig(
   result.collisionStrength = Math.max(0, Math.min(1, result.collisionStrength));
   result.collisionRadiusMultiplier = Math.max(0.1, result.collisionRadiusMultiplier);
   result.collisionIterations = Math.max(1, Math.floor(result.collisionIterations));
+
+  // Validate Relativity Atlas parameters
+  result.relativityBaseMass = Math.max(0.1, result.relativityBaseMass);
+  result.relativityChildMassFactor = Math.max(0, Math.min(1, result.relativityChildMassFactor));
+  result.relativityMassExponent = Math.max(0, Math.min(2, result.relativityMassExponent));
+  result.relativityMaxSiblings = Math.max(10, Math.floor(result.relativityMaxSiblings));
+  result.relativityParentChildMultiplier = Math.max(0, Math.min(1, result.relativityParentChildMultiplier));
+  result.relativityGravityExponent = Math.max(-2, Math.min(2, result.relativityGravityExponent));
+  result.relativityCousinStrength = Math.max(0, Math.min(1, result.relativityCousinStrength));
+  result.relativityPhantomMultiplier = Math.max(0, Math.min(2, result.relativityPhantomMultiplier));
 
   return result;
 }

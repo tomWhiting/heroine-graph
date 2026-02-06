@@ -47,6 +47,8 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
   constructor(
     public uniformBuffer: GPUBuffer,
     public degreesBuffer: GPUBuffer,
+    /** Maximum node count this buffer set supports */
+    public maxNodes: number,
   ) {}
 
   destroy(): void {
@@ -98,7 +100,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new ForceAtlas2Buffers(uniformBuffer, degreesBuffer);
+    return new ForceAtlas2Buffers(uniformBuffer, degreesBuffer, maxNodes);
   }
 
   createBindGroups(
@@ -129,6 +131,16 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
   ): void {
     const buffers = algorithmBuffers as ForceAtlas2Buffers;
+
+    // CRITICAL: Validate node count doesn't exceed buffer capacity.
+    // Buffer overflow from undersized buffers is a security issue that can corrupt
+    // GPU memory, cause crashes, or produce undefined behavior.
+    if (context.nodeCount > buffers.maxNodes) {
+      throw new Error(
+        `ForceAtlas2 buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${buffers.maxNodes}). ` +
+        `Buffers must be recreated with createBuffers() when node count increases.`
+      );
+    }
 
     // ForceAtlas2 uses different scaling than standard force-directed
     // The repulsion strength maps to FA2's "scaling" parameter (kr)

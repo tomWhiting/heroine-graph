@@ -171,7 +171,7 @@ fn simple_sort(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Write to sorted position
-    if (is_valid) {
+    if (is_valid && pos < uniforms.node_count) {
         keys_out[pos] = key;
         values_out[pos] = value;
     }

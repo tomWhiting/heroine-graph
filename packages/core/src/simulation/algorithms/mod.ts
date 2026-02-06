@@ -40,8 +40,10 @@ export { createForceAtlas2Algorithm, ForceAtlas2Algorithm } from "./force-atlas2
 export { createDensityFieldAlgorithm, DensityFieldAlgorithm } from "./density-field.ts";
 export {
   createRelativityAtlasAlgorithm,
+  CSRValidationError,
   RelativityAtlasAlgorithm,
   uploadRelativityAtlasEdges,
+  validateCSRData,
 } from "./relativity-atlas.ts";
 
 /**

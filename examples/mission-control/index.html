@@ -587,19 +587,48 @@
       <canvas id="graph-canvas"></canvas>
     </div>
 
-    <!-- Stats display -->
-    <div id="stats">
-      <div class="stat-row">
-        <span class="stat-label">Nodes</span>
-        <span class="stat-value" id="stat-nodes">0</span>
+    <!-- Graph Generator Controls -->
+    <div id="graph-generator" style="position: fixed; top: 16px; left: 16px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; z-index: 100; display: flex; flex-direction: column; gap: 8px; min-width: 220px;">
+      <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Graph Generator</div>
+      <select id="graph-type" style="padding: 6px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-card); color: inherit;">
+        <option value="corporate">Corporate (Random)</option>
+        <option value="hierarchical">Hierarchical (Tree)</option>
+      </select>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; min-width: 70px;">Branching</span>
+        <input type="range" id="branch-factor" min="2" max="10" value="4" style="flex: 1;">
+        <span id="branch-factor-val" style="font-size: 12px; min-width: 35px; text-align: right;">4</span>
       </div>
-      <div class="stat-row">
-        <span class="stat-label">Edges</span>
-        <span class="stat-value" id="stat-edges">0</span>
+      <!-- Generate buttons (restart with clean graph) -->
+      <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+        <button class="gen-btn" data-count="100" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">100</button>
+        <button class="gen-btn" data-count="1000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">1K</button>
+        <button class="gen-btn" data-count="10000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">10K</button>
+        <button class="gen-btn" data-count="100000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">100K</button>
       </div>
-      <div class="stat-row">
-        <span class="stat-label">FPS</span>
-        <span class="stat-value" id="stat-fps">0</span>
+      <!-- Cross-talk section -->
+      <div style="margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);">
+        <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Add Cross-Talk (Live)</div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 12px; min-width: 50px;">Edges</span>
+          <input type="number" id="crosstalk-count" value="50" min="1" max="10000" style="flex: 1; padding: 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-card); color: inherit; width: 60px;">
+          <button id="add-crosstalk-btn" style="padding: 4px 10px; font-size: 11px; background: #ff6b6b33; border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">+ Add</button>
+        </div>
+      </div>
+      <!-- Stats display -->
+      <div style="margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);">
+        <div class="stat-row">
+          <span class="stat-label">Nodes</span>
+          <span class="stat-value" id="stat-nodes">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Edges</span>
+          <span class="stat-value" id="stat-edges">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">FPS</span>
+          <span class="stat-value" id="stat-fps">0</span>
+        </div>
       </div>
     </div>
 
@@ -1220,6 +1249,7 @@
                 <option value="force-atlas2">ForceAtlas2 - network visualization</option>
                 <option value="barnes-hut">Barnes-Hut - up to 100K nodes</option>
                 <option value="density">Density Field - O(n) for 100K+ nodes</option>
+                <option value="relativity-atlas">Relativity Atlas - hierarchical O(N+E)</option>
               </select>
             </div>
 
@@ -1294,6 +1324,117 @@
               </div>
               <input type="range" id="force-max-vel" min="10" max="200" step="10" value="50">
             </div>
+          </div>
+        </div>
+
+        <!-- Relativity Atlas Controls (shown when algorithm = relativity-atlas) -->
+        <div class="simulation-section" id="relativity-controls" style="display: none;">
+          <h3 class="section-title">Relativity Atlas</h3>
+          <div class="simulation-grid">
+
+            <!-- Mass Inheritance -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Base Mass</span>
+                <span class="control-value" id="ra-base-mass-val">1.0</span>
+              </div>
+              <input type="range" id="ra-base-mass" min="0.1" max="10" step="0.1" value="1.0">
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Child Factor</span>
+                <span class="control-value" id="ra-child-factor-val">0.50</span>
+              </div>
+              <input type="range" id="ra-child-factor" min="0" max="1" step="0.05" value="0.5">
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Mass Exponent</span>
+                <span class="control-value" id="ra-mass-exp-val">0.50</span>
+              </div>
+              <input type="range" id="ra-mass-exp" min="0" max="2" step="0.1" value="0.5">
+            </div>
+
+            <!-- Gravity Curve -->
+            <div class="simulation-card" style="grid-column: span 2;">
+              <div class="control-row">
+                <span class="control-label">Gravity Curve</span>
+              </div>
+              <select id="ra-gravity-curve" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 12px;">
+                <option value="linear">Linear (default)</option>
+                <option value="inverse">Inverse-Square (stable orbits)</option>
+                <option value="soft">Soft (gentle close-range)</option>
+                <option value="custom">Custom Exponent</option>
+              </select>
+            </div>
+
+            <div class="simulation-card" id="ra-gravity-exp-card">
+              <div class="control-row">
+                <span class="control-label">Gravity Exponent</span>
+                <span class="control-value" id="ra-gravity-exp-val">1.00</span>
+              </div>
+              <input type="range" id="ra-gravity-exp" min="-2" max="2" step="0.1" value="1.0">
+            </div>
+
+            <!-- Sibling Settings -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Max Siblings</span>
+                <span class="control-value" id="ra-max-siblings-val">100</span>
+              </div>
+              <input type="range" id="ra-max-siblings" min="10" max="500" step="10" value="100">
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Parent-Child Mult</span>
+                <span class="control-value" id="ra-parent-child-val">0.30</span>
+              </div>
+              <input type="range" id="ra-parent-child" min="0" max="1" step="0.05" value="0.3">
+            </div>
+
+            <!-- Cousin Repulsion (future feature) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Cousin Repulsion</span>
+                <label class="toggle">
+                  <input type="checkbox" id="ra-cousin-enabled" disabled>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <p class="sim-note">Coming soon</p>
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Cousin Strength</span>
+                <span class="control-value" id="ra-cousin-strength-val">0.50</span>
+              </div>
+              <input type="range" id="ra-cousin-strength" min="0" max="1" step="0.05" value="0.5" disabled>
+            </div>
+
+            <!-- Phantom Zones (future feature) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Phantom Zones</span>
+                <label class="toggle">
+                  <input type="checkbox" id="ra-phantom-enabled" disabled>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <p class="sim-note">Coming soon</p>
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Phantom Multiplier</span>
+                <span class="control-value" id="ra-phantom-mult-val">0.50</span>
+              </div>
+              <input type="range" id="ra-phantom-mult" min="0" max="2" step="0.1" value="0.5" disabled>
+            </div>
+
           </div>
         </div>
 

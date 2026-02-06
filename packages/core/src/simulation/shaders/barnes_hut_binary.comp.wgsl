@@ -37,12 +37,15 @@ struct ForceUniforms {
 @group(0) @binding(4) var<storage, read> right_child: array<i32>;
 
 // Node properties (2N-1 total: internal + leaves)
-@group(0) @binding(5) var<storage, read> node_com_x: array<f32>;
-@group(0) @binding(6) var<storage, read> node_com_y: array<f32>;
-@group(0) @binding(7) var<storage, read> node_mass: array<f32>;
-@group(0) @binding(8) var<storage, read> node_size: array<f32>;
+@group(0) @binding(5) var<storage, read> node_com: array<vec2<f32>>;
+@group(0) @binding(6) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(7) var<storage, read> node_size: array<f32>;
 
-const MAX_STACK_DEPTH: u32 = 64u;
+// Stack depth for tree traversal. For a binary tree with N nodes, the maximum
+// stack depth needed is log₂(N). For 131K nodes (current limit), ~17 levels suffice.
+// However, Karras trees can be unbalanced. We use 128 to handle extreme cases,
+// supporting trees up to 128 levels deep with massive safety margin.
+const MAX_STACK_DEPTH: u32 = 128u;
 const WORKGROUP_SIZE: u32 = 256u;
 
 // Compute repulsive force between a particle and a cell/body
@@ -102,16 +105,22 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // Iterative tree traversal using explicit stack
-    // Stack stores (node_index, is_internal_node) packed as u32
-    // High bit: 0 = internal, 1 = leaf node index
-    var stack: array<u32, 64>;
+    // Stack stores node indices to visit
+    var stack: array<u32, 128>;
     var stack_ptr = 1u;
     stack[0] = 0u;  // Start with root (internal node 0)
 
     let theta_sq = uniforms.theta * uniforms.theta;
     let num_internal = n - 1u;
 
-    while (stack_ptr > 0u) {
+    // SAFETY: Limit iterations to prevent infinite loops from corrupted tree structure
+    // For N nodes, max iterations is O(N) when theta=0, plus stack overhead
+    // 100K iterations handles graphs up to ~50K nodes with aggressive theta
+    var iterations = 0u;
+    let max_iterations = max(n * 2u, 1000u);
+
+    while (stack_ptr > 0u && iterations < max_iterations) {
+        iterations += 1u;
         stack_ptr -= 1u;
         let node_idx = stack[stack_ptr];
 
@@ -123,7 +132,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let cell_com = vec2<f32>(node_com_x[node_idx], node_com_y[node_idx]);
+        let cell_com = node_com[node_idx];
         let cell_size = node_size[node_idx];
 
         // Distance from particle to cell center of mass
@@ -152,7 +161,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let left = left_child[node_idx];
             let right = right_child[node_idx];
 
-            // Push children onto stack
+            // Push children onto stack if space available
             if (stack_ptr + 2u <= MAX_STACK_DEPTH) {
                 // Left child
                 let left_node = child_to_node_idx(left, n);
@@ -163,6 +172,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 let right_node = child_to_node_idx(right, n);
                 stack[stack_ptr] = right_node;
                 stack_ptr += 1u;
+            } else {
+                // Stack overflow: cannot descend further into this subtree.
+                // Fall back to treating the current node as an approximation.
+                // This is the mathematically correct fallback - we use the
+                // aggregate mass/center-of-mass of the entire subtree rather
+                // than computing individual contributions.
+                //
+                // With MAX_STACK_DEPTH=128, this should never occur in practice
+                // (would require a tree deeper than 128 levels, far beyond the ~17 levels needed for 131K nodes).
+                total_force += compute_repulsion(delta, cell_mass);
             }
         }
     }
@@ -171,11 +190,3 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forces[particle_idx] += total_force;
 }
 
-// Alternative entry point for sorted particle order.
-// When particles are processed in Morton-sorted order, this provides
-// the same computation with improved memory access locality.
-@compute @workgroup_size(256)
-fn main_sorted(@builtin(global_invocation_id) global_id: vec3<u32>,
-               @builtin(local_invocation_id) local_id: vec3<u32>) {
-    main(global_id);
-}

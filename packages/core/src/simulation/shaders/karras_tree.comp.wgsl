@@ -40,13 +40,12 @@ struct TreeUniforms {
 // Node properties (2N-1 total: N-1 internal + N leaves)
 // Internal nodes: indices 0..N-2
 // Leaf nodes: indices N-1..2N-2
-@group(0) @binding(7) var<storage, read_write> node_com_x: array<f32>;
-@group(0) @binding(8) var<storage, read_write> node_com_y: array<f32>;
-@group(0) @binding(9) var<storage, read_write> node_mass: array<f32>;
-@group(0) @binding(10) var<storage, read_write> node_size: array<f32>;
+@group(0) @binding(7) var<storage, read_write> node_com: array<vec2<f32>>;
+@group(0) @binding(8) var<storage, read_write> node_mass: array<f32>;
+@group(0) @binding(9) var<storage, read_write> node_size: array<f32>;
 
 // Atomic counter for bottom-up aggregation
-@group(0) @binding(11) var<storage, read_write> visit_count: array<atomic<u32>>;
+@group(0) @binding(10) var<storage, read_write> visit_count: array<atomic<u32>>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 
@@ -55,12 +54,13 @@ fn clz(x: u32) -> u32 {
     if (x == 0u) {
         return 32u;
     }
+    var v = x;  // Copy to mutable variable (WGSL parameters are immutable)
     var n = 0u;
-    if ((x & 0xFFFF0000u) == 0u) { n += 16u; x <<= 16u; }
-    if ((x & 0xFF000000u) == 0u) { n += 8u; x <<= 8u; }
-    if ((x & 0xF0000000u) == 0u) { n += 4u; x <<= 4u; }
-    if ((x & 0xC0000000u) == 0u) { n += 2u; x <<= 2u; }
-    if ((x & 0x80000000u) == 0u) { n += 1u; }
+    if ((v & 0xFFFF0000u) == 0u) { n += 16u; v <<= 16u; }
+    if ((v & 0xFF000000u) == 0u) { n += 8u; v <<= 8u; }
+    if ((v & 0xF0000000u) == 0u) { n += 4u; v <<= 4u; }
+    if ((v & 0xC0000000u) == 0u) { n += 2u; v <<= 2u; }
+    if ((v & 0x80000000u) == 0u) { n += 1u; }
     return n;
 }
 
@@ -102,10 +102,13 @@ fn build_topology(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let d = select(-1, 1, d_right > d_left);
 
     // Compute upper bound for the range length
+    // SAFETY: Limit iterations to prevent infinite loop with duplicate Morton codes
     let delta_min = min(d_left, d_right);
     var l_max = 2;
-    while (delta(i, i + l_max * d, n) > delta_min) {
+    var search_iter = 0u;
+    while (delta(i, i + l_max * d, n) > delta_min && search_iter < 32u) {
         l_max *= 2;
+        search_iter += 1u;
     }
 
     // Binary search for the actual range length
@@ -191,8 +194,7 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pos = positions[particle_idx];
 
     // Set leaf properties
-    node_com_x[node_idx] = pos.x;
-    node_com_y[node_idx] = pos.y;
+    node_com[node_idx] = pos;
     node_mass[node_idx] = 1.0;  // Each particle has mass 1
 
     // Leaf bounding box size derived from tree depth (root_size / 256.0).
@@ -219,7 +221,11 @@ fn aggregate_bottom_up(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var current_parent = parent[leaf_node_idx];
 
     // Walk up the tree
-    while (current_parent >= 0) {
+    // SAFETY: Limit depth to prevent infinite loops from corrupted parent pointers
+    // Binary tree with N leaves has at most log2(N) depth, 64 handles up to 2^64 nodes
+    var depth = 0u;
+    while (current_parent >= 0 && depth < 64u) {
+        depth += 1u;
         let parent_idx = u32(current_parent);
 
         // Increment visit count - returns old value
@@ -245,11 +251,11 @@ fn aggregate_bottom_up(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         if (total_mass > 0.0) {
             // Weighted center of mass
-            let com_x = (node_com_x[left_idx] * left_mass + node_com_x[right_idx] * right_mass) / total_mass;
-            let com_y = (node_com_y[left_idx] * left_mass + node_com_y[right_idx] * right_mass) / total_mass;
+            let left_com = node_com[left_idx];
+            let right_com = node_com[right_idx];
+            let com = (left_com * left_mass + right_com * right_mass) / total_mass;
 
-            node_com_x[parent_idx] = com_x;
-            node_com_y[parent_idx] = com_y;
+            node_com[parent_idx] = com;
             node_mass[parent_idx] = total_mass;
 
             // Node size is max of child sizes (approximate bounding box)
@@ -274,16 +280,19 @@ fn clear_tree(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    node_com_x[idx] = 0.0;
-    node_com_y[idx] = 0.0;
+    node_com[idx] = vec2<f32>(0.0, 0.0);
     node_mass[idx] = 0.0;
     node_size[idx] = 0.0;
 
-    // Clear internal node structure
+    // CRITICAL: Initialize parent for ALL nodes (internal + leaves)
+    // Without this, aggregate_bottom_up can follow garbage parent pointers
+    // and enter an infinite loop. Leaves start at index n-1.
+    parent[idx] = -1;
+
+    // Clear internal node structure (children and visit count)
     if (idx < n - 1u) {
         left_child[idx] = 0;
         right_child[idx] = 0;
-        parent[idx] = -1;
         atomicStore(&visit_count[idx], 0u);
     }
 }

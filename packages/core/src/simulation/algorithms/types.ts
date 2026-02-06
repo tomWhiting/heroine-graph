@@ -79,15 +79,17 @@ export interface AlgorithmRenderContext {
   forces: GPUBuffer;
   /** Number of nodes */
   nodeCount: number;
+  /** Number of edges (required for Relativity Atlas CSR traversal) */
+  edgeCount: number;
   /** Current force configuration */
   forceConfig: FullForceConfig;
-  /** Viewport bounds (for spatial algorithms) */
+  /** Viewport bounds (for spatial algorithms like Barnes-Hut and Density Field) */
   bounds?: {
     minX: number;
     minY: number;
     maxX: number;
     maxY: number;
-  };
+  } | undefined;
 }
 
 /**

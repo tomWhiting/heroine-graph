@@ -174,9 +174,21 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
   ): void {
     const b = algorithmBuffers as DensityFieldBuffers;
 
-    // Use large bounds for the density grid
-    const boundsMin = -5000.0;
-    const boundsMax = 5000.0;
+    // Density field REQUIRES bounds for correct grid mapping.
+    // Without bounds, positions cannot be mapped to grid cells correctly,
+    // causing density accumulation to be concentrated in wrong areas.
+    if (!context.bounds) {
+      throw new Error(
+        "Density field algorithm requires bounds to be provided in AlgorithmRenderContext. " +
+        "Bounds must be computed from actual node positions. Without bounds, the density " +
+        "grid cannot correctly map positions to cells."
+      );
+    }
+
+    const boundsMinX = context.bounds.minX;
+    const boundsMinY = context.bounds.minY;
+    const boundsMaxX = context.bounds.maxX;
+    const boundsMaxY = context.bounds.maxY;
 
     // Uniforms (48 bytes = 12 x f32)
     const data = new ArrayBuffer(48);
@@ -185,10 +197,10 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     view.setUint32(4, GRID_SIZE, true);                   // grid_width
     view.setUint32(8, GRID_SIZE, true);                   // grid_height
     view.setFloat32(12, Math.abs(context.forceConfig.repulsionStrength), true); // repulsion_strength
-    view.setFloat32(16, boundsMin, true);                 // bounds_min_x
-    view.setFloat32(20, boundsMin, true);                 // bounds_min_y
-    view.setFloat32(24, boundsMax, true);                 // bounds_max_x
-    view.setFloat32(28, boundsMax, true);                 // bounds_max_y
+    view.setFloat32(16, boundsMinX, true);                // bounds_min_x
+    view.setFloat32(20, boundsMinY, true);                // bounds_min_y
+    view.setFloat32(24, boundsMaxX, true);                // bounds_max_x
+    view.setFloat32(28, boundsMaxY, true);                // bounds_max_y
     view.setFloat32(32, DEFAULT_SPLAT_RADIUS, true);      // splat_radius
     view.setFloat32(36, 0, true);                         // _pad1
     view.setFloat32(40, 0, true);                         // _pad2

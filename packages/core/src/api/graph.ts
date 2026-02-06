@@ -207,6 +207,66 @@ interface GPUBuffers {
 }
 
 /**
+ * Compute bounding box from position arrays.
+ *
+ * Returns bounds with a margin to account for position changes between frames.
+ * The margin is proportional to the graph extent to handle graphs of any scale.
+ *
+ * @param positionsX - X coordinates array
+ * @param positionsY - Y coordinates array
+ * @param nodeCount - Number of valid positions to consider
+ * @returns Bounding box with margin, or undefined if no valid positions
+ */
+function computeBoundsFromPositions(
+  positionsX: Float32Array,
+  positionsY: Float32Array,
+  nodeCount: number,
+): BoundingBox | undefined {
+  if (nodeCount === 0) {
+    return undefined;
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (let i = 0; i < nodeCount; i++) {
+    const x = positionsX[i];
+    const y = positionsY[i];
+
+    // Skip invalid positions (NaN or Infinity)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+
+  // No valid positions found
+  if (minX === Infinity) {
+    return undefined;
+  }
+
+  // Add margin proportional to graph extent to handle position drift between frames.
+  // Using 10% margin ensures nodes moving during simulation don't fall outside bounds.
+  // Minimum margin of 100 units handles small/clustered graphs.
+  const extentX = maxX - minX;
+  const extentY = maxY - minY;
+  const margin = Math.max(100, Math.max(extentX, extentY) * 0.1);
+
+  return {
+    minX: minX - margin,
+    minY: minY - margin,
+    maxX: maxX + margin,
+    maxY: maxY + margin,
+  };
+}
+
+/**
  * Main HeroineGraph class
  */
 export class HeroineGraph {
@@ -567,12 +627,38 @@ export class HeroineGraph {
 
     // Update algorithm uniforms if using custom algorithm
     if (this.currentAlgorithm && this.algorithmBuffers && this.algorithmBindGroups) {
+      // Compute bounds from CPU-side position arrays for spatial algorithms (e.g., Barnes-Hut).
+      // These arrays are synced from GPU every SYNC_INTERVAL frames, so bounds may be slightly
+      // stale. The computeBoundsFromPositions function adds a margin to account for this drift.
+      const bounds = this.state.parsedGraph
+        ? computeBoundsFromPositions(
+            this.state.parsedGraph.positionsX,
+            this.state.parsedGraph.positionsY,
+            this.state.nodeCount,
+          )
+        : undefined;
+
+      // Spatial algorithms (Barnes-Hut, Density Field) require valid bounds.
+      // If bounds are undefined, position data is corrupted (all NaN/Infinity).
+      // Stop simulation gracefully rather than throwing errors every frame.
+      const algorithmId = this.currentAlgorithm.info.id;
+      const requiresBounds = algorithmId === "barnes-hut" || algorithmId === "density";
+      if (requiresBounds && !bounds) {
+        console.error(
+          "CRITICAL: Position data corrupted (all NaN/Infinity). Stopping simulation."
+        );
+        this.simulationController.stop();
+        return;
+      }
+
       const context: AlgorithmRenderContext = {
         device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
+        edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
+        bounds,
       };
       this.currentAlgorithm.updateUniforms(device, this.algorithmBuffers, context);
     }
@@ -667,12 +753,25 @@ export class HeroineGraph {
 
     // Rebuild algorithm bind groups with swapped position/force buffers
     if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
+      // Compute bounds from CPU-side position arrays for spatial algorithms.
+      // Bind group creation doesn't use bounds, but we include them for consistency
+      // with the AlgorithmRenderContext interface.
+      const bounds = this.state.parsedGraph
+        ? computeBoundsFromPositions(
+            this.state.parsedGraph.positionsX,
+            this.state.parsedGraph.positionsY,
+            this.state.nodeCount,
+          )
+        : undefined;
+
       const context: AlgorithmRenderContext = {
         device: this.gpuContext.device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
+        edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
+        bounds,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -960,6 +1059,11 @@ export class HeroineGraph {
 
     const { device } = this.gpuContext;
 
+    // CRITICAL: Destroy old simulation buffers before creating new ones.
+    // Without this, algorithm buffers (sized for old node count) remain active,
+    // causing out-of-bounds reads and NaN propagation that crashes the GPU.
+    this.destroySimulationBuffers();
+
     // Create simulation buffers
     this.simBuffers = createSimulationBuffers(
       device,
@@ -1027,12 +1131,22 @@ export class HeroineGraph {
         parsed.nodeCount,
       );
 
+      // Compute initial bounds from the parsed graph positions.
+      // These are the initial positions before simulation starts.
+      const bounds = computeBoundsFromPositions(
+        parsed.positionsX,
+        parsed.positionsY,
+        parsed.nodeCount,
+      );
+
       const context: AlgorithmRenderContext = {
         device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
         nodeCount: parsed.nodeCount,
+        edgeCount: parsed.edgeCount,
         forceConfig: this.forceConfig,
+        bounds,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -1469,13 +1583,24 @@ export class HeroineGraph {
         this.state.nodeCount,
       );
 
+      // Compute bounds from current positions for spatial algorithms.
+      const bounds = this.state.parsedGraph
+        ? computeBoundsFromPositions(
+            this.state.parsedGraph.positionsX,
+            this.state.parsedGraph.positionsY,
+            this.state.nodeCount,
+          )
+        : undefined;
+
       // Create bind groups
       const context: AlgorithmRenderContext = {
         device: this.gpuContext.device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
         nodeCount: this.state.nodeCount,
+        edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
+        bounds,
       };
 
       this.algorithmBindGroups = algorithm.createBindGroups(

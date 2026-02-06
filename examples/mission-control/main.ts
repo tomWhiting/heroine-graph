@@ -413,6 +413,254 @@ function generateRandomGraph(nodeCount: number): GraphInput {
 }
 
 // ============================================================================
+// Hierarchical Graph Generator
+// ============================================================================
+
+/**
+ * Generate hierarchical (tree-like) graph data with optional cross-talk.
+ *
+ * This generator creates a tree structure where each node has a parent (except root),
+ * making it ideal for testing hierarchical layout algorithms like Relativity Atlas.
+ *
+ * @param nodeCount - Total number of nodes to generate
+ * @param branchFactor - Average number of children per parent (2-10)
+ * @param crossTalk - Percentage of additional random edges (0-100)
+ */
+function generateHierarchicalGraph(
+  nodeCount: number,
+  branchFactor: number = 4,
+  crossTalk: number = 0,
+): GraphInput {
+  const nodes: Array<{
+    id: string;
+    x: number;
+    y: number;
+    radius: number;
+    color: string;
+    metadata: Record<string, unknown>;
+  }> = [];
+  const edges: Array<{ source: string; target: string; width: number; color: string }> = [];
+  const edgeSet = new Set<string>();
+
+  // Color palette for depth levels - distinct colors for visual hierarchy
+  const depthColors = [
+    "#ff6b6b", // Root - red
+    "#feca57", // Level 1 - yellow
+    "#48dbfb", // Level 2 - cyan
+    "#1dd1a1", // Level 3 - green
+    "#5f27cd", // Level 4 - purple
+    "#ff9ff3", // Level 5 - pink
+    "#54a0ff", // Level 6 - blue
+    "#00d2d3", // Level 7 - teal
+  ];
+
+  const TREE_EDGE_COLOR = "#4facfe44"; // Slightly visible for tree edges
+  const CROSS_EDGE_COLOR = "#ff6b6b33"; // Red tint for cross-talk edges
+
+  // Helper to add an edge with deduplication
+  const addEdge = (src: string, tgt: string, color: string, width: number): boolean => {
+    const key = src < tgt ? `${src}-${tgt}` : `${tgt}-${src}`;
+    if (edgeSet.has(key) || src === tgt) return false;
+    edgeSet.add(key);
+    edges.push({ source: src, target: tgt, width, color });
+    return true;
+  };
+
+  // Track node depths and parent relationships for cross-talk validation
+  const nodeParents: (number | undefined)[] = [];
+
+  // Build tree structure level by level using BFS
+  let currentIdx = 0;
+
+  // Create root node at center
+  nodes.push({
+    id: "node-0",
+    x: 0,
+    y: 0,
+    radius: 15,
+    color: depthColors[0],
+    metadata: { type: "root", depth: 0, name: "Root" },
+  });
+  nodeParents.push(undefined);
+  currentIdx++;
+
+  // Build tree using BFS-like approach
+  let currentLevel = [0];
+  let depth = 1;
+
+  while (currentIdx < nodeCount && currentLevel.length > 0) {
+    const nextLevel: number[] = [];
+
+    for (const parentIdx of currentLevel) {
+      if (currentIdx >= nodeCount) break;
+
+      // ASYMMETRIC branching for organic, real-world-like trees:
+      // - Some nodes are leaves (0 children) - ~20% chance
+      // - Some are hubs (2x-3x branch factor) - ~10% chance
+      // - Most vary between 1 and branchFactor - ~70%
+      // This creates uneven, realistic hierarchies like actual codebases/orgs
+      const roll = Math.random();
+      let numChildren: number;
+      if (roll < 0.2) {
+        // Leaf node - stop branching here (20% chance)
+        numChildren = 0;
+      } else if (roll < 0.3) {
+        // Hub node - extra children (10% chance)
+        numChildren = Math.floor(branchFactor * (1.5 + Math.random() * 1.5));
+      } else {
+        // Normal variation - 1 to branchFactor children (70% chance)
+        numChildren = Math.max(1, Math.floor(1 + Math.random() * branchFactor));
+      }
+      const parentNode = nodes[parentIdx];
+
+      for (let c = 0; c < numChildren && currentIdx < nodeCount; c++) {
+        // Position children in a fan pattern around parent
+        const angle = (c / numChildren) * Math.PI * 2 + Math.random() * 0.3;
+        const dist = 30 + depth * 20 + Math.random() * 20;
+
+        const x = (parentNode.x ?? 0) + Math.cos(angle) * dist;
+        const y = (parentNode.y ?? 0) + Math.sin(angle) * dist;
+
+        const nodeId = `node-${currentIdx}`;
+        nodes.push({
+          id: nodeId,
+          x,
+          y,
+          radius: Math.max(4, 12 - depth), // Smaller nodes at deeper levels
+          color: depthColors[depth % depthColors.length],
+          metadata: {
+            type: `level-${depth}`,
+            depth,
+            parent: parentIdx,
+            name: `Node ${currentIdx}`,
+          },
+        });
+
+        nodeParents.push(parentIdx);
+
+        // Tree edge (primary hierarchy)
+        addEdge(`node-${parentIdx}`, nodeId, TREE_EDGE_COLOR, 1.5);
+
+        nextLevel.push(currentIdx);
+        currentIdx++;
+      }
+    }
+
+    currentLevel = nextLevel;
+    depth++;
+
+    // Safety: max depth to prevent infinite loops with small branch factors
+    if (depth > 20) break;
+  }
+
+  const treeEdgeCount = edges.length;
+
+  // Add cross-talk edges (random connections between unrelated nodes)
+  if (crossTalk > 0 && nodes.length > 2) {
+    // Number of cross-talk edges: percentage of tree edges
+    // At 100%, we add as many cross-talk edges as tree edges
+    const crossTalkCount = Math.floor(treeEdgeCount * (crossTalk / 100));
+
+    let added = 0;
+    let attempts = 0;
+    const maxAttempts = crossTalkCount * 10;
+
+    while (added < crossTalkCount && attempts < maxAttempts) {
+      attempts++;
+
+      // Pick two random nodes
+      const a = Math.floor(Math.random() * nodes.length);
+      const b = Math.floor(Math.random() * nodes.length);
+
+      // Skip if same node or direct parent-child relationship
+      if (a === b) continue;
+      const aParent = nodeParents[a];
+      const bParent = nodeParents[b];
+      if (aParent === b || bParent === a) continue;
+
+      // Add cross-talk edge
+      if (addEdge(`node-${a}`, `node-${b}`, CROSS_EDGE_COLOR, 0.8)) {
+        added++;
+      }
+    }
+
+    console.log(`Added ${added} cross-talk edges (${crossTalk}% of ${treeEdgeCount} tree edges)`);
+  }
+
+  console.log(`Generated hierarchical graph: ${nodes.length} nodes, ${edges.length} edges, max depth ${depth - 1}`);
+
+  return { nodes, edges };
+}
+
+/**
+ * Add cross-talk edges to an existing graph in real-time.
+ * This simulates how a codebase evolves: starting pure hierarchy, gaining cross-connections over time.
+ *
+ * @param graphData - Current graph data to modify
+ * @param count - Number of cross-talk edges to add
+ * @returns Updated graph data with new edges
+ */
+function addCrossTalkEdges(
+  graphData: GraphInput,
+  count: number
+): { newEdges: Array<{ source: string; target: string; width: number; color: string }>; totalAdded: number } {
+  const CROSS_EDGE_COLOR = "#ff6b6b55"; // Red tint for cross-talk edges
+
+  const existingEdges = new Set<string>();
+  for (const edge of graphData.edges) {
+    const key = edge.source < edge.target ? `${edge.source}-${edge.target}` : `${edge.target}-${edge.source}`;
+    existingEdges.add(key);
+  }
+
+  const newEdges: Array<{ source: string; target: string; width: number; color: string }> = [];
+  const nodeCount = graphData.nodes.length;
+
+  if (nodeCount < 2) return { newEdges, totalAdded: 0 };
+
+  let added = 0;
+  let attempts = 0;
+  const maxAttempts = count * 20;
+
+  while (added < count && attempts < maxAttempts) {
+    attempts++;
+
+    // Pick two random nodes
+    const a = Math.floor(Math.random() * nodeCount);
+    const b = Math.floor(Math.random() * nodeCount);
+
+    if (a === b) continue;
+
+    const nodeA = graphData.nodes[a];
+    const nodeB = graphData.nodes[b];
+    const srcId = String(nodeA.id);
+    const tgtId = String(nodeB.id);
+
+    // Check if edge already exists
+    const key = srcId < tgtId ? `${srcId}-${tgtId}` : `${tgtId}-${srcId}`;
+    if (existingEdges.has(key)) continue;
+
+    // Skip direct parent-child relationships (for hierarchical graphs)
+    const aParent = (nodeA.metadata as Record<string, unknown>)?.parent;
+    const bParent = (nodeB.metadata as Record<string, unknown>)?.parent;
+    const aIndex = graphData.nodes.findIndex(n => n.id === nodeA.id);
+    const bIndex = graphData.nodes.findIndex(n => n.id === nodeB.id);
+    if (aParent === bIndex || bParent === aIndex) continue;
+
+    existingEdges.add(key);
+    newEdges.push({
+      source: srcId,
+      target: tgtId,
+      width: 0.8,
+      color: CROSS_EDGE_COLOR,
+    });
+    added++;
+  }
+
+  console.log(`Added ${added} cross-talk edges (${attempts} attempts)`);
+  return { newEdges, totalAdded: added };
+}
+
+// ============================================================================
 // UI Helpers
 // ============================================================================
 
@@ -513,7 +761,19 @@ async function main(): Promise<void> {
   async function loadNodes(count: number): Promise<void> {
     if (!state.graph) return;
 
-    const data = generateRandomGraph(count);
+    // Get graph generator settings from UI controls
+    const graphType = ($("graph-type") as HTMLSelectElement)?.value ?? "corporate";
+    const branchFactor = parseInt(($("branch-factor") as HTMLInputElement)?.value ?? "4", 10);
+
+    // Generate graph based on selected type
+    // Note: cross-talk is now added live after generation, not at generation time
+    let data: GraphInput;
+    if (graphType === "hierarchical") {
+      data = generateHierarchicalGraph(count, branchFactor, 0); // No initial cross-talk
+    } else {
+      data = generateRandomGraph(count);
+    }
+
     await state.graph.load(data);
 
     state.graphData = data;
@@ -752,6 +1012,60 @@ async function main(): Promise<void> {
         console.error(`Failed to add ${count} nodes:`, err);
       }
     });
+  });
+
+  // Generate button handlers - RESTART with new clean graph
+  document.querySelectorAll(".gen-btn[data-count]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const count = parseInt((btn as HTMLElement).dataset.count || "100", 10);
+      console.log(`Generating ${count} nodes (fresh graph)...`);
+      try {
+        await loadNodes(count);
+        console.log(`Generated ${count} nodes successfully`);
+      } catch (err) {
+        console.error(`Failed to generate ${count} nodes:`, err);
+      }
+    });
+  });
+
+  // Add cross-talk button handler - add edges to existing graph in real-time
+  $("add-crosstalk-btn").addEventListener("click", async () => {
+    if (!state.graph || !state.graphData || state.graphData.nodes.length === 0) {
+      console.log("No graph loaded - generate one first");
+      return;
+    }
+
+    const count = parseInt(($("crosstalk-count") as HTMLInputElement)?.value ?? "50", 10);
+    console.log(`Adding ${count} cross-talk edges...`);
+
+    try {
+      // Generate new cross-talk edges
+      const { newEdges, totalAdded } = addCrossTalkEdges(state.graphData, count);
+
+      if (totalAdded === 0) {
+        console.log("No cross-talk edges could be added (graph may be fully connected)");
+        return;
+      }
+
+      // Create updated graph data with new edges (edges array is readonly)
+      state.graphData = {
+        ...state.graphData,
+        edges: [...state.graphData.edges, ...newEdges],
+      };
+
+      // Reload the graph with merged data
+      await state.graph.load(state.graphData);
+
+      state.edgeCount = state.graphData.edges.length;
+      $("stat-edges").textContent = formatNumber(state.edgeCount);
+
+      // Reheat simulation to integrate new edges
+      state.graph.restartSimulation();
+
+      console.log(`Added ${totalAdded} cross-talk edges successfully`);
+    } catch (err) {
+      console.error("Failed to add cross-talk edges:", err);
+    }
   });
 
   // Clear button
@@ -1449,14 +1763,21 @@ async function main(): Promise<void> {
   // Algorithm selector
   const algorithmSelect = $("force-algorithm") as HTMLSelectElement;
   const algorithmVal = $("force-algorithm-val");
+  const raControls = $("relativity-controls");
+
   algorithmSelect.addEventListener("change", () => {
-    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density";
+    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas";
     try {
       state.graph?.setForceAlgorithm(type);
       const algorithms = state.graph?.getAvailableAlgorithms() ?? [];
       const selected = algorithms.find((a) => a.id === type);
       algorithmVal.textContent = selected?.name ?? type;
       console.log(`Switched to algorithm: ${selected?.name ?? type}`);
+
+      // Show/hide Relativity Atlas controls based on algorithm selection
+      if (raControls) {
+        raControls.style.display = type === "relativity-atlas" ? "block" : "none";
+      }
     } catch (e) {
       console.error("Failed to set algorithm:", e);
     }
@@ -1520,6 +1841,102 @@ async function main(): Promise<void> {
     "force-max-vel",
     "force-max-vel-val",
     (v) => state.graph?.setForceConfig({ maxVelocity: v }),
+  );
+
+  // ========================================================================
+  // Relativity Atlas Controls
+  // ========================================================================
+
+  // Base mass
+  setupSlider(
+    "ra-base-mass",
+    "ra-base-mass-val",
+    (v) => state.graph?.setForceConfig({ relativityBaseMass: v }),
+    (v) => v.toFixed(1),
+  );
+
+  // Child mass factor
+  setupSlider(
+    "ra-child-factor",
+    "ra-child-factor-val",
+    (v) => state.graph?.setForceConfig({ relativityChildMassFactor: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Mass exponent
+  setupSlider(
+    "ra-mass-exp",
+    "ra-mass-exp-val",
+    (v) => state.graph?.setForceConfig({ relativityMassExponent: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Gravity curve selector
+  const gravityCurveSelect = $("ra-gravity-curve") as HTMLSelectElement;
+  const gravityExpCard = $("ra-gravity-exp-card");
+
+  gravityCurveSelect.addEventListener("change", () => {
+    const curve = gravityCurveSelect.value as "linear" | "inverse" | "soft" | "custom";
+    state.graph?.setForceConfig({ relativityGravityCurve: curve });
+
+    // Show/hide gravity exponent slider based on curve selection
+    if (gravityExpCard) {
+      gravityExpCard.style.opacity = curve === "custom" ? "1" : "0.5";
+    }
+    console.log(`Gravity curve: ${curve}`);
+  });
+
+  // Gravity exponent (for custom curve)
+  setupSlider(
+    "ra-gravity-exp",
+    "ra-gravity-exp-val",
+    (v) => state.graph?.setForceConfig({ relativityGravityExponent: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Max siblings
+  setupSlider(
+    "ra-max-siblings",
+    "ra-max-siblings-val",
+    (v) => state.graph?.setForceConfig({ relativityMaxSiblings: Math.floor(v) }),
+  );
+
+  // Parent-child multiplier
+  setupSlider(
+    "ra-parent-child",
+    "ra-parent-child-val",
+    (v) => state.graph?.setForceConfig({ relativityParentChildMultiplier: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Cousin repulsion toggle (future feature - wired but disabled)
+  $input("ra-cousin-enabled").addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    state.graph?.setForceConfig({ relativityCousinRepulsion: enabled });
+    console.log(`Cousin repulsion: ${enabled ? "enabled" : "disabled"}`);
+  });
+
+  // Cousin strength
+  setupSlider(
+    "ra-cousin-strength",
+    "ra-cousin-strength-val",
+    (v) => state.graph?.setForceConfig({ relativityCousinStrength: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Phantom zones toggle (future feature - wired but disabled)
+  $input("ra-phantom-enabled").addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    state.graph?.setForceConfig({ relativityPhantomZone: enabled });
+    console.log(`Phantom zones: ${enabled ? "enabled" : "disabled"}`);
+  });
+
+  // Phantom multiplier
+  setupSlider(
+    "ra-phantom-mult",
+    "ra-phantom-mult-val",
+    (v) => state.graph?.setForceConfig({ relativityPhantomMultiplier: v }),
+    (v) => v.toFixed(2),
   );
 
   // ========================================================================
@@ -2122,6 +2539,28 @@ async function main(): Promise<void> {
     }
     console.log("Cleared all value streams");
   });
+
+  // ========================================================================
+  // Graph Generator Controls
+  // ========================================================================
+
+  // Cross-talk slider - display value as percentage
+  const crossTalkSlider = $("cross-talk") as HTMLInputElement;
+  const crossTalkVal = $("cross-talk-val");
+  if (crossTalkSlider && crossTalkVal) {
+    crossTalkSlider.addEventListener("input", () => {
+      crossTalkVal.textContent = `${crossTalkSlider.value}%`;
+    });
+  }
+
+  // Branch factor slider - display value as integer
+  const branchFactorSlider = $("branch-factor") as HTMLInputElement;
+  const branchFactorVal = $("branch-factor-val");
+  if (branchFactorSlider && branchFactorVal) {
+    branchFactorSlider.addEventListener("input", () => {
+      branchFactorVal.textContent = branchFactorSlider.value;
+    });
+  }
 
   // ========================================================================
   // Load Initial Data
