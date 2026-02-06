@@ -1622,6 +1622,12 @@ export class HeroineGraph {
     gs.nodeAttributes[attrBase + 4] = 0; // selected
     gs.nodeAttributes[attrBase + 5] = 0; // hovered
 
+    // Record node type for type-based styling
+    const nodeType = node["type"] as string | undefined;
+    if (nodeType) {
+      gs.nodeTypes[slot] = nodeType;
+    }
+
     // Write to GPU buffers (targeted writes)
     const { device } = this.gpuContext;
     const posVec2 = new Float32Array([x, y]);
@@ -1930,6 +1936,12 @@ export class HeroineGraph {
       gs.nodeAttributes[attrBase + 4] = 0;
       gs.nodeAttributes[attrBase + 5] = 0;
 
+      // Record node type for type-based styling
+      const nodeType = node["type"] as string | undefined;
+      if (nodeType) {
+        gs.nodeTypes[slot] = nodeType;
+      }
+
       ids.push(slot);
     }
 
@@ -2099,6 +2111,8 @@ export class HeroineGraph {
     this.state.parsedGraph.edgeCount = gs.edgeCount;
     this.state.parsedGraph.nodeIdMap = gs.nodeIdMap;
     this.state.parsedGraph.edgeIdMap = gs.edgeIdMap;
+    this.state.parsedGraph.nodeTypes = gs.nodeTypes as string[];
+    this.state.parsedGraph.edgeTypes = gs.edgeTypes as string[];
   }
 
   /**
@@ -4232,32 +4246,39 @@ export class HeroineGraph {
 
     // Update node attributes buffer with type-based colors and sizes
     if (this.buffers && this.typeStyleManager.hasNodeStyles()) {
-      const nodeCount = this.state.nodeCount;
-      const nodeAttributes = new Float32Array(nodeCount * 8); // 8 floats per node
+      // Use parsed.nodeCount (= nodeHighWater) to cover all slots including gaps from removals
+      const nodeCount = parsed.nodeCount;
+      // Node attribute layout: [radius, r, g, b, selected, hovered] — 6 floats per node
+      const nodeAttributes = new Float32Array(nodeCount * 6);
 
       for (let i = 0; i < nodeCount; i++) {
+        const baseOffset = i * 6;
+        const originalRadius = parsed.nodeAttributes[baseOffset];
+
+        // Skip freed slots (radius 0)
+        if (originalRadius === 0) {
+          continue;
+        }
+
         const nodeType = parsed.nodeTypes?.[i];
         const style = this.typeStyleManager.resolveNodeStyle(nodeType);
 
-        const baseOffset = i * 8;
-        // Copy original radius (from parsed graph or default)
-        const originalRadius = parsed.nodeAttributes[i * 8 + 0] || 8.0;
         nodeAttributes[baseOffset + 0] = originalRadius * style.size;
-        // Color (RGBA)
+        // Color (RGBA — alpha baked into RGB for the shader)
         nodeAttributes[baseOffset + 1] = style.color[0];
         nodeAttributes[baseOffset + 2] = style.color[1];
         nodeAttributes[baseOffset + 3] = style.color[2];
-        nodeAttributes[baseOffset + 4] = style.color[3];
-        // Copy remaining attributes (border color, border width, flags)
-        nodeAttributes[baseOffset + 5] = parsed.nodeAttributes[i * 8 + 5] || 0;
-        nodeAttributes[baseOffset + 6] = parsed.nodeAttributes[i * 8 + 6] || 0;
-        nodeAttributes[baseOffset + 7] = parsed.nodeAttributes[i * 8 + 7] || 0;
+        // Preserve selected/hovered state
+        nodeAttributes[baseOffset + 4] = parsed.nodeAttributes[baseOffset + 4];
+        nodeAttributes[baseOffset + 5] = parsed.nodeAttributes[baseOffset + 5];
       }
 
       device.queue.writeBuffer(
         this.buffers.nodeAttributes,
         0,
         nodeAttributes.buffer,
+        0,
+        nodeCount * 6 * 4,
       );
     }
 
