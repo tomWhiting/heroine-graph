@@ -222,6 +222,8 @@ export function recordSimulationStep(
 export interface RecordSimulationOptions {
   /** Custom repulsion pass recorder (replaces default N² repulsion) */
   recordRepulsionPass?: ((encoder: GPUCommandEncoder) => void) | undefined;
+  /** Skip the edge spring pass (for algorithms that provide their own positioning) */
+  skipSprings?: boolean;
 }
 
 /**
@@ -264,8 +266,8 @@ export function recordSimulationStepWithOptions(
     repulsionPass.end();
   }
 
-  // Stage 3: Compute spring forces
-  if (edgeCount > 0) {
+  // Stage 3: Compute spring forces (skip for algorithms that handle their own positioning)
+  if (edgeCount > 0 && !options.skipSprings) {
     const springsPass = encoder.beginComputePass({ label: "Springs" });
     springsPass.setPipeline(pipeline.pipelines.springs);
     springsPass.setBindGroup(0, bindGroups.springs);

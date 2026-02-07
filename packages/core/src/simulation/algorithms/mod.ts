@@ -13,6 +13,7 @@ import { createBarnesHutAlgorithm as _createBarnesHut } from "./barnes-hut.ts";
 import { createForceAtlas2Algorithm as _createForceAtlas2 } from "./force-atlas2.ts";
 import { createDensityFieldAlgorithm as _createDensityField } from "./density-field.ts";
 import { createRelativityAtlasAlgorithm as _createRelativityAtlas } from "./relativity-atlas.ts";
+import { createTidyTreeAlgorithm as _createTidyTree } from "./tidy-tree.ts";
 
 // Types
 export type {
@@ -46,6 +47,8 @@ export {
   validateCSRData,
 } from "./relativity-atlas.ts";
 export type { CSRData } from "./relativity-atlas.ts";
+export { createTidyTreeAlgorithm, TidyTreeAlgorithm } from "./tidy-tree.ts";
+export type { TidyTreeConfig } from "./tidy-tree.ts";
 
 /**
  * Initialize the global algorithm registry with built-in algorithms
@@ -76,5 +79,10 @@ export function initializeBuiltinAlgorithms(): void {
   // Register Relativity Atlas algorithm
   if (!registry.has("relativity-atlas")) {
     registry.register(_createRelativityAtlas());
+  }
+
+  // Register Tidy Tree algorithm
+  if (!registry.has("tidy-tree")) {
+    registry.register(_createTidyTree());
   }
 }

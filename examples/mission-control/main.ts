@@ -1879,9 +1879,10 @@ async function main(): Promise<void> {
   const algorithmSelect = $("force-algorithm") as HTMLSelectElement;
   const algorithmVal = $("force-algorithm-val");
   const raControls = $("relativity-controls");
+  const ttControls = $("tidy-tree-controls");
 
   algorithmSelect.addEventListener("change", () => {
-    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas";
+    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree";
     try {
       state.graph?.setForceAlgorithm(type);
       const algorithms = state.graph?.getAvailableAlgorithms() ?? [];
@@ -1889,9 +1890,22 @@ async function main(): Promise<void> {
       algorithmVal.textContent = selected?.name ?? type;
       console.log(`Switched to algorithm: ${selected?.name ?? type}`);
 
-      // Show/hide Relativity Atlas controls based on algorithm selection
+      // Show/hide algorithm-specific controls
       if (raControls) {
         raControls.style.display = type === "relativity-atlas" ? "block" : "none";
+      }
+      if (ttControls) {
+        ttControls.style.display = type === "tidy-tree" ? "block" : "none";
+      }
+
+      // Auto-compute tree layout when switching to tidy-tree
+      if (type === "tidy-tree" && state.graph) {
+        try {
+          state.graph.computeTreeLayout();
+          console.log("Auto-computed tree layout on algorithm switch");
+        } catch (err) {
+          console.warn("Could not auto-compute tree layout:", err);
+        }
       }
     } catch (e) {
       console.error("Failed to set algorithm:", e);
@@ -2053,6 +2067,68 @@ async function main(): Promise<void> {
     (v) => state.graph?.setForceConfig({ relativityPhantomMultiplier: v }),
     (v) => v.toFixed(2),
   );
+
+  // ========================================================================
+  // Tidy Tree Controls
+  // ========================================================================
+
+  // Level separation
+  setupSlider(
+    "tt-level-sep",
+    "tt-level-sep-val",
+    (v) => state.graph?.setForceConfig({ tidyTreeLevelSeparation: v }),
+  );
+
+  // Sibling separation
+  setupSlider(
+    "tt-sibling-sep",
+    "tt-sibling-sep-val",
+    (v) => state.graph?.setForceConfig({ tidyTreeSiblingSeparation: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Subtree separation
+  setupSlider(
+    "tt-subtree-sep",
+    "tt-subtree-sep-val",
+    (v) => state.graph?.setForceConfig({ tidyTreeSubtreeSeparation: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Stiffness (spring strength toward target)
+  setupSlider(
+    "tt-stiffness",
+    "tt-stiffness-val",
+    (v) => state.graph?.setForceConfig({ tidyTreeStiffness: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Damping
+  setupSlider(
+    "tt-damping",
+    "tt-damping-val",
+    (v) => state.graph?.setForceConfig({ tidyTreeDamping: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Coordinate mode selector
+  const coordModeSelect = $("tt-coord-mode") as HTMLSelectElement;
+  coordModeSelect.addEventListener("change", () => {
+    const radial = coordModeSelect.value === "radial";
+    state.graph?.setForceConfig({ tidyTreeRadial: radial });
+    console.log(`Tidy tree coordinate mode: ${radial ? "radial" : "linear"}`);
+  });
+
+  // Recompute button - triggers WASM tree layout and uploads positions to GPU
+  $("tt-recompute").addEventListener("click", () => {
+    if (!state.graph) return;
+    try {
+      state.graph.computeTreeLayout(); // auto-detect root
+      console.log("Tree layout computed and uploaded to GPU");
+    } catch (err) {
+      console.error("Failed to compute tree layout:", err);
+    }
+  });
 
   // ========================================================================
   // Simulation Controls

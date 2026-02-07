@@ -146,6 +146,7 @@ import {
   getAlgorithmRegistry,
   initializeBuiltinAlgorithms,
   RelativityAtlasAlgorithm,
+  TidyTreeAlgorithm,
   uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
 import {
@@ -185,6 +186,14 @@ interface WasmEngine extends SpatialQueryEngine {
   removeNode(id: number): boolean;
   /** Remove an edge by ID */
   removeEdge(id: number): boolean;
+  /** Compute tidy tree layout from graph's own edges */
+  computeTreeLayoutFromGraph(
+    rootId: number,
+    levelSeparation: number,
+    siblingSeparation: number,
+    subtreeSeparation: number,
+    radial: boolean,
+  ): Float32Array;
 }
 
 /**
@@ -720,6 +729,7 @@ export class HeroineGraph {
     }
 
     // Record simulation compute passes with custom algorithm for repulsion
+    const algorithmHandlesSprings = this.currentAlgorithm?.handlesSprings ?? false;
     recordSimulationStepWithOptions(
       encoder,
       this.simulationPipeline,
@@ -738,6 +748,7 @@ export class HeroineGraph {
               );
             }
             : undefined,
+        skipSprings: algorithmHandlesSprings,
       },
     );
 
@@ -1417,10 +1428,6 @@ export class HeroineGraph {
     }
 
     this.wasmEngine.rebuildSpatialIndex();
-
-    if (this.debug) {
-      console.log(`WASM engine populated: ${nodeCount} nodes, ${edgeCount} edges`);
-    }
   }
 
   /**
@@ -3291,6 +3298,50 @@ export class HeroineGraph {
     if (this.debug) {
       console.log(`Force algorithm switched to: ${algorithm.info.name}`);
     }
+  }
+
+  /**
+   * Compute tidy tree layout and upload target positions to GPU.
+   *
+   * This uses the WASM Buchheim algorithm to compute analytical target
+   * positions, then uploads them to the GPU for spring-force animation.
+   * The current algorithm must be "tidy-tree".
+   *
+   * @param rootId - Root node ID, or undefined for auto-detection
+   */
+  computeTreeLayout(rootId?: number): void {
+    if (!this.wasmEngine) {
+      throw new HeroineGraphError(
+        ErrorCode.WASM_LOAD_FAILED,
+        "WASM engine not available for tree layout computation",
+      );
+    }
+
+    if (!(this.currentAlgorithm instanceof TidyTreeAlgorithm)) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Tree layout requires tidy-tree algorithm. Call setForceAlgorithm('tidy-tree') first.",
+      );
+    }
+
+    const config = this.forceConfig;
+    const root = rootId ?? 0xFFFFFFFF; // u32::MAX = auto-detect
+
+    const positions = this.wasmEngine.computeTreeLayoutFromGraph(
+      root,
+      config.tidyTreeLevelSeparation,
+      config.tidyTreeSiblingSeparation,
+      config.tidyTreeSubtreeSeparation,
+      config.tidyTreeRadial,
+    );
+
+    this.currentAlgorithm.uploadTargetPositions(
+      this.gpuContext.device,
+      positions,
+    );
+
+    // Reheat simulation so spring forces can animate toward targets
+    this.simulationController.setAlpha(1.0);
   }
 
   // ==========================================================================

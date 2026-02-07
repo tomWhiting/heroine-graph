@@ -398,11 +398,13 @@ impl GraphEngine {
         Some((min_x, min_y, max_x, max_y))
     }
 
-    /// Clear all nodes and edges.
+    /// Clear all nodes and edges, resetting the engine to its initial state.
     pub fn clear(&mut self) {
         self.graph.clear();
         self.node_id_to_index.clear();
         self.edge_id_to_index.clear();
+        self.next_node_id = 0;
+        self.next_edge_id = 0;
         self.pos_x.clear();
         self.pos_y.clear();
         self.vel_x.clear();

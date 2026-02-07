@@ -83,6 +83,20 @@ export interface FullForceConfig extends ForceConfig {
   relativityPhantomMultiplier: number;
   /** Density field global repulsion strength relative to repulsionStrength (default: 0.5) */
   relativityDensityRepulsion: number;
+
+  // Tidy Tree specific parameters
+  /** Spacing between tree levels (default: 80) */
+  tidyTreeLevelSeparation: number;
+  /** Minimum separation between sibling nodes (default: 1.0) */
+  tidyTreeSiblingSeparation: number;
+  /** Minimum separation between subtrees (default: 2.0) */
+  tidyTreeSubtreeSeparation: number;
+  /** Spring stiffness toward target positions (default: 0.3) */
+  tidyTreeStiffness: number;
+  /** Damping factor for approach to target (default: 0.5) */
+  tidyTreeDamping: number;
+  /** Use radial coordinates (true) or linear top-down (false) */
+  tidyTreeRadial: boolean;
 }
 
 /**
@@ -135,6 +149,14 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   relativityPhantomZone: false,
   relativityPhantomMultiplier: 0.5,
   relativityDensityRepulsion: 0.5,
+
+  // Tidy Tree defaults
+  tidyTreeLevelSeparation: 80,
+  tidyTreeSiblingSeparation: 1.0,
+  tidyTreeSubtreeSeparation: 2.0,
+  tidyTreeStiffness: 0.3,
+  tidyTreeDamping: 0.5,
+  tidyTreeRadial: true,
 };
 
 /**
@@ -315,6 +337,13 @@ export function validateForceConfig(
   result.relativityCousinStrength = Math.max(0, Math.min(1, result.relativityCousinStrength));
   result.relativityPhantomMultiplier = Math.max(0, Math.min(2, result.relativityPhantomMultiplier));
   result.relativityDensityRepulsion = Math.max(0, Math.min(2, result.relativityDensityRepulsion));
+
+  // Validate Tidy Tree parameters
+  result.tidyTreeLevelSeparation = Math.max(10, result.tidyTreeLevelSeparation);
+  result.tidyTreeSiblingSeparation = Math.max(0.1, result.tidyTreeSiblingSeparation);
+  result.tidyTreeSubtreeSeparation = Math.max(0.1, result.tidyTreeSubtreeSeparation);
+  result.tidyTreeStiffness = Math.max(0.01, Math.min(1, result.tidyTreeStiffness));
+  result.tidyTreeDamping = Math.max(0.01, Math.min(2, result.tidyTreeDamping));
 
   return result;
 }

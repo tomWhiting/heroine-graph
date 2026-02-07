@@ -15,9 +15,11 @@ use js_sys::Float32Array;
 use wasm_bindgen::prelude::*;
 
 pub mod graph;
+pub mod layout;
 pub mod spatial;
 
 use graph::{GraphEngine, NodeId};
+use layout::tidy_tree::{CoordinateMode, TidyTreeConfig, TidyTreeLayout};
 
 /// Initialize the WASM module.
 #[wasm_bindgen(start)]
@@ -316,10 +318,478 @@ impl HeroineGraphWasm {
     pub fn get_node_degrees(&self) -> Vec<u32> {
         self.engine.get_node_degrees()
     }
+
+    // =========================================================================
+    // Layout Algorithms
+    // =========================================================================
+
+    /// Compute a tidy tree layout using Buchheim's O(n) algorithm.
+    ///
+    /// Takes the tree edges as [parent0, child0, parent1, child1, ...] pairs.
+    /// Returns a Float32Array of target positions [x0, y0, x1, y1, ...] with
+    /// one (x, y) pair per node slot.
+    ///
+    /// # Arguments
+    ///
+    /// * `edges` - Flat array of directed parent→child edge pairs
+    /// * `root_id` - The root node ID (u32::MAX means auto-detect)
+    /// * `level_separation` - Spacing between tree levels (default: 80)
+    /// * `sibling_separation` - Minimum separation between siblings (default: 1)
+    /// * `subtree_separation` - Minimum separation between subtrees (default: 2)
+    /// * `radial` - If true, use radial coordinates; if false, linear top-down
+    #[wasm_bindgen(js_name = computeTreeLayout)]
+    pub fn compute_tree_layout(
+        &self,
+        edges: &[u32],
+        root_id: u32,
+        level_separation: f32,
+        sibling_separation: f32,
+        subtree_separation: f32,
+        radial: bool,
+    ) -> Float32Array {
+        let config = TidyTreeConfig {
+            level_separation,
+            sibling_separation,
+            subtree_separation,
+            coordinate_mode: if radial {
+                CoordinateMode::Radial
+            } else {
+                CoordinateMode::Linear
+            },
+        };
+
+        let layout = TidyTreeLayout::new(config);
+        let node_count = self.engine.node_bound() as usize;
+        let root = if root_id == u32::MAX {
+            None
+        } else {
+            Some(root_id)
+        };
+
+        let result = layout.compute(node_count, edges, root);
+
+        // Interleave x and y into [x0, y0, x1, y1, ...]
+        let mut positions = Vec::with_capacity(node_count * 2);
+        for i in 0..node_count {
+            positions.push(result.positions_x[i]);
+            positions.push(result.positions_y[i]);
+        }
+
+        Float32Array::from(&positions[..])
+    }
+
+    /// Compute a tidy tree layout using the graph's own edges.
+    ///
+    /// This uses the edges already stored in the graph engine rather than
+    /// requiring external edge data. Returns a Float32Array of target
+    /// positions [x0, y0, x1, y1, ...].
+    ///
+    /// # Arguments
+    ///
+    /// * `root_id` - The root node ID (u32::MAX means auto-detect)
+    /// * `level_separation` - Spacing between tree levels
+    /// * `sibling_separation` - Minimum separation between siblings
+    /// * `subtree_separation` - Minimum separation between subtrees
+    /// * `radial` - If true, use radial coordinates; if false, linear top-down
+    #[wasm_bindgen(js_name = computeTreeLayoutFromGraph)]
+    pub fn compute_tree_layout_from_graph(
+        &self,
+        root_id: u32,
+        level_separation: f32,
+        sibling_separation: f32,
+        subtree_separation: f32,
+        radial: bool,
+    ) -> Float32Array {
+        // Extract edges from the graph engine's CSR format
+        let csr = self.engine.get_edges_csr();
+        let node_bound = self.engine.node_bound() as usize;
+
+        if csr.len() <= node_bound + 1 {
+            // No edges — return sentinel-filled positions
+            let sentinel = 3.402_823e+38_f32;
+            let positions = vec![sentinel; node_bound * 2];
+            return Float32Array::from(&positions[..]);
+        }
+
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+
+        // Convert CSR to flat edge pairs [src0, tgt0, src1, tgt1, ...]
+        let mut edges = Vec::with_capacity(targets.len() * 2);
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+
+        self.compute_tree_layout(
+            &edges,
+            root_id,
+            level_separation,
+            sibling_separation,
+            subtree_separation,
+            radial,
+        )
+    }
 }
 
 impl Default for HeroineGraphWasm {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    /// Test the full pipeline: engine → CSR → tidy tree layout
+    /// This simulates exactly what computeTreeLayoutFromGraph does,
+    /// but without wasm_bindgen JS types.
+    #[test]
+    fn test_engine_csr_to_tidy_tree() {
+        let mut engine = GraphEngine::new();
+
+        // Build a simple tree: 0→1, 0→2, 1→3, 1→4
+        let n0 = engine.add_node(0.0, 0.0);
+        let n1 = engine.add_node(100.0, 0.0);
+        let n2 = engine.add_node(-100.0, 0.0);
+        let n3 = engine.add_node(200.0, 0.0);
+        let n4 = engine.add_node(300.0, 0.0);
+
+        engine.add_edge(n0, n1, 1.0);
+        engine.add_edge(n0, n2, 1.0);
+        engine.add_edge(n1, n3, 1.0);
+        engine.add_edge(n1, n4, 1.0);
+
+        let node_bound = engine.node_bound() as usize;
+        assert_eq!(node_bound, 5);
+
+        // Extract CSR
+        let csr = engine.get_edges_csr();
+        println!("CSR length: {}, node_bound: {}", csr.len(), node_bound);
+        println!("CSR offsets: {:?}", &csr[..node_bound + 1]);
+        println!("CSR targets: {:?}", &csr[node_bound + 1..]);
+
+        assert!(csr.len() > node_bound + 1, "CSR should have edges");
+
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+
+        // Convert CSR to edge pairs (same logic as compute_tree_layout_from_graph)
+        let mut edges = Vec::new();
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+
+        println!("Edge pairs: {:?}", edges);
+        assert!(!edges.is_empty(), "Should have edge pairs");
+
+        // Run tidy tree layout
+        let config = TidyTreeConfig {
+            level_separation: 80.0,
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+            coordinate_mode: CoordinateMode::Radial,
+        };
+        let layout = TidyTreeLayout::new(config);
+        let result = layout.compute(node_bound, &edges, None);
+
+        println!("Layout node_count: {}", result.node_count);
+        println!("positions_x: {:?}", result.positions_x);
+        println!("positions_y: {:?}", result.positions_y);
+
+        assert_eq!(result.node_count, 5, "All 5 nodes should be laid out");
+
+        // Check that non-sentinel positions exist
+        let sentinel = 3.402_823e+38_f32;
+        let non_sentinel: Vec<_> = result.positions_x.iter()
+            .enumerate()
+            .filter(|&(_, x)| *x < sentinel)
+            .collect();
+        assert_eq!(non_sentinel.len(), 5, "All 5 nodes should have non-sentinel x positions");
+
+        // Check that positions span a reasonable range (not all zero)
+        let min_x = result.positions_x.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_x = result.positions_x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let range = max_x - min_x;
+        println!("X range: {min_x} to {max_x} (range={range})");
+        assert!(range > 1.0, "Positions should span a non-trivial range, got {range}");
+    }
+
+    /// Test with a larger graph mimicking mission control's hierarchical generator.
+    /// 100 nodes with branch factor ~3, verifying all nodes get laid out.
+    #[test]
+    fn test_large_hierarchical_tree() {
+        let mut engine = GraphEngine::new();
+
+        // Add 100 nodes
+        for i in 0..100u32 {
+            engine.add_node(i as f32 * 10.0, 0.0);
+        }
+
+        // Build tree: root=0, each node gets ~3 children
+        let mut next_child = 1u32;
+        let mut queue = vec![0u32];
+        while next_child < 100 {
+            let mut next_queue = Vec::new();
+            for &parent in &queue {
+                let children = 3.min(100 - next_child);
+                for _ in 0..children {
+                    if next_child >= 100 { break; }
+                    engine.add_edge(NodeId(parent), NodeId(next_child), 1.0);
+                    next_queue.push(next_child);
+                    next_child += 1;
+                }
+            }
+            queue = next_queue;
+        }
+
+        let node_bound = engine.node_bound() as usize;
+        let edge_count = engine.edge_count();
+        println!("Large tree: node_bound={}, edge_count={}", node_bound, edge_count);
+        assert_eq!(node_bound, 100);
+        assert_eq!(edge_count, 99); // tree has n-1 edges
+
+        // Extract CSR
+        let csr = engine.get_edges_csr();
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+        println!("CSR: offsets.len={}, targets.len={}", offsets.len(), targets.len());
+        println!("First 10 offsets: {:?}", &offsets[..10]);
+        println!("First 10 targets: {:?}", &targets[..10.min(targets.len())]);
+
+        // Convert to edge pairs
+        let mut edges = Vec::new();
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+        println!("Edge pairs: {}", edges.len() / 2);
+        assert_eq!(edges.len() / 2, 99, "Should extract 99 edge pairs from CSR");
+
+        // Run tidy tree
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            level_separation: 80.0,
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+            coordinate_mode: CoordinateMode::Radial,
+        });
+        let result = layout.compute(node_bound, &edges, None);
+        println!("Layout laid out {} of {} nodes", result.node_count, node_bound);
+
+        assert_eq!(result.node_count, 100, "All 100 nodes should be laid out");
+    }
+
+    /// Test using bulk APIs (add_nodes_from_positions + add_edges_from_pairs)
+    /// to exactly replicate the mission control flow.
+    #[test]
+    fn test_bulk_api_csr_pipeline() {
+        let mut engine = GraphEngine::new();
+
+        let node_count = 1000;
+
+        // Bulk add nodes (like populateWasmEngine does)
+        let mut positions = Vec::with_capacity(node_count * 2);
+        for i in 0..node_count {
+            positions.push(i as f32 * 10.0);
+            positions.push(0.0);
+        }
+        let added = engine.add_nodes_from_positions(&positions);
+        assert_eq!(added, node_count as u32);
+
+        // Build tree edges (like the hierarchical generator)
+        // Asymmetric branching: some nodes get 0 children, some get many
+        let mut edge_pairs: Vec<u32> = Vec::new();
+        let mut next_child = 1u32;
+        let mut queue = vec![0u32];
+
+        while next_child < node_count as u32 {
+            let mut next_queue = Vec::new();
+            for &parent in &queue {
+                // Vary children count: 0-6
+                let children_count = match parent % 5 {
+                    0 => 5, // hubs
+                    1 => 3,
+                    2 => 2,
+                    3 => 1,
+                    _ => 0, // leaves
+                };
+                for _ in 0..children_count {
+                    if next_child >= node_count as u32 { break; }
+                    edge_pairs.push(parent);
+                    edge_pairs.push(next_child);
+                    next_queue.push(next_child);
+                    next_child += 1;
+                }
+            }
+            if next_queue.is_empty() { break; }
+            queue = next_queue;
+        }
+
+        let expected_edges = edge_pairs.len() / 2;
+        println!("Bulk test: {} nodes, {} edges to add", node_count, expected_edges);
+
+        // Bulk add edges (like populateWasmEngine does)
+        let added_edges = engine.add_edges_from_pairs(&edge_pairs);
+        println!("Added {} edges (expected {})", added_edges, expected_edges);
+        assert_eq!(added_edges as usize, expected_edges);
+
+        // Verify engine state
+        let node_bound = engine.node_bound() as usize;
+        let edge_count = engine.edge_count() as usize;
+        println!("Engine: node_bound={}, node_count={}, edge_count={}",
+            node_bound, engine.node_count(), edge_count);
+
+        // Extract CSR (same as compute_tree_layout_from_graph)
+        let csr = engine.get_edges_csr();
+        println!("CSR length: {}, expected offsets: {}, expected: offsets + targets = {}",
+            csr.len(), node_bound + 1, node_bound + 1 + edge_count);
+
+        if csr.len() <= node_bound + 1 {
+            panic!("CSR has no edges! csr.len={}, node_bound+1={}", csr.len(), node_bound + 1);
+        }
+
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+        println!("CSR offsets[0..10]: {:?}", &offsets[..10.min(offsets.len())]);
+        println!("CSR targets.len={}, first 10: {:?}", targets.len(), &targets[..10.min(targets.len())]);
+
+        // Verify total edges in CSR matches
+        let total_csr_edges = offsets[node_bound] as usize;
+        println!("Total edges in CSR (from last offset): {}", total_csr_edges);
+        assert_eq!(total_csr_edges, edge_count, "CSR total edges should match engine edge count");
+
+        // Convert CSR to edge pairs
+        let mut edges = Vec::new();
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+        println!("Extracted {} edge pairs from CSR", edges.len() / 2);
+        assert_eq!(edges.len() / 2, edge_count, "CSR edge pairs should match edge count");
+
+        // Run tidy tree layout
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            level_separation: 80.0,
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+            coordinate_mode: CoordinateMode::Radial,
+        });
+        let result = layout.compute(node_bound, &edges, None);
+        println!("Layout: {} nodes laid out of {} total", result.node_count, node_bound);
+
+        // Check how many non-sentinel positions
+        let sentinel = 3.402_823e+38_f32;
+        let non_sentinel = result.positions_x.iter().filter(|&&x| x < sentinel).count();
+        println!("Non-sentinel positions: {}", non_sentinel);
+
+        // All connected nodes should be laid out
+        assert!(result.node_count > node_count / 2,
+            "Expected at least half the nodes laid out, got {}", result.node_count);
+    }
+
+    /// Test that clear() + reload works correctly.
+    /// This replicates the mission control bug: first load 1000 nodes,
+    /// then clear and reload 10000 nodes. Without the fix, next_node_id
+    /// wouldn't reset, causing NodeId mismatch and edge addition failure.
+    #[test]
+    fn test_clear_and_reload_preserves_edges() {
+        let mut engine = GraphEngine::new();
+
+        // First load: 100 nodes with some edges
+        let mut positions1 = Vec::with_capacity(200);
+        for i in 0..100 {
+            positions1.push(i as f32);
+            positions1.push(0.0);
+        }
+        engine.add_nodes_from_positions(&positions1);
+
+        // Add tree edges for first load
+        let mut edges1 = Vec::new();
+        for i in 1..100u32 {
+            edges1.push((i - 1) / 3); // parent
+            edges1.push(i);            // child
+        }
+        let added1 = engine.add_edges_from_pairs(&edges1);
+        println!("First load: {} nodes, {} edges added", engine.node_count(), added1);
+        assert_eq!(added1, 99);
+        assert_eq!(engine.edge_count(), 99);
+
+        // Clear and reload with new data
+        engine.clear();
+        assert_eq!(engine.node_count(), 0);
+        assert_eq!(engine.edge_count(), 0);
+
+        // Second load: 500 nodes
+        let mut positions2 = Vec::with_capacity(1000);
+        for i in 0..500 {
+            positions2.push(i as f32);
+            positions2.push(0.0);
+        }
+        engine.add_nodes_from_positions(&positions2);
+        assert_eq!(engine.node_count(), 500);
+
+        // Add tree edges for second load (same pattern)
+        let mut edges2 = Vec::new();
+        for i in 1..500u32 {
+            edges2.push((i - 1) / 4); // parent
+            edges2.push(i);            // child
+        }
+        let added2 = engine.add_edges_from_pairs(&edges2);
+        println!("Second load: {} nodes, {} edges added (expected 499)", engine.node_count(), added2);
+
+        // THE KEY ASSERTION: all edges should be added after clear+reload
+        assert_eq!(added2, 499, "All edges should be added after clear(). Got {}. \
+            This likely means clear() didn't reset next_node_id, causing NodeId mismatch.", added2);
+        assert_eq!(engine.edge_count(), 499);
+
+        // Verify CSR extraction works
+        let csr = engine.get_edges_csr();
+        let node_bound = engine.node_bound() as usize;
+        assert_eq!(node_bound, 500);
+        assert!(csr.len() > node_bound + 1, "CSR should have edges");
+
+        let offsets = &csr[..node_bound + 1];
+        let total = offsets[node_bound] as usize;
+        assert_eq!(total, 499, "CSR should contain all 499 edges");
+
+        // Verify tidy tree works with reloaded data
+        let mut edges_flat = Vec::new();
+        let targets = &csr[node_bound + 1..];
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges_flat.push(src as u32);
+                edges_flat.push(tgt);
+            }
+        }
+
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            level_separation: 80.0,
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+            coordinate_mode: CoordinateMode::Radial,
+        });
+        let result = layout.compute(node_bound, &edges_flat, None);
+        println!("After reload: {} nodes laid out of {}", result.node_count, node_bound);
+        assert_eq!(result.node_count, 500, "All 500 nodes should be laid out after clear+reload");
     }
 }

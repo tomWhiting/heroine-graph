@@ -12,7 +12,7 @@ import type { FullForceConfig } from "../config.ts";
 /**
  * Available force algorithm types
  */
-export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas";
+export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree";
 
 /**
  * Algorithm metadata for display
@@ -108,6 +108,14 @@ export interface ForceAlgorithm {
    * to avoid double-applying the center pull.
    */
   readonly handlesGravity: boolean;
+
+  /**
+   * Whether this algorithm provides its own edge/spring forces.
+   * When true, the simulation skips the default edge spring pass
+   * to avoid competing forces. Used by layout algorithms (e.g. tidy-tree)
+   * that compute exact target positions rather than using force-directed springs.
+   */
+  readonly handlesSprings?: boolean;
 
   /**
    * Create GPU pipelines for this algorithm
