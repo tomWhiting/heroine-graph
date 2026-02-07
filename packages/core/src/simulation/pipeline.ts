@@ -554,12 +554,12 @@ export function updateSimulationUniforms(
   intView.setFloat32(8, 1 - forceConfig.velocityDecay, true);     // damping
   intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
   intView.setFloat32(16, alpha, true);                            // alpha
-  intView.setFloat32(20, 0.0228, true);                           // alpha_decay (default)
-  intView.setFloat32(24, 0.001, true);                            // alpha_min (default)
+  intView.setFloat32(20, 0.0, true);                               // alpha_decay (unused by shader — decay managed on CPU)
+  intView.setFloat32(24, 0.0, true);                              // alpha_min (unused by shader — convergence managed on CPU)
   intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
   intView.setFloat32(32, forceConfig.centerX, true);              // center_x
   intView.setFloat32(36, forceConfig.centerY, true);              // center_y
-  intView.setUint32(40, 0, true);                                 // padding[0]
+  intView.setUint32(40, forceConfig.pinnedNode >>> 0, true);        // pinned_node (0xFFFFFFFF = none)
   intView.setUint32(44, 0, true);                                 // padding[1]
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
 }

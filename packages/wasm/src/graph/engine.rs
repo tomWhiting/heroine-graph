@@ -7,6 +7,7 @@
 use petgraph::stable_graph::{NodeIndex, EdgeIndex, StableGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
 use petgraph::{Directed, Direction};
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use super::edge::EdgeId;
@@ -31,6 +32,9 @@ pub struct GraphEngine {
 
     /// Map from stable EdgeId to petgraph EdgeIndex
     edge_id_to_index: HashMap<EdgeId, EdgeIndex>,
+
+    /// Reverse map from petgraph EdgeIndex to stable EdgeId (for O(1) lookup during removal)
+    edge_index_to_id: HashMap<EdgeIndex, EdgeId>,
 
     /// Next node ID to assign
     next_node_id: u32,
@@ -57,7 +61,7 @@ pub struct GraphEngine {
     spatial: SpatialIndex,
 
     /// Whether the spatial index needs rebuilding
-    spatial_dirty: bool,
+    spatial_dirty: Cell<bool>,
 }
 
 impl GraphEngine {
@@ -67,6 +71,7 @@ impl GraphEngine {
             graph: StableGraph::new(),
             node_id_to_index: HashMap::new(),
             edge_id_to_index: HashMap::new(),
+            edge_index_to_id: HashMap::new(),
             next_node_id: 0,
             next_edge_id: 0,
             pos_x: Vec::new(),
@@ -75,7 +80,7 @@ impl GraphEngine {
             vel_y: Vec::new(),
             states: Vec::new(),
             spatial: SpatialIndex::new(),
-            spatial_dirty: false,
+            spatial_dirty: Cell::new(false),
         }
     }
 
@@ -85,6 +90,7 @@ impl GraphEngine {
             graph: StableGraph::with_capacity(node_capacity, edge_capacity),
             node_id_to_index: HashMap::with_capacity(node_capacity),
             edge_id_to_index: HashMap::with_capacity(edge_capacity),
+            edge_index_to_id: HashMap::with_capacity(edge_capacity),
             next_node_id: 0,
             next_edge_id: 0,
             pos_x: Vec::with_capacity(node_capacity),
@@ -93,7 +99,7 @@ impl GraphEngine {
             vel_y: Vec::with_capacity(node_capacity),
             states: Vec::with_capacity(node_capacity),
             spatial: SpatialIndex::with_capacity(node_capacity),
-            spatial_dirty: false,
+            spatial_dirty: Cell::new(false),
         }
     }
 
@@ -115,7 +121,7 @@ impl GraphEngine {
         self.vel_y.push(0.0);
         self.states.push(NodeState::new());
 
-        self.spatial_dirty = true;
+        self.spatial_dirty.set(true);
         id
     }
 
@@ -124,6 +130,7 @@ impl GraphEngine {
         let count = positions.len() / 2;
 
         // Pre-allocate
+        self.node_id_to_index.reserve(count);
         self.pos_x.reserve(count);
         self.pos_y.reserve(count);
         self.vel_x.reserve(count);
@@ -136,7 +143,7 @@ impl GraphEngine {
             self.add_node(x, y);
         }
 
-        self.spatial_dirty = true;
+        self.spatial_dirty.set(true);
         count as u32
     }
 
@@ -150,11 +157,7 @@ impl GraphEngine {
                 .map(|e| e.id())
                 .collect();
             for edge_index in edges {
-                if let Some((edge_id, _)) = self.edge_id_to_index
-                    .iter()
-                    .find(|&(_, &idx)| idx == edge_index)
-                    .map(|(id, idx)| (*id, *idx))
-                {
+                if let Some(edge_id) = self.edge_index_to_id.remove(&edge_index) {
                     self.edge_id_to_index.remove(&edge_id);
                 }
             }
@@ -170,7 +173,7 @@ impl GraphEngine {
             }
 
             self.graph.remove_node(index);
-            self.spatial_dirty = true;
+            self.spatial_dirty.set(true);
             true
         } else {
             false
@@ -203,7 +206,7 @@ impl GraphEngine {
             let i = index.index();
             self.pos_x[i] = x;
             self.pos_y[i] = y;
-            self.spatial_dirty = true;
+            self.spatial_dirty.set(true);
         }
     }
 
@@ -243,6 +246,7 @@ impl GraphEngine {
 
         let index = self.graph.add_edge(*source_index, *target_index, weight);
         self.edge_id_to_index.insert(id, index);
+        self.edge_index_to_id.insert(index, id);
 
         Some(id)
     }
@@ -266,6 +270,7 @@ impl GraphEngine {
     /// Remove an edge.
     pub fn remove_edge(&mut self, id: EdgeId) -> bool {
         if let Some(index) = self.edge_id_to_index.remove(&id) {
+            self.edge_index_to_id.remove(&index);
             self.graph.remove_edge(index);
             true
         } else {
@@ -353,13 +358,15 @@ impl GraphEngine {
             .collect();
 
         self.spatial.rebuild(&points);
-        self.spatial_dirty = false;
+        self.spatial_dirty.set(false);
     }
 
     fn ensure_spatial_index_up_to_date(&self) {
-        // Note: This is a const method that returns immutable reference.
-        // In real usage, caller should call rebuild_spatial_index() when needed.
-        // For thread-safety, we'd use interior mutability here.
+        if self.spatial_dirty.get() {
+            // Note: spatial index rebuild requires &mut self for the spatial field.
+            // With Cell<bool> we can at least track the dirty flag through &self.
+            // Callers should call rebuild_spatial_index() when spatial_dirty is set.
+        }
     }
 
     // =========================================================================
@@ -403,6 +410,7 @@ impl GraphEngine {
         self.graph.clear();
         self.node_id_to_index.clear();
         self.edge_id_to_index.clear();
+        self.edge_index_to_id.clear();
         self.next_node_id = 0;
         self.next_edge_id = 0;
         self.pos_x.clear();
@@ -411,7 +419,7 @@ impl GraphEngine {
         self.vel_y.clear();
         self.states.clear();
         self.spatial.clear();
-        self.spatial_dirty = false;
+        self.spatial_dirty.set(false);
     }
 
     /// Get edge list in CSR format.
@@ -424,7 +432,7 @@ impl GraphEngine {
         let edge_count = self.graph.edge_count();
 
         let mut offsets = vec![0u32; node_bound + 1];
-        let mut targets = Vec::with_capacity(edge_count);
+        let mut targets = vec![0u32; edge_count];
 
         // Count edges per node
         for node_index in self.graph.node_indices() {
@@ -443,17 +451,13 @@ impl GraphEngine {
         let mut current_offsets = offsets[..node_bound].to_vec();
         for edge in self.graph.edge_references() {
             let source = edge.source().index();
-            let target = edge.target().index();
-            let target_id = self.graph.node_weight(edge.target())
-                .map(|id| id.0)
-                .unwrap_or(target as u32);
+            let target = edge.target().index() as u32;
 
             if source < node_bound {
                 let offset = current_offsets[source] as usize;
-                if offset >= targets.len() {
-                    targets.resize(offset + 1, 0);
+                if offset < targets.len() {
+                    targets[offset] = target;
                 }
-                targets[offset] = target_id;
                 current_offsets[source] += 1;
             }
         }
@@ -496,17 +500,13 @@ impl GraphEngine {
         // Build sources array
         let mut current_offsets = offsets[..node_bound].to_vec();
         for edge in self.graph.edge_references() {
-            let source = edge.source().index();
+            let source = edge.source().index() as u32;
             let target = edge.target().index();
 
             if target < node_bound {
-                let source_id = self.graph.node_weight(edge.source())
-                    .map(|id| id.0)
-                    .unwrap_or(source as u32);
-
                 let offset = current_offsets[target] as usize;
                 if offset < sources.len() {
-                    sources[offset] = source_id;
+                    sources[offset] = source;
                     current_offsets[target] += 1;
                 }
             }

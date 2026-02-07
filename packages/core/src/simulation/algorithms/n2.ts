@@ -17,7 +17,7 @@ import type {
   ForceAlgorithm,
   ForceAlgorithmInfo,
 } from "./types.ts";
-import { EmptyAlgorithmBuffers } from "./types.ts";
+// (EmptyAlgorithmBuffers no longer used — N2AlgorithmBuffers replaces it)
 
 // Import shader source
 import REPULSION_N2_WGSL from "../shaders/repulsion_n2.comp.wgsl";
@@ -33,6 +33,17 @@ const N2_ALGORITHM_INFO: ForceAlgorithmInfo = {
   maxNodes: 10000,
   complexity: "O(n²)",
 };
+
+/**
+ * N² algorithm-specific buffers
+ */
+class N2AlgorithmBuffers implements AlgorithmBuffers {
+  constructor(public uniformBuffer: GPUBuffer) {}
+
+  destroy(): void {
+    this.uniformBuffer.destroy();
+  }
+}
 
 /**
  * N² repulsion algorithm implementation
@@ -71,7 +82,7 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    return new EmptyAlgorithmBuffers();
+    return new N2AlgorithmBuffers(this.uniformBuffer);
   }
 
   createBindGroups(

@@ -257,6 +257,8 @@ export interface GPUTimer {
   begin: (encoder: GPUCommandEncoder, label?: string) => void;
   /** End timing and get result promise */
   end: (encoder: GPUCommandEncoder) => Promise<number>;
+  /** Destroy GPU resources */
+  destroy?: () => void;
   /** Check if GPU timing is supported */
   readonly isSupported: boolean;
 }
@@ -306,7 +308,10 @@ export function createGPUTimer(device: GPUDevice): GPUTimer | null {
       // Copy to mappable buffer
       encoder.copyBufferToBuffer(resolveBuffer, 0, readbackBuffer, 0, 16);
 
-      // Submit and wait
+      // Finish the encoder and submit before mapping
+      device.queue.submit([encoder.finish()]);
+
+      // Wait for GPU to complete, then read back
       await readbackBuffer.mapAsync(GPUMapMode.READ);
       const data = new BigUint64Array(readbackBuffer.getMappedRange());
       const startTime = data[0];
@@ -315,6 +320,12 @@ export function createGPUTimer(device: GPUDevice): GPUTimer | null {
 
       // Convert to milliseconds (timestamps are in nanoseconds)
       return Number(endTime - startTime) / 1_000_000;
+    },
+
+    destroy(): void {
+      querySet.destroy();
+      resolveBuffer.destroy();
+      readbackBuffer.destroy();
     },
   };
 }

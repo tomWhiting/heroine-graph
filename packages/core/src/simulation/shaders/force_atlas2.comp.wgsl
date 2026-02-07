@@ -80,19 +80,28 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
         total_force += fa2_repulsion(delta, node_degree, other_degree);
     }
 
-    // Gravity toward center
-    let gravity_force = -uniforms.gravity * node_pos;
+    // Gravity toward center (degree-weighted per FA2 paper, Equations 4 & 5)
+    // Mass = (degree + 1), same as repulsion mass model.
+    let mass_i = f32(node_degree + 1u);
+    let gravity_dir = -node_pos;
+    let gravity_dist = length(gravity_dir);
 
-    // Strong gravity option: scales with distance from center
-    var final_gravity = gravity_force;
-    if ((uniforms.flags & FLAG_STRONG_GRAVITY) != 0u) {
-        let dist_from_center = length(node_pos);
-        if (dist_from_center > MIN_DISTANCE) {
-            final_gravity = gravity_force * dist_from_center;
+    if (gravity_dist > MIN_DISTANCE) {
+        let gravity_unit = gravity_dir / gravity_dist;
+
+        var gravity_force: vec2<f32>;
+        if ((uniforms.flags & FLAG_STRONG_GRAVITY) != 0u) {
+            // Strong gravity (Eq 5): Fg = kg * mass * distance * direction
+            // Force increases linearly with distance — pulls distant nodes hard.
+            gravity_force = gravity_unit * uniforms.gravity * mass_i * gravity_dist;
+        } else {
+            // Normal gravity (Eq 4): Fg = kg * mass * direction
+            // Constant magnitude pull — gentle, distance-independent.
+            gravity_force = gravity_unit * uniforms.gravity * mass_i;
         }
-    }
 
-    total_force += final_gravity;
+        total_force += gravity_force;
+    }
 
     // Add to output forces
     forces[node_idx] += total_force;

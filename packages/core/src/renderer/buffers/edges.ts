@@ -165,9 +165,8 @@ export class EdgeBufferManager {
     // Upload offsets
     this.device.queue.writeBuffer(this.offsetsBuffer, 0, toArrayBuffer(data.offsets));
 
-    // Upload targets (convert to f32 for uniform buffer access)
-    const targetsF32 = new Float32Array(data.targets);
-    this.device.queue.writeBuffer(this.targetsBuffer, 0, toArrayBuffer(targetsF32));
+    // Upload targets as uint32 directly (no float conversion — these are integer indices)
+    this.device.queue.writeBuffer(this.targetsBuffer, 0, toArrayBuffer(data.targets));
 
     // Upload weights (default to 1.0 if not provided)
     if (data.weights) {

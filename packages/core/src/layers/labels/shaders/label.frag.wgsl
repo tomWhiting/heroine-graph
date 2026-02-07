@@ -16,6 +16,11 @@ struct LabelUniforms {
     // Atlas texture dimensions
     atlas_width: f32,
     atlas_height: f32,
+    // Font size used when generating the atlas
+    atlas_font_size: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 @group(0) @binding(1) var<uniform> label_uniforms: LabelUniforms;
@@ -41,7 +46,7 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     let sd = median(msdf.r, msdf.g, msdf.b);
 
     // Calculate screen-space distance for anti-aliasing
-    let screen_px_range = label_uniforms.distance_range * label_uniforms.font_size / 42.0;
+    let screen_px_range = label_uniforms.distance_range * label_uniforms.font_size / label_uniforms.atlas_font_size;
 
     // Convert SDF to signed distance (inverted: 0.5 - sd because atlas convention)
     let screen_px_distance = screen_px_range * (0.5 - sd);

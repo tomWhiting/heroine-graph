@@ -1,18 +1,17 @@
 /**
- * ForceAtlas2 Force Algorithm
+ * LinLog Force Algorithm
  *
- * A force-directed layout algorithm optimized for network visualization.
- * Designed for continuous layout with good cluster separation.
+ * Implements the LinLog energy model (Noack 2009) for optimal cluster separation.
+ * Based on the ForceAtlas2 paper (Jacomy et al. 2014).
  *
- * Key features:
- * - Linear attraction (NOT Hooke's law — no rest length, no grid patterns)
- * - Degree-weighted repulsion
- * - LinLog mode for better cluster separation
- * - Strong gravity for disconnected components
+ * Key differences from standard force-directed:
+ * - Logarithmic attraction: F ~ log(1 + d) instead of Hooke's law F ~ d
+ * - Degree-weighted repulsion (same as FA2)
+ * - Degree-weighted gravity
  *
- * The FA2 attraction formula is F = d (always pulling, proportional to distance).
- * This is fundamentally different from Hooke's law F = k * (d - rest_length)
- * which creates equilibrium distances that produce lattice/grid patterns.
+ * The LinLog energy model (attraction=0, repulsion=-1) produces layouts where
+ * node distances reflect community density rather than path length, giving the
+ * best cluster separation of any known force-directed energy model.
  *
  * @module
  */
@@ -29,68 +28,61 @@ import type {
 } from "./types.ts";
 
 // Import shader sources (separate files due to different bind group layouts)
-import FORCE_ATLAS2_WGSL from "../shaders/force_atlas2.comp.wgsl";
-import FA2_ATTRACTION_WGSL from "../shaders/fa2_attraction.comp.wgsl";
+import LINLOG_REPULSION_WGSL from "../shaders/linlog.comp.wgsl";
+import LINLOG_ATTRACTION_WGSL from "../shaders/linlog_attraction.comp.wgsl";
 
 /**
- * ForceAtlas2 algorithm info
+ * LinLog algorithm info
  */
-const FORCE_ATLAS2_ALGORITHM_INFO: ForceAlgorithmInfo = {
-  id: "force-atlas2",
-  name: "ForceAtlas2",
+const LINLOG_ALGORITHM_INFO: ForceAlgorithmInfo = {
+  id: "linlog",
+  name: "LinLog",
   description:
-    "Optimized for network visualization with degree-weighted forces and optional LinLog mode.",
+    "Logarithmic attraction with degree-weighted repulsion. Optimal for community structure visualization.",
   minNodes: 0,
   maxNodes: 50000,
   complexity: "O(n²)",
 };
 
 /**
- * Extended pipeline type for FA2 (repulsion + attraction passes)
+ * Extended pipeline type for LinLog (repulsion + attraction passes)
  */
-interface FA2Pipelines extends AlgorithmPipelines {
+interface LinLogPipelines extends AlgorithmPipelines {
   attraction: GPUComputePipeline;
   attractionLayout: GPUBindGroupLayout;
 }
 
 /**
- * Extended bind group type for FA2
+ * Extended bind group type for LinLog
  */
-interface FA2BindGroups extends AlgorithmBindGroups {
+interface LinLogBindGroups extends AlgorithmBindGroups {
   attraction: GPUBindGroup;
 }
 
 /**
- * ForceAtlas2 algorithm-specific buffers
+ * LinLog algorithm-specific buffers
  */
-class ForceAtlas2Buffers implements AlgorithmBuffers {
+class LinLogBuffers implements AlgorithmBuffers {
   constructor(
     public uniformBuffer: GPUBuffer,
-    public attractionUniforms: GPUBuffer,
     public degreesBuffer: GPUBuffer,
     public edgeWeightsBuffer: GPUBuffer,
-    /** Maximum node count this buffer set supports */
     public maxNodes: number,
-    /** Maximum edge count this buffer set supports */
     public maxEdges: number,
   ) {}
 
   destroy(): void {
     this.uniformBuffer.destroy();
-    this.attractionUniforms.destroy();
     this.degreesBuffer.destroy();
     this.edgeWeightsBuffer.destroy();
   }
 }
 
 /**
- * ForceAtlas2 algorithm implementation with proper linear attraction.
- *
- * handlesSprings = true: FA2 uses its own attraction shader (F = d, no rest length)
- * instead of the default Hooke's law springs which create grid/lattice patterns.
+ * LinLog force algorithm implementation
  */
-export class ForceAtlas2Algorithm implements ForceAlgorithm {
-  readonly info = FORCE_ATLAS2_ALGORITHM_INFO;
+export class LinLogAlgorithm implements ForceAlgorithm {
+  readonly info = LINLOG_ALGORITHM_INFO;
   readonly handlesGravity = true;
   readonly handlesSprings = true;
 
@@ -100,31 +92,40 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
 
-    // Repulsion + gravity shader
+    // Separate shader modules — different bind group layouts require separate WGSL files
     const repulsionShader = device.createShaderModule({
-      label: "ForceAtlas2 Repulsion Shader",
-      code: FORCE_ATLAS2_WGSL,
+      label: "LinLog Repulsion + Gravity Shader",
+      code: LINLOG_REPULSION_WGSL,
     });
 
-    // Linear attraction shader (separate file due to different bind group layout)
     const attractionShader = device.createShaderModule({
-      label: "ForceAtlas2 Attraction Shader",
-      code: FA2_ATTRACTION_WGSL,
+      label: "LinLog Attraction Shader",
+      code: LINLOG_ATTRACTION_WGSL,
     });
 
     // Repulsion pipeline: uniforms, positions, forces, degrees
+    const repulsionLayout = device.createBindGroupLayout({
+      label: "LinLog Repulsion Layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
     const repulsion = device.createComputePipeline({
-      label: "ForceAtlas2 Repulsion Pipeline",
-      layout: "auto",
+      label: "LinLog Repulsion Pipeline",
+      layout: device.createPipelineLayout({ bindGroupLayouts: [repulsionLayout] }),
       compute: {
         module: repulsionShader,
-        entryPoint: "repulsion",
+        entryPoint: "main",
       },
     });
 
     // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
     const attractionLayout = device.createBindGroupLayout({
-      label: "ForceAtlas2 Attraction Layout",
+      label: "LinLog Attraction Layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -136,7 +137,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     });
 
     const attraction = device.createComputePipeline({
-      label: "ForceAtlas2 Attraction Pipeline",
+      label: "LinLog Attraction Pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [attractionLayout] }),
       compute: {
         module: attractionShader,
@@ -144,7 +145,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       },
     });
 
-    const pipelines: FA2Pipelines = {
+    const pipelines: LinLogPipelines = {
       repulsion,
       attraction,
       attractionLayout,
@@ -153,43 +154,31 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
   }
 
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
-    // ForceAtlas2Uniforms: 48 bytes (due to vec3 alignment)
+    // LinLogUniforms: 32 bytes
+    // { node_count: u32, edge_count: u32, kr: f32, kg: f32,
+    //   edge_weight_influence: f32, flags: u32, _padding: vec2<u32> }
     const uniformBuffer = device.createBuffer({
-      label: "ForceAtlas2 Uniforms",
-      size: 48,
+      label: "LinLog Uniforms",
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // FA2AttractionUniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
-    const attractionUniforms = device.createBuffer({
-      label: "ForceAtlas2 Attraction Uniforms",
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Degrees buffer: stores degree of each node for weighted repulsion
+    // Degrees buffer: total degree per node
     const degreesBuffer = device.createBuffer({
-      label: "ForceAtlas2 Degrees",
-      size: maxNodes * 4,
+      label: "LinLog Degrees",
+      size: Math.max(maxNodes * 4, 4),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
     // Edge weights: f32 per edge (allocate for max edges = maxNodes * 4 as estimate)
     const maxEdges = maxNodes * 4;
     const edgeWeightsBuffer = device.createBuffer({
-      label: "ForceAtlas2 Edge Weights",
+      label: "LinLog Edge Weights",
       size: Math.max(maxEdges * 4, 4),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new ForceAtlas2Buffers(
-      uniformBuffer,
-      attractionUniforms,
-      degreesBuffer,
-      edgeWeightsBuffer,
-      maxNodes,
-      maxEdges,
-    );
+    return new LinLogBuffers(uniformBuffer, degreesBuffer, edgeWeightsBuffer, maxNodes, maxEdges);
   }
 
   createBindGroups(
@@ -198,12 +187,12 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
     algorithmBuffers: AlgorithmBuffers,
   ): AlgorithmBindGroups {
-    const buffers = algorithmBuffers as ForceAtlas2Buffers;
-    const fa2Pipelines = pipelines as FA2Pipelines;
+    const buffers = algorithmBuffers as LinLogBuffers;
+    const llPipelines = pipelines as LinLogPipelines;
 
     // Repulsion bind group: uniforms, positions, forces, degrees
     const repulsion = device.createBindGroup({
-      label: "ForceAtlas2 Repulsion Bind Group",
+      label: "LinLog Repulsion Bind Group",
       layout: pipelines.repulsion.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: buffers.uniformBuffer } },
@@ -216,16 +205,16 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
     if (!context.edgeSources || !context.edgeTargets) {
       throw new Error(
-        "ForceAtlas2 requires edge source/target buffers in AlgorithmRenderContext. " +
+        "LinLog requires edge source/target buffers in AlgorithmRenderContext. " +
         "Ensure graph.ts populates edgeSources and edgeTargets.",
       );
     }
 
     const attraction = device.createBindGroup({
-      label: "ForceAtlas2 Attraction Bind Group",
-      layout: fa2Pipelines.attractionLayout,
+      label: "LinLog Attraction Bind Group",
+      layout: llPipelines.attractionLayout,
       entries: [
-        { binding: 0, resource: { buffer: buffers.attractionUniforms } },
+        { binding: 0, resource: { buffer: buffers.uniformBuffer } },
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: context.edgeSources } },
@@ -234,7 +223,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       ],
     });
 
-    const bindGroups: FA2BindGroups = { repulsion, attraction };
+    const bindGroups: LinLogBindGroups = { repulsion, attraction };
     return bindGroups;
   }
 
@@ -243,62 +232,44 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     algorithmBuffers: AlgorithmBuffers,
     context: AlgorithmRenderContext,
   ): void {
-    const buffers = algorithmBuffers as ForceAtlas2Buffers;
+    const buffers = algorithmBuffers as LinLogBuffers;
 
-    // CRITICAL: Validate node count doesn't exceed buffer capacity.
     if (context.nodeCount > buffers.maxNodes) {
       throw new Error(
-        `ForceAtlas2 buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${buffers.maxNodes}). ` +
-        `Buffers must be recreated with createBuffers() when node count increases.`
+        `LinLog buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${buffers.maxNodes}). ` +
+        `Buffers must be recreated with createBuffers() when node count increases.`,
       );
     }
 
     // Cache edge count for recordRepulsionPass workgroup calculation
     this.currentEdgeCount = context.edgeCount;
 
-    // ForceAtlas2 uses different scaling than standard force-directed
-    // The repulsion strength maps to FA2's "scaling" parameter (kr)
-    const scaling = Math.abs(context.forceConfig.repulsionStrength) * 0.1;
-    const gravity = context.forceConfig.centerStrength * 10;
+    const fc = context.forceConfig;
 
-    // Flags: bit 0 = linlog, bit 1 = strong_gravity, bit 2 = prevent_overlap
-    let flags = 0;
-    if (context.forceConfig.linlogStrongGravity) {
-      flags |= 1; // FLAG_LINLOG
-      flags |= 2; // FLAG_STRONG_GRAVITY
-    }
+    // Map config to shader uniforms
+    const kr = fc.linlogScaling * Math.abs(fc.repulsionStrength) * 0.01;
+    const kg = fc.linlogGravity * fc.centerStrength * 10;
+    const edgeWeightInfluence = fc.linlogEdgeWeightInfluence;
+    const flags = fc.linlogStrongGravity ? 1 : 0;
 
-    // Repulsion uniforms: 48 bytes due to vec3 alignment requirements in WGSL
-    const data = new ArrayBuffer(48);
+    // Write uniform buffer (32 bytes)
+    const data = new ArrayBuffer(32);
     const view = new DataView(data);
-
-    view.setUint32(0, context.nodeCount, true); // node_count
-    view.setFloat32(4, scaling, true); // scaling (kr)
-    view.setFloat32(8, gravity, true); // gravity (kg)
-    view.setFloat32(12, 1.0, true); // edge_weight_influence
-    view.setUint32(16, flags, true); // flags
-    view.setUint32(20, 0, true);
-    view.setUint32(24, 0, true);
-    view.setUint32(28, 0, true);
-    view.setUint32(32, 0, true);
-    view.setUint32(36, 0, true);
-    view.setUint32(40, 0, true);
-    view.setUint32(44, 0, true);
+    view.setUint32(0, context.nodeCount, true);
+    view.setUint32(4, context.edgeCount, true);
+    view.setFloat32(8, kr, true);
+    view.setFloat32(12, kg, true);
+    view.setFloat32(16, edgeWeightInfluence, true);
+    view.setUint32(20, flags, true);
+    view.setUint32(24, 0, true); // padding
+    view.setUint32(28, 0, true); // padding
 
     device.queue.writeBuffer(buffers.uniformBuffer, 0, data);
 
-    // Attraction uniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
-    const attractData = new ArrayBuffer(16);
-    const attractView = new DataView(attractData);
-    attractView.setUint32(0, context.edgeCount, true);
-    attractView.setFloat32(4, 1.0, true); // edge_weight_influence (delta)
-    attractView.setUint32(8, flags & 1, true); // linlog flag only
-    attractView.setUint32(12, 0, true);
-    device.queue.writeBuffer(buffers.attractionUniforms, 0, attractData);
-
     // Compute actual node degrees from CPU-side edge arrays.
-    // Degree-weighted repulsion is the core of FA2 — using real degrees
-    // ensures hubs repel proportionally to their connectivity.
+    // Degree-weighted repulsion is the core of FA2/LinLog — using real degrees
+    // ensures hubs repel proportionally to their connectivity, which is essential
+    // for proper cluster separation in the (0, -1) energy model.
     const degrees = new Uint32Array(context.nodeCount);
     if (context.edgeSourcesData && context.edgeTargetsData) {
       const edgeCount = Math.min(
@@ -317,6 +288,8 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
         }
       }
     }
+    // degrees[i] is now 0 for isolated nodes, which is correct:
+    // mass = deg + 1 in the shader ensures even isolated nodes have mass 1.
     device.queue.writeBuffer(buffers.degreesBuffer, 0, degrees);
 
     // Upload edge weights (all 1.0 for unweighted graphs)
@@ -333,38 +306,37 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     bindGroups: AlgorithmBindGroups,
     nodeCount: number,
   ): void {
-    const fa2Pipelines = pipelines as FA2Pipelines;
-    const fa2BindGroups = bindGroups as FA2BindGroups;
+    const llPipelines = pipelines as LinLogPipelines;
+    const llBindGroups = bindGroups as LinLogBindGroups;
 
     // Pass 1: Repulsion + Gravity (combined in shader, N² over nodes)
     {
       const workgroups = calculateWorkgroups(nodeCount, 256);
-      const pass = encoder.beginComputePass({ label: "ForceAtlas2 Repulsion + Gravity" });
-      pass.setPipeline(fa2Pipelines.repulsion);
-      pass.setBindGroup(0, fa2BindGroups.repulsion);
+      const pass = encoder.beginComputePass({ label: "LinLog Repulsion + Gravity" });
+      pass.setPipeline(llPipelines.repulsion);
+      pass.setBindGroup(0, llBindGroups.repulsion);
       pass.dispatchWorkgroups(workgroups);
       pass.end();
     }
 
-    // Pass 2: Linear Attraction (per-edge, F = d, no rest length)
+    // Pass 2: Attraction (per-edge logarithmic springs)
+    // Use actual edge count cached from updateUniforms for precise workgroup dispatch.
+    // The shader early-returns for threads beyond edge_count, so slight over-dispatch
+    // from rounding up to workgroup size is safe.
     if (this.currentEdgeCount > 0) {
       const edgeWorkgroups = calculateWorkgroups(this.currentEdgeCount, 256);
-      const pass = encoder.beginComputePass({ label: "ForceAtlas2 Attraction" });
-      pass.setPipeline(fa2Pipelines.attraction);
-      pass.setBindGroup(0, fa2BindGroups.attraction);
+      const pass = encoder.beginComputePass({ label: "LinLog Attraction" });
+      pass.setPipeline(llPipelines.attraction);
+      pass.setBindGroup(0, llBindGroups.attraction);
       pass.dispatchWorkgroups(edgeWorkgroups);
       pass.end();
     }
   }
-
-  destroy(): void {
-    // Buffers are destroyed via AlgorithmBuffers.destroy()
-  }
 }
 
 /**
- * Create ForceAtlas2 force algorithm instance
+ * Create LinLog force algorithm instance
  */
-export function createForceAtlas2Algorithm(): ForceAlgorithm {
-  return new ForceAtlas2Algorithm();
+export function createLinLogAlgorithm(): ForceAlgorithm {
+  return new LinLogAlgorithm();
 }

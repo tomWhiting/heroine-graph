@@ -117,7 +117,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // For N nodes, max iterations is O(N) when theta=0, plus stack overhead
     // 100K iterations handles graphs up to ~50K nodes with aggressive theta
     var iterations = 0u;
-    let max_iterations = max(n * 2u, 1000u);
+    let max_iterations = max(n * 4u, 1000u);
 
     while (stack_ptr > 0u && iterations < max_iterations) {
         iterations += 1u;

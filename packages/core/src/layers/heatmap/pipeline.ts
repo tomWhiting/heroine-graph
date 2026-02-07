@@ -98,7 +98,7 @@ export const DEFAULT_COLORMAP_UNIFORMS: ColormapUniforms = {
  * Creates the heatmap render pipelines
  */
 export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
-  const { device } = context;
+  const { device, format: canvasFormat } = context;
 
   // Create shader modules
   const splatVertModule = device.createShaderModule({
@@ -253,7 +253,7 @@ export function createHeatmapPipeline(context: GPUContext): HeatmapPipeline {
       entryPoint: "fs_main",
       targets: [
         {
-          format: "bgra8unorm",
+          format: canvasFormat,
           blend: {
             color: {
               srcFactor: "src-alpha",

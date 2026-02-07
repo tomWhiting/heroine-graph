@@ -42,7 +42,7 @@ export interface UseSimulationReturn {
   /** Resume the simulation */
   resume: () => void;
   /** Restart the simulation (reheat) */
-  restart: (alpha?: number) => void;
+  restart: () => void;
   /** Update force configuration */
   setForceConfig: (config: Partial<ForceConfig>) => void;
   /** Set simulation alpha (energy level) */
@@ -181,8 +181,8 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
     isRunning.value = true;
   }
 
-  function restart(newAlpha?: number): void {
-    graph.value?.restartSimulation(newAlpha);
+  function restart(): void {
+    graph.value?.restartSimulation();
     status.value = "running";
     isRunning.value = true;
   }

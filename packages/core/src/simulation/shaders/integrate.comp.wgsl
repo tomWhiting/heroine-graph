@@ -17,7 +17,7 @@ struct IntegrationUniforms {
     gravity_strength: f32,      // Pull toward center
     center_x: f32,              // Gravity center X
     center_y: f32,              // Gravity center Y
-    _pad0: u32,                 // Padding for 16-byte alignment
+    pinned_node: u32,           // Index of pinned node (0xFFFFFFFF = none)
     _pad1: u32,
 }
 
@@ -49,6 +49,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = global_id.x;
 
     if (node_idx >= uniforms.node_count) {
+        return;
+    }
+
+    // Pinned node: keep at center with zero velocity
+    if (node_idx == uniforms.pinned_node) {
+        let center = vec2<f32>(uniforms.center_x, uniforms.center_y);
+        positions_out[node_idx] = center;
+        velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
         return;
     }
 

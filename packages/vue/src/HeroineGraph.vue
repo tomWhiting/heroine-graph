@@ -141,23 +141,32 @@ const errorStyle = computed<CSSProperties>(() => ({
   textAlign: "center",
 }));
 
-// Event handler registration
+// Event handler registration and cleanup
+const registeredHandlers: Array<{ event: string; handler: (e: unknown) => void }> = [];
+
 function registerEventHandlers(graphInstance: HeroineGraphCore) {
-  graphInstance.on("node:click", (e) => emit("nodeClick", e));
-  graphInstance.on("node:doubleclick", (e) => emit("nodeDoubleClick", e));
-  graphInstance.on("node:hoverenter", (e) => emit("nodeHoverEnter", e));
-  graphInstance.on("node:hoverleave", (e) => emit("nodeHoverLeave", e));
-  graphInstance.on("node:dragstart", (e) => emit("nodeDragStart", e));
-  graphInstance.on("node:dragmove", (e) => emit("nodeDragMove", e));
-  graphInstance.on("node:dragend", (e) => emit("nodeDragEnd", e));
-  graphInstance.on("edge:click", (e) => emit("edgeClick", e));
-  graphInstance.on("edge:hoverenter", (e) => emit("edgeHoverEnter", e));
-  graphInstance.on("edge:hoverleave", (e) => emit("edgeHoverLeave", e));
-  graphInstance.on("selection:change", (e) => emit("selectionChange", e));
-  graphInstance.on("viewport:change", (e) => emit("viewportChange", e));
-  graphInstance.on("simulation:tick", (e) => emit("simulationTick", e));
-  graphInstance.on("simulation:end", (e) => emit("simulationEnd", e));
-  graphInstance.on("background:click", (e) => emit("backgroundClick", e));
+  const handlers: Array<[string, (e: unknown) => void]> = [
+    ["node:click", (e) => emit("nodeClick", e as NodeClickEvent)],
+    ["node:doubleclick", (e) => emit("nodeDoubleClick", e as NodeDoubleClickEvent)],
+    ["node:hoverenter", (e) => emit("nodeHoverEnter", e as NodeHoverEnterEvent)],
+    ["node:hoverleave", (e) => emit("nodeHoverLeave", e as NodeHoverLeaveEvent)],
+    ["node:dragstart", (e) => emit("nodeDragStart", e as NodeDragStartEvent)],
+    ["node:dragmove", (e) => emit("nodeDragMove", e as NodeDragMoveEvent)],
+    ["node:dragend", (e) => emit("nodeDragEnd", e as NodeDragEndEvent)],
+    ["edge:click", (e) => emit("edgeClick", e as EdgeClickEvent)],
+    ["edge:hoverenter", (e) => emit("edgeHoverEnter", e as EdgeHoverEnterEvent)],
+    ["edge:hoverleave", (e) => emit("edgeHoverLeave", e as EdgeHoverLeaveEvent)],
+    ["selection:change", (e) => emit("selectionChange", e as SelectionChangeEvent)],
+    ["viewport:change", (e) => emit("viewportChange", e as ViewportChangeEvent)],
+    ["simulation:tick", (e) => emit("simulationTick", e as SimulationTickEvent)],
+    ["simulation:end", (e) => emit("simulationEnd", e as SimulationEndEvent)],
+    ["background:click", (e) => emit("backgroundClick", e as BackgroundClickEvent)],
+  ];
+
+  for (const [event, handler] of handlers) {
+    graphInstance.on(event as Parameters<typeof graphInstance.on>[0], handler as Parameters<typeof graphInstance.on>[1]);
+    registeredHandlers.push({ event, handler });
+  }
 }
 
 // Initialize graph
@@ -203,6 +212,10 @@ onMounted(async () => {
 // Cleanup on unmount
 onUnmounted(() => {
   if (graph.value) {
+    for (const { event, handler } of registeredHandlers) {
+      graph.value.off(event as Parameters<typeof graph.value.off>[0], handler as Parameters<typeof graph.value.off>[1]);
+    }
+    registeredHandlers.length = 0;
     graph.value.dispose();
     graph.value = null;
   }
@@ -221,7 +234,8 @@ watch(
       error.value = e;
       emit("error", e);
     }
-  }
+  },
+  { deep: true }
 );
 
 // Handle resize

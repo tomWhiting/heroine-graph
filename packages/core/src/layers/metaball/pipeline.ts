@@ -79,7 +79,7 @@ export const DEFAULT_METABALL_UNIFORMS: MetaballUniforms = {
  * Creates the metaball render pipeline
  */
 export function createMetaballPipeline(context: GPUContext): MetaballPipeline {
-  const { device } = context;
+  const { device, format: canvasFormat } = context;
 
   // Create shader modules
   const vertModule = device.createShaderModule({
@@ -136,7 +136,7 @@ export function createMetaballPipeline(context: GPUContext): MetaballPipeline {
       entryPoint: "fs_main",
       targets: [
         {
-          format: "bgra8unorm",
+          format: canvasFormat,
           blend: {
             color: {
               srcFactor: "src-alpha",

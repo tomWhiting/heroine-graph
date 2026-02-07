@@ -123,6 +123,7 @@ export class LayerManager {
     if (!layer) return false;
 
     layer.enabled = true;
+    this.orderDirty = true;
     return true;
   }
 
@@ -134,6 +135,7 @@ export class LayerManager {
     if (!layer) return false;
 
     layer.enabled = false;
+    this.orderDirty = true;
     return true;
   }
 
@@ -145,6 +147,7 @@ export class LayerManager {
     if (!layer) return false;
 
     layer.enabled = !layer.enabled;
+    this.orderDirty = true;
     return layer.enabled;
   }
 
@@ -156,6 +159,7 @@ export class LayerManager {
     if (!layer) return false;
 
     layer.enabled = visible;
+    this.orderDirty = true;
     return true;
   }
 

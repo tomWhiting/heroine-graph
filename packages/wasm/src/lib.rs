@@ -19,12 +19,13 @@ pub mod layout;
 pub mod spatial;
 
 use graph::{GraphEngine, NodeId};
+use layout::community::{self, CommunityLayoutConfig};
 use layout::tidy_tree::{CoordinateMode, TidyTreeConfig, TidyTreeLayout};
 
 /// Initialize the WASM module.
 #[wasm_bindgen(start)]
 pub fn init() {
-    // Placeholder for panic hook initialization if needed
+    console_error_panic_hook::set_once();
 }
 
 /// Main entry point for the graph engine.
@@ -432,6 +433,250 @@ impl HeroineGraphWasm {
             sibling_separation,
             subtree_separation,
             radial,
+        )
+    }
+
+    // =========================================================================
+    // Community Detection & Layout
+    // =========================================================================
+
+    /// Detect communities using the Louvain modularity optimization algorithm.
+    ///
+    /// Uses the graph's own edges (via CSR extraction). Returns a Uint32Array
+    /// of community assignments (one per node), with a final element containing
+    /// the community count.
+    ///
+    /// The returned array has `node_bound + 1` elements:
+    /// `[comm_0, comm_1, ..., comm_n-1, community_count]`
+    ///
+    /// # Arguments
+    ///
+    /// * `resolution` - Louvain resolution parameter (1.0 = standard, higher = more communities)
+    /// * `max_iterations` - Maximum number of Louvain iterations (default: 100)
+    /// * `min_modularity_gain` - Convergence threshold (default: 0.0001)
+    #[wasm_bindgen(js_name = detectCommunities)]
+    pub fn detect_communities(
+        &self,
+        resolution: f32,
+        max_iterations: u32,
+        min_modularity_gain: f64,
+    ) -> Vec<u32> {
+        let csr = self.engine.get_edges_csr();
+        let node_count = self.engine.node_bound() as usize;
+
+        let result = community::detect_communities(
+            &csr,
+            node_count,
+            resolution,
+            max_iterations,
+            min_modularity_gain,
+        );
+
+        // Return assignments + community_count as last element
+        let mut output = result.assignments;
+        output.push(result.community_count);
+        output
+    }
+
+    /// Compute community layout positions from community assignments.
+    ///
+    /// Takes community assignments (from `detectCommunities`) and computes
+    /// target positions with communities arranged in a circle.
+    ///
+    /// Returns a Float32Array of interleaved target positions [x0, y0, x1, y1, ...].
+    ///
+    /// # Arguments
+    ///
+    /// * `assignments` - Community assignment per node (from `detectCommunities`, without trailing count)
+    /// * `community_count` - Number of distinct communities
+    /// * `community_spacing` - Space between community clusters (default: 50.0)
+    /// * `node_spacing` - Space between nodes within a community (default: 10.0)
+    /// * `spread_factor` - Global scale multiplier (default: 1.5)
+    #[wasm_bindgen(js_name = computeCommunityLayout)]
+    pub fn compute_community_layout(
+        &self,
+        assignments: &[u32],
+        community_count: u32,
+        community_spacing: f32,
+        node_spacing: f32,
+        spread_factor: f32,
+    ) -> Float32Array {
+        let node_count = self.engine.node_bound() as usize;
+
+        let config = CommunityLayoutConfig {
+            community_spacing,
+            node_spacing,
+            spread_factor,
+            ..CommunityLayoutConfig::default()
+        };
+
+        let positions = community::compute_community_layout(
+            assignments,
+            community_count,
+            node_count,
+            &config,
+        );
+
+        Float32Array::from(&positions[..])
+    }
+
+    /// Detect communities and compute layout in a single call.
+    ///
+    /// Combines `detectCommunities` and `computeCommunityLayout` for convenience.
+    /// Returns a Float32Array of interleaved target positions [x0, y0, x1, y1, ...].
+    ///
+    /// # Arguments
+    ///
+    /// * `resolution` - Louvain resolution parameter (default: 1.0)
+    /// * `max_iterations` - Maximum Louvain iterations (default: 100)
+    /// * `community_spacing` - Space between community clusters (default: 50.0)
+    /// * `node_spacing` - Space between nodes within a community (default: 10.0)
+    /// * `spread_factor` - Global scale multiplier (default: 1.5)
+    #[wasm_bindgen(js_name = computeCommunityLayoutFromGraph)]
+    pub fn compute_community_layout_from_graph(
+        &self,
+        resolution: f32,
+        max_iterations: u32,
+        community_spacing: f32,
+        node_spacing: f32,
+        spread_factor: f32,
+    ) -> Float32Array {
+        let csr = self.engine.get_edges_csr();
+        let node_count = self.engine.node_bound() as usize;
+
+        // Detect communities
+        let detection = community::detect_communities(
+            &csr,
+            node_count,
+            resolution,
+            max_iterations,
+            0.0001, // default convergence threshold
+        );
+
+        // Compute layout
+        let config = CommunityLayoutConfig {
+            community_spacing,
+            node_spacing,
+            spread_factor,
+            ..CommunityLayoutConfig::default()
+        };
+
+        let positions = community::compute_community_layout(
+            &detection.assignments,
+            detection.community_count,
+            node_count,
+            &config,
+        );
+
+        Float32Array::from(&positions[..])
+    }
+
+    // =========================================================================
+    // Codebase Layout (Circle Packing)
+    // =========================================================================
+
+    /// Compute codebase layout using circle packing for hierarchical structures.
+    ///
+    /// Takes containment edges (parent→child) and node category classifications,
+    /// then produces a circle-packing layout where directories contain files
+    /// which contain symbols.
+    ///
+    /// Returns a Float32Array of interleaved target positions [x0, y0, x1, y1, ...].
+    ///
+    /// # Arguments
+    ///
+    /// * `containment_edges` - Flat array of [parent0, child0, parent1, child1, ...] pairs
+    /// * `node_categories` - One u8 per node (0=repo, 1=dir, 2=file, 3=symbol, 4=other)
+    /// * `root_id` - Root node ID (u32::MAX = auto-detect)
+    /// * `directory_padding` - Padding within directory circles (default: 15.0)
+    /// * `file_padding` - Padding within file circles (default: 8.0)
+    /// * `spread_factor` - Global scale multiplier (default: 1.5)
+    #[wasm_bindgen(js_name = computeCodebaseLayout)]
+    pub fn compute_codebase_layout(
+        &self,
+        containment_edges: &[u32],
+        node_categories: &[u8],
+        root_id: u32,
+        directory_padding: f32,
+        file_padding: f32,
+        spread_factor: f32,
+    ) -> Float32Array {
+        use layout::codebase::{CodebaseLayoutConfig, self};
+
+        let node_count = self.engine.node_bound() as usize;
+
+        let config = CodebaseLayoutConfig {
+            directory_padding,
+            file_padding,
+            spread_factor,
+            ..CodebaseLayoutConfig::default()
+        };
+
+        let root = if root_id == u32::MAX { None } else { Some(root_id) };
+
+        let positions = codebase::compute_codebase_layout(
+            containment_edges,
+            node_categories,
+            node_count,
+            root,
+            &config,
+        );
+
+        Float32Array::from(&positions[..])
+    }
+
+    /// Compute codebase layout using the graph's own edges.
+    ///
+    /// Uses the graph engine's internal edges as containment hierarchy.
+    /// All edges are treated as parent→child containment relationships.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_categories` - One u8 per node (0=repo, 1=dir, 2=file, 3=symbol, 4=other)
+    /// * `root_id` - Root node ID (u32::MAX = auto-detect)
+    /// * `directory_padding` - Padding within directory circles (default: 15.0)
+    /// * `file_padding` - Padding within file circles (default: 8.0)
+    /// * `spread_factor` - Global scale multiplier (default: 1.5)
+    #[wasm_bindgen(js_name = computeCodebaseLayoutFromGraph)]
+    pub fn compute_codebase_layout_from_graph(
+        &self,
+        node_categories: &[u8],
+        root_id: u32,
+        directory_padding: f32,
+        file_padding: f32,
+        spread_factor: f32,
+    ) -> Float32Array {
+        // Extract edges from CSR
+        let csr = self.engine.get_edges_csr();
+        let node_bound = self.engine.node_bound() as usize;
+
+        if csr.len() <= node_bound + 1 {
+            let sentinel = 3.402_823e+38_f32;
+            let positions = vec![sentinel; node_bound * 2];
+            return Float32Array::from(&positions[..]);
+        }
+
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+
+        // Convert CSR to flat containment edge pairs
+        let mut edges = Vec::with_capacity(targets.len() * 2);
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+
+        self.compute_codebase_layout(
+            &edges,
+            node_categories,
+            root_id,
+            directory_padding,
+            file_padding,
+            spread_factor,
         )
     }
 }

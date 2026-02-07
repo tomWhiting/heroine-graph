@@ -71,7 +71,7 @@ function logEvent(message: string) {
  */
 function updateNodeInfo(nodeId: NodeId | null) {
   if (nodeId === null) {
-    nodeInfo.innerHTML = `<div style="color: #666; font-style: italic;">No node selected</div>`;
+    nodeInfo.textContent = "No node selected";
     return;
   }
 
@@ -83,21 +83,22 @@ function updateNodeInfo(nodeId: NodeId | null) {
     (e) => e.source === nodeId || e.target === nodeId
   ).length;
 
-  nodeInfo.innerHTML = `
-    <div class="node-info-title">${node.label}</div>
-    <div class="node-info-row">
-      <span class="node-info-label">ID</span>
-      <span>${nodeId}</span>
-    </div>
-    <div class="node-info-row">
-      <span class="node-info-label">Connections</span>
-      <span>${connections}</span>
-    </div>
-    <div class="node-info-row">
-      <span class="node-info-label">Position</span>
-      <span>${node.x?.toFixed(0) ?? "-"}, ${node.y?.toFixed(0) ?? "-"}</span>
-    </div>
-  `;
+  const title = document.createElement("div");
+  title.className = "node-info-title";
+  title.textContent = String(node.label ?? "");
+  const row1 = document.createElement("div");
+  row1.className = "node-info-row";
+  row1.innerHTML = `<span class="node-info-label">ID</span><span></span>`;
+  row1.lastElementChild!.textContent = String(nodeId);
+  const row2 = document.createElement("div");
+  row2.className = "node-info-row";
+  row2.innerHTML = `<span class="node-info-label">Connections</span><span></span>`;
+  row2.lastElementChild!.textContent = String(connections);
+  const row3 = document.createElement("div");
+  row3.className = "node-info-row";
+  row3.innerHTML = `<span class="node-info-label">Position</span><span></span>`;
+  row3.lastElementChild!.textContent = `${node.x?.toFixed(0) ?? "-"}, ${node.y?.toFixed(0) ?? "-"}`;
+  nodeInfo.replaceChildren(title, row1, row2, row3);
 }
 
 /**

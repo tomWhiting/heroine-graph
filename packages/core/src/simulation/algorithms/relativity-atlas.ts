@@ -35,6 +35,7 @@ import MASS_WGSL from "../shaders/relativity_mass.comp.wgsl";
 import SIBLING_WGSL from "../shaders/relativity_sibling.comp.wgsl";
 import GRAVITY_WGSL from "../shaders/relativity_gravity.comp.wgsl";
 import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl?raw";
+import FA2_ATTRACTION_WGSL from "../shaders/fa2_attraction.comp.wgsl";
 
 /**
  * Relativity Atlas algorithm info
@@ -104,6 +105,9 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   // Gravity
   gravity: GPUComputePipeline;
 
+  // Linear attraction (F = d, no rest length — replaces Hooke's law springs)
+  attraction: GPUComputePipeline;
+
   // Density field (global repulsion)
   densityClearGrid: GPUComputePipeline;
   densityAccumulate: GPUComputePipeline;
@@ -114,6 +118,7 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   massLayout: GPUBindGroupLayout;
   siblingLayout: GPUBindGroupLayout;
   gravityLayout: GPUBindGroupLayout;
+  attractionLayout: GPUBindGroupLayout;
   densityLayout: GPUBindGroupLayout;
 }
 
@@ -155,6 +160,10 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
     public densityUniforms: GPUBuffer,
     public densityGrid: GPUBuffer,
 
+    // Linear attraction buffers (replaces Hooke's law springs)
+    public attractionUniforms: GPUBuffer,
+    public edgeWeightsBuffer: GPUBuffer,
+
     // Capacities
     public maxNodes: number,
     public maxEdges: number,
@@ -178,6 +187,9 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
 
     this.densityUniforms.destroy();
     this.densityGrid.destroy();
+
+    this.attractionUniforms.destroy();
+    this.edgeWeightsBuffer.destroy();
   }
 }
 
@@ -190,6 +202,7 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
   massAggregate: GPUBindGroup[];  // Ping-pong
   sibling: GPUBindGroup;
   gravity: GPUBindGroup;
+  attraction: GPUBindGroup;  // Linear edge attraction (F=d, no rest length)
   density: GPUBindGroup | null;  // null when bounds unavailable
   // repulsion from base is used for main force pass
 }
@@ -200,10 +213,12 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
 export class RelativityAtlasAlgorithm implements ForceAlgorithm {
   readonly info = RELATIVITY_ATLAS_INFO;
   readonly handlesGravity = true;
+  readonly handlesSprings = true; // Linear attraction (F=d, no rest length) instead of Hooke's law
 
   // Track whether mass has been initialized for current graph
   private massInitialized = false;
   private lastNodeCount = 0;
+  private currentEdgeCount = 0;
 
   /**
    * Reset mass state when graph changes
@@ -313,6 +328,30 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       bindGroupLayouts: [gravityLayout],
     });
 
+    // === Attraction Layout (linear F=d, replaces Hooke's law springs) ===
+    // Bindings: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
+    const attractionModule = device.createShaderModule({
+      label: "RA Attraction Shader",
+      code: FA2_ATTRACTION_WGSL,
+    });
+
+    const attractionLayout = device.createBindGroupLayout({
+      label: "RA Attraction Layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    const attractionPipelineLayout = device.createPipelineLayout({
+      label: "RA Attraction Pipeline Layout",
+      bindGroupLayouts: [attractionLayout],
+    });
+
     // === Density Field Layout ===
     // Reuses the density_field.comp.wgsl shader for global O(n) repulsion.
     // Bindings: uniforms, positions (vec2), forces (vec2), density_grid
@@ -368,11 +407,14 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         compute: { module: gravityModule, entryPoint: "main" },
       }),
 
-      // Use sibling repulsion as the main "repulsion" pass
-      repulsion: device.createComputePipeline({
-        label: "RA Main Repulsion",
-        layout: siblingPipelineLayout,
-        compute: { module: siblingModule, entryPoint: "main" },
+      // Alias: reuse siblingRepulsion as the main "repulsion" pass (avoids duplicate pipeline)
+      repulsion: null as unknown as GPUComputePipeline, // Assigned below after object creation
+
+      // Linear attraction (F = d, no rest length)
+      attraction: device.createComputePipeline({
+        label: "RA Attraction",
+        layout: attractionPipelineLayout,
+        compute: { module: attractionModule, entryPoint: "main" },
       }),
 
       // Density field pipelines (global repulsion)
@@ -396,8 +438,12 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       massLayout,
       siblingLayout,
       gravityLayout,
+      attractionLayout,
       densityLayout,
     };
+
+    // Assign repulsion alias to reuse siblingRepulsion (avoids duplicate pipeline)
+    pipelines.repulsion = pipelines.siblingRepulsion;
 
     return pipelines;
   }
@@ -428,11 +474,15 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     });
 
     // SiblingUniforms: { node_count: u32, edge_count: u32, repulsion_strength: f32, min_distance: f32,
-    //                   max_siblings: u32, parent_child_multiplier: f32, _padding: vec2<u32> }
-    // Total: 32 bytes
+    //                   max_siblings: u32, parent_child_multiplier: f32,
+    //                   cousin_enabled: u32, cousin_strength: f32,
+    //                   phantom_enabled: u32, phantom_multiplier: f32,
+    //                   orbit_strength: f32, tangential_multiplier: f32,
+    //                   orbit_radius_base: f32, _pad1: u32 }
+    // Total: 64 bytes
     const siblingUniforms = device.createBuffer({
       label: "RA Sibling Uniforms",
-      size: 32,
+      size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -511,6 +561,20 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // Linear attraction uniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
+    const attractionUniforms = device.createBuffer({
+      label: "RA Attraction Uniforms",
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Edge weights: f32 per edge (1.0 for unweighted)
+    const edgeWeightsBuffer = device.createBuffer({
+      label: "RA Edge Weights",
+      size: Math.max(maxEdges * 4, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     return new RelativityAtlasBuffers(
       degreesUniforms,
       massUniforms,
@@ -526,6 +590,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       converged,
       densityUniforms,
       densityGrid,
+      attractionUniforms,
+      edgeWeightsBuffer,
       safeMaxNodes,
       maxEdges,
     );
@@ -631,6 +697,27 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // Linear attraction bind group (replaces Hooke's law springs)
+    if (!context.edgeSources || !context.edgeTargets) {
+      throw new Error(
+        "RelativityAtlas requires edge source/target buffers in AlgorithmRenderContext. " +
+        "Ensure graph.ts populates edgeSources and edgeTargets.",
+      );
+    }
+
+    const attraction = device.createBindGroup({
+      label: "RA Attraction Bind Group",
+      layout: p.attractionLayout,
+      entries: [
+        { binding: 0, resource: { buffer: b.attractionUniforms } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: context.edgeSources } },
+        { binding: 4, resource: { buffer: context.edgeTargets } },
+        { binding: 5, resource: { buffer: b.edgeWeightsBuffer } },
+      ],
+    });
+
     // Density field bind group for global repulsion.
     // Uses the same position/force buffers as sibling and gravity.
     const density = device.createBindGroup({
@@ -650,6 +737,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       massAggregate,
       sibling,
       gravity,
+      attraction,
       density,
       repulsion: sibling,  // Use sibling as main repulsion
     };
@@ -709,10 +797,14 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     massView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.massUniforms, 0, massData);
 
-    // Sibling uniforms (32 bytes)
+    // Sibling uniforms (64 bytes)
     // Struct layout: { node_count: u32, edge_count: u32, repulsion_strength: f32, min_distance: f32,
-    //                  max_siblings: u32, parent_child_multiplier: f32, _padding: vec2<u32> }
-    const siblingData = new ArrayBuffer(32);
+    //                  max_siblings: u32, parent_child_multiplier: f32,
+    //                  cousin_enabled: u32, cousin_strength: f32,
+    //                  phantom_enabled: u32, phantom_multiplier: f32,
+    //                  orbit_strength: f32, tangential_multiplier: f32,
+    //                  orbit_radius_base: f32, _pad1: u32 }
+    const siblingData = new ArrayBuffer(64);
     const siblingView = new DataView(siblingData);
     siblingView.setUint32(0, context.nodeCount, true);
     siblingView.setUint32(4, edgeCount, true);
@@ -720,8 +812,15 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     siblingView.setFloat32(12, context.forceConfig.repulsionDistanceMin, true);
     siblingView.setUint32(16, context.forceConfig.relativityMaxSiblings, true);
     siblingView.setFloat32(20, context.forceConfig.relativityParentChildMultiplier, true);
-    siblingView.setUint32(24, 0, true);  // _padding
-    siblingView.setUint32(28, 0, true);  // _padding
+    siblingView.setUint32(24, context.forceConfig.relativityCousinRepulsion ? 1 : 0, true);
+    siblingView.setFloat32(28, context.forceConfig.relativityCousinStrength, true);
+    siblingView.setUint32(32, context.forceConfig.relativityPhantomZone ? 1 : 0, true);
+    siblingView.setFloat32(36, context.forceConfig.relativityPhantomMultiplier, true);
+    siblingView.setFloat32(40, context.forceConfig.relativityOrbitStrength, true);
+    siblingView.setFloat32(44, context.forceConfig.relativityTangentialMultiplier, true);
+    siblingView.setFloat32(48, context.forceConfig.relativityOrbitRadius, true);
+    siblingView.setUint32(52, 0, true);  // _pad1
+    // Bytes 56-63 are implicit zero (ArrayBuffer is zero-initialized)
     device.queue.writeBuffer(b.siblingUniforms, 0, siblingData);
 
     // Gravity uniforms (32 bytes)
@@ -741,6 +840,25 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     gravityView.setFloat32(24, context.forceConfig.relativityGravityExponent, true);
     gravityView.setUint32(28, 0, true);  // _padding
     device.queue.writeBuffer(b.gravityUniforms, 0, gravityData);
+
+    // Cache edge count for attraction pass workgroup dispatch
+    this.currentEdgeCount = edgeCount;
+
+    // Attraction uniforms (16 bytes): { edge_count, edge_weight_influence, flags, _padding }
+    const attractData = new ArrayBuffer(16);
+    const attractView = new DataView(attractData);
+    attractView.setUint32(0, edgeCount, true);
+    attractView.setFloat32(4, 1.0, true); // edge_weight_influence
+    attractView.setUint32(8, 0, true);    // flags (standard linear mode)
+    attractView.setUint32(12, 0, true);
+    device.queue.writeBuffer(b.attractionUniforms, 0, attractData);
+
+    // Upload edge weights (all 1.0 for unweighted graphs)
+    if (edgeCount > 0 && edgeCount <= b.maxEdges) {
+      const weights = new Float32Array(edgeCount);
+      weights.fill(1.0);
+      device.queue.writeBuffer(b.edgeWeightsBuffer, 0, weights);
+    }
 
     // Density field uniforms (48 bytes = 12 × f32)
     // Only meaningful when bounds are available; the shader is skipped otherwise.
@@ -879,6 +997,18 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       pass.setPipeline(p.gravity);
       pass.setBindGroup(0, bg.gravity);
       pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.end();
+    }
+
+    // === PHASE 7: Linear edge attraction (every frame) ===
+    // F = distance * direction — always pulling, no rest length, no equilibrium.
+    // Replaces Hooke's law springs which created grid/lattice patterns.
+    if (this.currentEdgeCount > 0) {
+      const edgeWorkgroups = calculateWorkgroups(this.currentEdgeCount, WORKGROUP_SIZE);
+      const pass = encoder.beginComputePass({ label: "RA Linear Attraction" });
+      pass.setPipeline(p.attraction);
+      pass.setBindGroup(0, bg.attraction);
+      pass.dispatchWorkgroups(edgeWorkgroups);
       pass.end();
     }
   }

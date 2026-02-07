@@ -55,7 +55,7 @@ const BARNES_HUT_ALGORITHM_INFO: ForceAlgorithmInfo = {
   description:
     "GPU binary radix tree with O(N log N) construction. Optimal for 5K-100K+ nodes.",
   minNodes: 100,
-  maxNodes: 500000,
+  maxNodes: 131072, // Limited by radix sort prefix scan (512 workgroups * 256 threads)
   complexity: "O(N log N)",
 };
 

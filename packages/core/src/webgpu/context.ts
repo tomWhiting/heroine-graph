@@ -20,7 +20,14 @@ export interface GPUContextOptions {
   readonly alphaMode?: GPUCanvasAlphaMode;
   /** Preferred texture format (auto-detected if not specified) */
   readonly format?: GPUTextureFormat;
+  /** Callback when the GPU device is lost */
+  readonly onDeviceLost?: DeviceLostCallback;
 }
+
+/**
+ * Callback for device loss events.
+ */
+export type DeviceLostCallback = (reason: string, message: string) => void;
 
 /**
  * Initialized GPU context containing all WebGPU resources.
@@ -38,6 +45,8 @@ export interface GPUContext {
   readonly canvas: HTMLCanvasElement;
   /** Device limits */
   readonly limits: GPUSupportedLimits;
+  /** Whether the device has been lost */
+  isDeviceLost: boolean;
 }
 
 /**
@@ -129,11 +138,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
     }
   });
 
-  // Handle device loss
-  device.lost.then((info) => {
-    console.error("[HeroineGraph] GPU device lost:", info.message);
-    console.error("Reason:", info.reason);
-  });
+  // Handle device loss (handler registered once, updates context + calls user callback)
 
   // Get canvas context - cast to GPUCanvasContext since getContext returns generic type
   const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
@@ -158,14 +163,27 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
 
-  return {
+  const gpuContext: GPUContext = {
     adapter,
     device,
     context,
     format,
     canvas,
     limits: device.limits,
+    isDeviceLost: false,
   };
+
+  // Handle device loss
+  device.lost.then((info) => {
+    gpuContext.isDeviceLost = true;
+    console.error("[HeroineGraph] GPU device lost:", info.message);
+    console.error("Reason:", info.reason);
+    if (options.onDeviceLost) {
+      options.onDeviceLost(info.reason ?? "unknown", info.message);
+    }
+  });
+
+  return gpuContext;
 }
 
 /**

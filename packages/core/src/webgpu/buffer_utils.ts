@@ -31,33 +31,3 @@ export function toArrayBuffer(
   ) as ArrayBuffer;
 }
 
-/**
- * Write a typed array to a GPU buffer.
- *
- * This is a type-safe wrapper around device.queue.writeBuffer that handles
- * the BufferSource type conversion.
- *
- * @param queue - The GPU queue
- * @param buffer - The GPU buffer to write to
- * @param bufferOffset - Offset in bytes within the buffer
- * @param data - The typed array data to write
- * @param dataOffset - Optional offset in elements within the data array
- * @param size - Optional number of elements to write
- */
-export function writeGPUBuffer(
-  queue: GPUQueue,
-  buffer: GPUBuffer,
-  bufferOffset: number,
-  data: Float32Array | Uint32Array | Uint8Array | Int32Array,
-  dataOffset?: number,
-  size?: number,
-): void {
-  const arrayBuffer = toArrayBuffer(data);
-  const bytesPerElement = data.BYTES_PER_ELEMENT;
-  const dataByteOffset = (dataOffset ?? 0) * bytesPerElement;
-  const dataByteSize = size !== undefined
-    ? size * bytesPerElement
-    : data.byteLength - dataByteOffset;
-
-  queue.writeBuffer(buffer, bufferOffset, arrayBuffer, dataByteOffset, dataByteSize);
-}

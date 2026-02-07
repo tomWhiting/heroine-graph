@@ -21,20 +21,8 @@ allowed-prefixes = ["is_", "has_", "can_", "should_", "will_", "did_", "was_"]
 # MSRV for lint suggestions
 msrv = "1.75.0"
 
-# Document private items
-missing-docs-in-private-items = false
-
-# Allow wildcard dependencies in Cargo.toml
-allow-wildcard-dependencies = false
-
-# Types that are acceptable in unsafe blocks
-allowed-unsafe-in-body = false
-
 # Upper bound on type complexity
 type-complexity-threshold = 250
-
-# Warn on functions exceeding this many statements
-single-call-fn-threshold = 1
 
 # Array size limit for stack allocation lint
 array-size-threshold = 512000
@@ -44,9 +32,3 @@ vec-box-size-threshold = 4096
 
 # Maximum nesting depth of blocks
 excessive-nesting-threshold = 4
-
-# Maximum length of slice pattern
-max-include-file-width = 80
-
-# Verbose output
-verbose = false

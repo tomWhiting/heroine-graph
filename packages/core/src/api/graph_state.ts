@@ -29,8 +29,10 @@ export class MutableGraphState {
   nodeCapacity: number;
   /** Highest slot index in use + 1 (used as instance count for draw calls) */
   nodeHighWater: number;
-  /** Reusable slot indices from removals */
+  /** Reusable slot indices from removals (stack for LIFO pop) */
   nodeFreeList: number[];
+  /** O(1) membership check for nodeFreeList */
+  nodeFreeSet: Set<number>;
   nodeIdMap: IdMap<IdLike>;
 
   // Edge tracking (dense, no gaps via swap-remove)
@@ -71,6 +73,7 @@ export class MutableGraphState {
     this.nodeCapacity = 0;
     this.nodeHighWater = 0;
     this.nodeFreeList = [];
+    this.nodeFreeSet = new Set();
     this.nodeIdMap = createIdMap<IdLike>();
     this.edgeCount = 0;
     this.edgeCapacity = 0;
@@ -155,7 +158,9 @@ export class MutableGraphState {
   allocateNodeSlot(): number {
     this.nodeCount++;
     if (this.nodeFreeList.length > 0) {
-      return this.nodeFreeList.pop()!;
+      const slot = this.nodeFreeList.pop()!;
+      this.nodeFreeSet.delete(slot);
+      return slot;
     }
     const slot = this.nodeHighWater;
     this.nodeHighWater++;
@@ -177,14 +182,23 @@ export class MutableGraphState {
     }
 
     this.nodeFreeList.push(index);
+    this.nodeFreeSet.add(index);
 
-    // Recalculate high water mark if this was the last slot
+    // Recalculate high water mark if this was the last slot — O(1) per step using Set
     if (index === this.nodeHighWater - 1) {
-      while (this.nodeHighWater > 0 && this.nodeFreeList.includes(this.nodeHighWater - 1)) {
-        const idx = this.nodeFreeList.indexOf(this.nodeHighWater - 1);
-        this.nodeFreeList.splice(idx, 1);
+      while (this.nodeHighWater > 0 && this.nodeFreeSet.has(this.nodeHighWater - 1)) {
+        this.nodeFreeSet.delete(this.nodeHighWater - 1);
         this.nodeHighWater--;
       }
+      // Rebuild the free list array to match (remove entries >= nodeHighWater)
+      const hw = this.nodeHighWater;
+      let writeIdx = 0;
+      for (let i = 0; i < this.nodeFreeList.length; i++) {
+        if (this.nodeFreeList[i] < hw) {
+          this.nodeFreeList[writeIdx++] = this.nodeFreeList[i];
+        }
+      }
+      this.nodeFreeList.length = writeIdx;
     }
 
     // Clean up adjacency
@@ -246,6 +260,14 @@ export class MutableGraphState {
   freeEdgeSlot(index: number): number {
     const lastIndex = this.edgeCount - 1;
 
+    // Save the removed edge's adjacency BEFORE any swap overwrites it
+    const removedSrc = this.edgeSources[index];
+    const removedTgt = this.edgeTargets[index];
+
+    // Clean up the removed edge's adjacency
+    this.nodeEdges.get(removedSrc)?.delete(index);
+    this.nodeEdges.get(removedTgt)?.delete(index);
+
     if (index < lastIndex) {
       // Swap last edge into vacated slot
       this.edgeSources[index] = this.edgeSources[lastIndex];
@@ -257,21 +279,13 @@ export class MutableGraphState {
         this.edgeAttributes[dstAttr + i] = this.edgeAttributes[srcAttr + i];
       }
 
-      // Update adjacency for the swapped edge
+      // Update adjacency for the swapped edge (was at lastIndex, now at index)
       const swappedSrc = this.edgeSources[index];
       const swappedTgt = this.edgeTargets[index];
       this.nodeEdges.get(swappedSrc)?.delete(lastIndex);
       this.nodeEdges.get(swappedSrc)?.add(index);
       this.nodeEdges.get(swappedTgt)?.delete(lastIndex);
       this.nodeEdges.get(swappedTgt)?.add(index);
-    }
-
-    // Clean up the last slot's adjacency
-    const removedSrc = index < lastIndex ? this.edgeSources[lastIndex] : this.edgeSources[index];
-    const removedTgt = index < lastIndex ? this.edgeTargets[lastIndex] : this.edgeTargets[index];
-    if (index === lastIndex) {
-      this.nodeEdges.get(removedSrc)?.delete(index);
-      this.nodeEdges.get(removedTgt)?.delete(index);
     }
 
     this.edgeCount--;

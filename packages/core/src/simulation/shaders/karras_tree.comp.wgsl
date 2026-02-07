@@ -274,6 +274,9 @@ fn aggregate_bottom_up(@builtin(global_invocation_id) global_id: vec3<u32>) {
 fn clear_tree(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
     let n = uniforms.node_count;
+
+    if (n == 0u) { return; }
+
     let total_nodes = 2u * n - 1u;  // N-1 internal + N leaves
 
     if (idx >= total_nodes) {

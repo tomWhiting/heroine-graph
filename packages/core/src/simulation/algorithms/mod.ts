@@ -14,6 +14,10 @@ import { createForceAtlas2Algorithm as _createForceAtlas2 } from "./force-atlas2
 import { createDensityFieldAlgorithm as _createDensityField } from "./density-field.ts";
 import { createRelativityAtlasAlgorithm as _createRelativityAtlas } from "./relativity-atlas.ts";
 import { createTidyTreeAlgorithm as _createTidyTree } from "./tidy-tree.ts";
+import { createLinLogAlgorithm as _createLinLog } from "./linlog.ts";
+import { createTFdpAlgorithm as _createTFdp } from "./t-fdp.ts";
+import { createCommunityLayoutAlgorithm as _createCommunity } from "./community.ts";
+import { createCodebaseLayoutAlgorithm as _createCodebase } from "./codebase.ts";
 
 // Types
 export type {
@@ -49,6 +53,10 @@ export {
 export type { CSRData } from "./relativity-atlas.ts";
 export { createTidyTreeAlgorithm, TidyTreeAlgorithm } from "./tidy-tree.ts";
 export type { TidyTreeConfig } from "./tidy-tree.ts";
+export { createLinLogAlgorithm, LinLogAlgorithm } from "./linlog.ts";
+export { createTFdpAlgorithm, TFdpAlgorithm } from "./t-fdp.ts";
+export { createCommunityLayoutAlgorithm, CommunityLayoutAlgorithm } from "./community.ts";
+export { createCodebaseLayoutAlgorithm, CodebaseLayoutAlgorithm } from "./codebase.ts";
 
 /**
  * Initialize the global algorithm registry with built-in algorithms
@@ -84,5 +92,25 @@ export function initializeBuiltinAlgorithms(): void {
   // Register Tidy Tree algorithm
   if (!registry.has("tidy-tree")) {
     registry.register(_createTidyTree());
+  }
+
+  // Register LinLog algorithm
+  if (!registry.has("linlog")) {
+    registry.register(_createLinLog());
+  }
+
+  // Register t-FDP algorithm
+  if (!registry.has("t-fdp")) {
+    registry.register(_createTFdp());
+  }
+
+  // Register Community Layout algorithm
+  if (!registry.has("community")) {
+    registry.register(_createCommunity());
+  }
+
+  // Register Codebase Layout algorithm
+  if (!registry.has("codebase")) {
+    registry.register(_createCodebase());
   }
 }

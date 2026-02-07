@@ -1,0 +1,150 @@
+{
+  "generator": {
+    "type": "hierarchical",
+    "nodes": 10000,
+    "branching": 4
+  },
+  "force": {
+    "algorithm": "relativity-atlas",
+    "repulsion": 30,
+    "springStrength": 0.15,
+    "linkDistance": 30,
+    "centerGravity": 0.05,
+    "damping": 0.5,
+    "maxRepelDist": 1000,
+    "theta": 0.8,
+    "maxVelocity": 30,
+    "pinRootNode": true
+  },
+  "relativityAtlas": {
+    "baseMass": 1.0,
+    "childFactor": 0.5,
+    "massExponent": 0.5,
+    "gravityCurve": "soft",
+    "gravityExponent": 1.0,
+    "maxSiblings": 100,
+    "parentChildMult": 0.1,
+    "densityRepulsion": 0.8,
+    "cousinRepulsion": false,
+    "cousinStrength": 0.5,
+    "phantomZone": false,
+    "phantomMultiplier": 0.5,
+    "orbitStrength": 1.0,
+    "tangentialMultiplier": 2.0,
+    "orbitRadius": 25
+  },
+  "linlog": {
+    "scaling": 10.0,
+    "gravity": 1.0,
+    "edgeWeightInfluence": 1.0,
+    "strongGravity": false
+  },
+  "tFdp": {
+    "gamma": 2.0,
+    "repulsionScale": 1.0,
+    "alpha": 0.1,
+    "beta": 8.0
+  },
+  "tidyTree": {
+    "levelSeparation": 80,
+    "siblingSeparation": 1.0,
+    "subtreeSeparation": 2.0,
+    "stiffness": 0.3,
+    "damping": 0.5,
+    "coordMode": "radial"
+  },
+  "community": {
+    "resolution": 1.0,
+    "spacing": 50.0,
+    "nodeSpacing": 10.0,
+    "spreadFactor": 1.5,
+    "stiffness": 0.3,
+    "damping": 0.5
+  },
+  "codebase": {
+    "directoryPadding": 15.0,
+    "filePadding": 8.0,
+    "spreadFactor": 1.5,
+    "stiffness": 0.3,
+    "damping": 0.5
+  },
+  "display": {
+    "theme": "dark",
+    "backgroundColor": "#0a0a0f",
+    "defaultEdgeColor": "#808080"
+  },
+  "heatmap": {
+    "enabled": false,
+    "colorScale": "viridis",
+    "dataSource": "density",
+    "radius": 50,
+    "intensity": 1.0,
+    "opacity": 0.8
+  },
+  "contours": {
+    "enabled": false,
+    "strokeWidth": 2,
+    "strokeColor": "#ffffff",
+    "thresholdCount": 4,
+    "minThreshold": 0.1
+  },
+  "metaballs": {
+    "enabled": false,
+    "fillColor": "#4f8cff",
+    "threshold": 0.5,
+    "opacity": 0.6
+  },
+  "labels": {
+    "enabled": false,
+    "fontSize": 14,
+    "textColor": "#ffffff",
+    "maxLabels": 100
+  },
+  "nodeStyle": {
+    "sizeScale": 1.0,
+    "borders": {
+      "enabled": false,
+      "width": 2.0,
+      "color": "#000000"
+    }
+  },
+  "edgeStyle": {
+    "opacity": 0.4,
+    "widthScale": 1.0,
+    "curved": {
+      "enabled": false,
+      "segments": 19,
+      "weight": 0.8,
+      "curvature": 0.25
+    }
+  },
+  "edgeFlow": {
+    "enabled": false,
+    "layer1": {
+      "waveShape": "sine",
+      "pulseWidth": 0.1,
+      "pulseCount": 3,
+      "speed": 0.3,
+      "brightness": 2.0,
+      "fade": 0.3,
+      "color": "#00ffff",
+      "useEdgeColor": false
+    },
+    "layer2": {
+      "enabled": false,
+      "waveShape": "square",
+      "pulseWidth": 0.05,
+      "pulseCount": 6,
+      "speed": 0.5,
+      "brightness": 1.5,
+      "fade": 0.2,
+      "color": "#ff6b6b",
+      "useEdgeColor": false
+    }
+  },
+  "valueStreams": {
+    "demo": "none",
+    "opacity": 0.8,
+    "blendMode": "additive"
+  }
+}

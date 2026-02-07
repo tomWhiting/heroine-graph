@@ -1255,6 +1255,10 @@
                 <option value="density">Density Field - O(n) for 100K+ nodes</option>
                 <option value="relativity-atlas">Relativity Atlas - hierarchical O(N+E)</option>
                 <option value="tidy-tree">Tidy Tree - tree/hierarchy O(n)</option>
+                <option value="linlog">LinLog - community cluster separation</option>
+                <option value="t-fdp">t-FDP - bounded repulsion O(n²)</option>
+                <option value="community">Community Layout - Louvain O(n log n)</option>
+                <option value="codebase">Codebase Layout - circle packing O(n)</option>
               </select>
             </div>
 
@@ -1329,6 +1333,17 @@
               </div>
               <input type="range" id="force-max-vel" min="10" max="200" step="10" value="50">
             </div>
+
+            <!-- Pin Root Node -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Pin Root Node</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="pin-root-node" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1368,9 +1383,9 @@
                 <span class="control-label">Gravity Curve</span>
               </div>
               <select id="ra-gravity-curve" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 12px;">
-                <option value="linear">Linear (default)</option>
+                <option value="linear">Linear</option>
                 <option value="inverse">Inverse-Square (stable orbits)</option>
-                <option value="soft">Soft (gentle close-range)</option>
+                <option value="soft" selected>Soft (gentle close-range, default)</option>
                 <option value="custom">Custom Exponent</option>
               </select>
             </div>
@@ -1400,16 +1415,16 @@
               <input type="range" id="ra-parent-child" min="0" max="1" step="0.05" value="0.3">
             </div>
 
-            <!-- Cousin Repulsion (future feature) -->
+            <!-- Cousin Repulsion (2-hop: same grandparent) -->
             <div class="simulation-card">
               <div class="control-row">
                 <span class="control-label">Cousin Repulsion</span>
                 <label class="toggle">
-                  <input type="checkbox" id="ra-cousin-enabled" disabled>
+                  <input type="checkbox" id="ra-cousin-enabled">
                   <span class="toggle-slider"></span>
                 </label>
               </div>
-              <p class="sim-note">Coming soon</p>
+              <p class="sim-note">Repel nodes sharing a grandparent</p>
             </div>
 
             <div class="simulation-card">
@@ -1417,19 +1432,28 @@
                 <span class="control-label">Cousin Strength</span>
                 <span class="control-value" id="ra-cousin-strength-val">0.50</span>
               </div>
-              <input type="range" id="ra-cousin-strength" min="0" max="1" step="0.05" value="0.5" disabled>
+              <input type="range" id="ra-cousin-strength" min="0" max="1" step="0.05" value="0.5">
             </div>
 
-            <!-- Phantom Zones (future feature) -->
+            <!-- Density Repulsion (cross-subtree) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Density Repulsion</span>
+                <span class="control-value" id="ra-density-repulsion-val">0.50</span>
+              </div>
+              <input type="range" id="ra-density-repulsion" min="0" max="2" step="0.05" value="0.5">
+            </div>
+
+            <!-- Phantom Zones (mass-based collision boundaries) -->
             <div class="simulation-card">
               <div class="control-row">
                 <span class="control-label">Phantom Zones</span>
                 <label class="toggle">
-                  <input type="checkbox" id="ra-phantom-enabled" disabled>
+                  <input type="checkbox" id="ra-phantom-enabled">
                   <span class="toggle-slider"></span>
                 </label>
               </div>
-              <p class="sim-note">Coming soon</p>
+              <p class="sim-note">Mass-proportional collision radius</p>
             </div>
 
             <div class="simulation-card">
@@ -1437,7 +1461,35 @@
                 <span class="control-label">Phantom Multiplier</span>
                 <span class="control-value" id="ra-phantom-mult-val">0.50</span>
               </div>
-              <input type="range" id="ra-phantom-mult" min="0" max="2" step="0.1" value="0.5" disabled>
+              <input type="range" id="ra-phantom-mult" min="0" max="100" step="1" value="0.5">
+            </div>
+
+            <!-- Orbital Layout (children circle around parents) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Orbit Strength</span>
+                <span class="control-value" id="ra-orbit-strength-val">2.00</span>
+              </div>
+              <input type="range" id="ra-orbit-strength" min="0" max="20" step="0.5" value="2.0">
+              <p class="sim-note">Radial spring pulling children to orbit distance</p>
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Tangential Amp</span>
+                <span class="control-value" id="ra-tangential-mult-val">3.00</span>
+              </div>
+              <input type="range" id="ra-tangential-mult" min="1" max="20" step="0.5" value="3.0">
+              <p class="sim-note">Angular spreading around parent (>1 = more circular)</p>
+            </div>
+
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Orbit Radius</span>
+                <span class="control-value" id="ra-orbit-radius-val">30</span>
+              </div>
+              <input type="range" id="ra-orbit-radius" min="1" max="200" step="1" value="30">
+              <p class="sim-note">Base distance from parent (scales with sibling count)</p>
             </div>
 
           </div>
@@ -1508,6 +1560,226 @@
             <div class="simulation-card" style="grid-column: span 2;">
               <button class="sim-btn primary" id="tt-recompute" style="width: 100%">Recompute Tree Layout</button>
               <p class="sim-note">Runs Buchheim algorithm on current graph edges and uploads target positions to GPU</p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- LinLog Controls (shown when algorithm = linlog) -->
+        <div class="simulation-section" id="linlog-controls" style="display: none;">
+          <h3 class="section-title">LinLog</h3>
+          <div class="simulation-grid">
+
+            <!-- Repulsion Scaling (kr) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Scaling (kr)</span>
+                <span class="control-value" id="ll-scaling-val">10.0</span>
+              </div>
+              <input type="range" id="ll-scaling" min="0.1" max="100" step="0.1" value="10.0">
+            </div>
+
+            <!-- Gravity (kg) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Gravity (kg)</span>
+                <span class="control-value" id="ll-gravity-val">1.0</span>
+              </div>
+              <input type="range" id="ll-gravity" min="0" max="10" step="0.1" value="1.0">
+            </div>
+
+            <!-- Edge Weight Influence -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Weight Influence</span>
+                <span class="control-value" id="ll-weight-val">1.00</span>
+              </div>
+              <input type="range" id="ll-weight" min="0" max="2" step="0.05" value="1.0">
+            </div>
+
+            <!-- Strong Gravity Toggle -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Strong Gravity</span>
+                <label class="toggle">
+                  <input type="checkbox" id="ll-strong-gravity">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <p class="sim-note">Scales gravity with distance from center</p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- t-FDP Controls (shown when algorithm = t-fdp) -->
+        <div class="simulation-section" id="t-fdp-controls" style="display: none;">
+          <h3 class="section-title">t-FDP</h3>
+          <div class="simulation-grid">
+
+            <!-- Gamma (degrees of freedom) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Gamma</span>
+                <span class="control-value" id="tfdp-gamma-val">2.00</span>
+              </div>
+              <input type="range" id="tfdp-gamma" min="1.0" max="5.0" step="0.1" value="2.0">
+              <p class="sim-note">Higher = narrower bounded zone</p>
+            </div>
+
+            <!-- Repulsion Scale -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Repulsion Scale</span>
+                <span class="control-value" id="tfdp-repulsion-val">1.00</span>
+              </div>
+              <input type="range" id="tfdp-repulsion" min="0.1" max="50" step="0.1" value="1.0">
+            </div>
+
+            <!-- Alpha (linear spring weight) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Alpha (Spring)</span>
+                <span class="control-value" id="tfdp-alpha-val">0.10</span>
+              </div>
+              <input type="range" id="tfdp-alpha" min="0.01" max="1.0" step="0.01" value="0.1">
+              <p class="sim-note">Linear spring weight for attraction</p>
+            </div>
+
+            <!-- Beta (t-force weight) -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Beta (t-Force)</span>
+                <span class="control-value" id="tfdp-beta-val">8.00</span>
+              </div>
+              <input type="range" id="tfdp-beta" min="0" max="20" step="0.5" value="8.0">
+              <p class="sim-note">Short-range neighborhood pull</p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Community Layout Controls (shown when algorithm = community) -->
+        <div class="simulation-section" id="community-controls" style="display: none;">
+          <h3 class="section-title">Community Layout</h3>
+          <div class="simulation-grid">
+
+            <!-- Resolution -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Resolution</span>
+                <span class="control-value" id="comm-resolution-val">1.00</span>
+              </div>
+              <input type="range" id="comm-resolution" min="0.1" max="5.0" step="0.1" value="1.0">
+              <p class="sim-note">Higher = more, smaller communities</p>
+            </div>
+
+            <!-- Community Spacing -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Cluster Spacing</span>
+                <span class="control-value" id="comm-spacing-val">50.0</span>
+              </div>
+              <input type="range" id="comm-spacing" min="5" max="500" step="5" value="50">
+            </div>
+
+            <!-- Node Spacing -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Node Spacing</span>
+                <span class="control-value" id="comm-node-spacing-val">10.0</span>
+              </div>
+              <input type="range" id="comm-node-spacing" min="1" max="100" step="1" value="10">
+            </div>
+
+            <!-- Spread Factor -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Spread</span>
+                <span class="control-value" id="comm-spread-val">1.50</span>
+              </div>
+              <input type="range" id="comm-spread" min="0.1" max="5.0" step="0.1" value="1.5">
+            </div>
+
+            <!-- Stiffness -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Stiffness</span>
+                <span class="control-value" id="comm-stiffness-val">0.30</span>
+              </div>
+              <input type="range" id="comm-stiffness" min="0.01" max="1" step="0.01" value="0.3">
+            </div>
+
+            <!-- Damping -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Damping</span>
+                <span class="control-value" id="comm-damping-val">0.50</span>
+              </div>
+              <input type="range" id="comm-damping" min="0.01" max="2" step="0.01" value="0.5">
+            </div>
+
+            <!-- Recompute button -->
+            <div class="simulation-card" style="grid-column: 1 / -1;">
+              <button class="sim-btn primary" id="comm-recompute" style="width: 100%;">Recompute Communities</button>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Codebase Layout Controls (shown when algorithm = codebase) -->
+        <div class="simulation-section" id="codebase-controls" style="display: none;">
+          <h3 class="section-title">Codebase Layout</h3>
+          <div class="simulation-grid">
+
+            <!-- Directory Padding -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Dir Padding</span>
+                <span class="control-value" id="cb-dir-padding-val">15.0</span>
+              </div>
+              <input type="range" id="cb-dir-padding" min="1" max="100" step="1" value="15">
+            </div>
+
+            <!-- File Padding -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">File Padding</span>
+                <span class="control-value" id="cb-file-padding-val">8.0</span>
+              </div>
+              <input type="range" id="cb-file-padding" min="1" max="50" step="1" value="8">
+            </div>
+
+            <!-- Spread Factor -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Spread</span>
+                <span class="control-value" id="cb-spread-val">1.50</span>
+              </div>
+              <input type="range" id="cb-spread" min="0.1" max="5.0" step="0.1" value="1.5">
+            </div>
+
+            <!-- Stiffness -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Stiffness</span>
+                <span class="control-value" id="cb-stiffness-val">0.30</span>
+              </div>
+              <input type="range" id="cb-stiffness" min="0.01" max="1" step="0.01" value="0.3">
+            </div>
+
+            <!-- Damping -->
+            <div class="simulation-card">
+              <div class="control-row">
+                <span class="control-label">Damping</span>
+                <span class="control-value" id="cb-damping-val">0.50</span>
+              </div>
+              <input type="range" id="cb-damping" min="0.01" max="2" step="0.01" value="0.5">
+            </div>
+
+            <!-- Recompute button -->
+            <div class="simulation-card" style="grid-column: 1 / -1;">
+              <button class="sim-btn primary" id="cb-recompute" style="width: 100%;">Recompute Layout</button>
             </div>
 
           </div>

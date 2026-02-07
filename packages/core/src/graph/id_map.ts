@@ -22,6 +22,9 @@ export interface IdMap<T extends IdLike = IdLike> {
   /** Add an ID and return its index */
   add: (id: T) => number;
 
+  /** Force-assign a specific index to an ID, bypassing the free list */
+  set: (id: T, index: number) => void;
+
   /** Get index for an ID (undefined if not found) */
   get: (id: T) => number | undefined;
 
@@ -54,8 +57,10 @@ export function createIdMap<T extends IdLike = IdLike>(): IdMap<T> {
   const idToIndex = new Map<T, number>();
   // Index -> ID mapping (array for O(1) index lookup)
   const indexToId: T[] = [];
-  // Free indices from removals (for reuse)
+  // Free indices from removals (for reuse) — stack for LIFO pop
   const freeIndices: number[] = [];
+  // O(1) membership check for free indices
+  const freeIndicesSet = new Set<number>();
 
   return {
     get size() {
@@ -73,6 +78,7 @@ export function createIdMap<T extends IdLike = IdLike>(): IdMap<T> {
       let index: number;
       if (freeIndices.length > 0) {
         index = freeIndices.pop()!;
+        freeIndicesSet.delete(index);
       } else {
         index = indexToId.length;
       }
@@ -84,12 +90,37 @@ export function createIdMap<T extends IdLike = IdLike>(): IdMap<T> {
       return index;
     },
 
+    set(id: T, index: number): void {
+      // Remove existing mapping for this ID if any
+      const existing = idToIndex.get(id);
+      if (existing !== undefined && existing !== index) {
+        freeIndices.push(existing);
+        freeIndicesSet.add(existing);
+      }
+
+      // Remove the free index entry if it was free
+      if (freeIndicesSet.has(index)) {
+        freeIndicesSet.delete(index);
+        const stackIdx = freeIndices.indexOf(index);
+        if (stackIdx >= 0) {
+          freeIndices.splice(stackIdx, 1);
+        }
+      }
+
+      // Store mappings
+      idToIndex.set(id, index);
+      indexToId[index] = id;
+    },
+
     get(id: T): number | undefined {
       return idToIndex.get(id);
     },
 
     getId(index: number): T | undefined {
       if (index < 0 || index >= indexToId.length) {
+        return undefined;
+      }
+      if (freeIndicesSet.has(index)) {
         return undefined;
       }
       return indexToId[index];
@@ -111,6 +142,7 @@ export function createIdMap<T extends IdLike = IdLike>(): IdMap<T> {
       // The index is added to freeIndices for potential reuse
 
       freeIndices.push(index);
+      freeIndicesSet.add(index);
 
       return index;
     },
@@ -119,15 +151,16 @@ export function createIdMap<T extends IdLike = IdLike>(): IdMap<T> {
       idToIndex.clear();
       indexToId.length = 0;
       freeIndices.length = 0;
+      freeIndicesSet.clear();
     },
 
     ids(): T[] {
-      return [...indexToId].filter((_, i) => !freeIndices.includes(i));
+      return [...indexToId].filter((_, i) => !freeIndicesSet.has(i));
     },
 
     *entries(): IterableIterator<[number, T]> {
       for (let i = 0; i < indexToId.length; i++) {
-        if (!freeIndices.includes(i)) {
+        if (!freeIndicesSet.has(i)) {
           yield [i, indexToId[i]];
         }
       }
@@ -199,10 +232,8 @@ export function deserializeIdMap<T extends IdLike>(data: {
 }): IdMap<T> {
   const map = createIdMap<T>();
 
-  // This is a simplified reconstruction
-  // For proper reconstruction, we'd need to handle the index mapping correctly
-  for (const id of data.ids) {
-    map.add(id);
+  for (let i = 0; i < data.ids.length; i++) {
+    map.set(data.ids[i], data.indices[i]);
   }
 
   return map;

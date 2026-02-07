@@ -206,7 +206,7 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
 
   // Viewport methods
   function pan(delta: Vec2): void {
-    graph.value?.pan(delta);
+    graph.value?.pan(delta.x, delta.y);
   }
 
   function zoom(scale: number, center?: Vec2): void {
@@ -218,12 +218,12 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   }
 
   function resetView(): void {
-    graph.value?.resetView();
+    graph.value?.fitToView();
   }
 
   // Node operations
   function setNodePosition(nodeId: NodeId, position: Vec2): void {
-    graph.value?.setNodePosition(nodeId, position);
+    graph.value?.setNodePosition(nodeId, position.x, position.y);
   }
 
   function pinNode(nodeId: NodeId): void {

@@ -6,7 +6,6 @@
  * @module
  */
 
-import { onDestroy } from "svelte";
 import type {
   GraphConfig,
   GraphInput,
@@ -143,7 +142,7 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
 
   // Viewport methods
   function pan(delta: Vec2): void {
-    graph?.pan(delta);
+    graph?.pan(delta.x, delta.y);
   }
 
   function zoom(scale: number, center?: Vec2): void {
@@ -155,12 +154,12 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
   }
 
   function resetView(): void {
-    graph?.resetView();
+    graph?.fitToView();
   }
 
   // Node operations
   function setNodePosition(nodeId: NodeId, position: Vec2): void {
-    graph?.setNodePosition(nodeId, position);
+    graph?.setNodePosition(nodeId, position.x, position.y);
   }
 
   function pinNode(nodeId: NodeId): void {
@@ -170,14 +169,6 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
   function unpinNode(nodeId: NodeId): void {
     graph?.unpinNode(nodeId);
   }
-
-  // Cleanup on component destroy
-  onDestroy(() => {
-    if (graph) {
-      graph.dispose();
-      graph = null;
-    }
-  });
 
   return {
     // State (use getter functions for reactivity)

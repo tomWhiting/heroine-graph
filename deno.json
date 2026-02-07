@@ -19,9 +19,10 @@
     "fmt": "deno fmt",
     "check": "deno check packages/core/mod.ts",
     "bench": "deno bench --allow-read --allow-net tests/benchmarks/",
-    "storybook": "npx storybook dev -p 6006",
+    "storybook": "npx storybook dev -p 6006 --ci",
     "storybook:build": "npx storybook build",
-    "storybook:clean": "rm -rf node_modules/.cache"
+    "storybook:clean": "rm -rf node_modules/.cache",
+    "example:mission-control": "deno vite examples/mission-control"
   },
   "compilerOptions": {
     "strict": true,

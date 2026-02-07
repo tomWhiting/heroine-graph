@@ -154,6 +154,12 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
     const [isInitialized, setIsInitialized] = useState(false);
     const [error, setError] = useState<Error | null>(null);
 
+    // Store callback refs to avoid re-init on callback identity change
+    const onReadyRef = useRef(onReady);
+    onReadyRef.current = onReady;
+    const onErrorRef = useRef(onError);
+    onErrorRef.current = onError;
+
     // Expose ref handle
     useImperativeHandle(ref, () => ({
       getGraph: () => graphRef.current,
@@ -190,11 +196,11 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
 
           graphRef.current = graph;
           setIsInitialized(true);
-          onReady?.(graph);
+          onReadyRef.current?.(graph);
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
           setError(error);
-          onError?.(error);
+          onErrorRef.current?.(error);
         }
       }
 
@@ -208,7 +214,7 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
         }
         setIsInitialized(false);
       };
-    }, [config, debug, onReady, onError]);
+    }, [config, debug]);
 
     // Register event handlers
     useEffect(() => {
@@ -301,9 +307,9 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
       graph.load(data).catch((err) => {
         const error = err instanceof Error ? err : new Error(String(err));
         setError(error);
-        onError?.(error);
+        onErrorRef.current?.(error);
       });
-    }, [data, isInitialized, onError]);
+    }, [data, isInitialized]);
 
     // Handle resize
     const handleResize = useCallback(() => {

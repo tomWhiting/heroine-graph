@@ -162,7 +162,7 @@ export function initializeSpiral(
   const maxAngle = turns * 2 * Math.PI;
 
   for (let i = 0; i < count; i++) {
-    const t = i / (count - 1); // 0 to 1
+    const t = count > 1 ? i / (count - 1) : 0;
     const angle = t * maxAngle;
     const r = t * radius;
 

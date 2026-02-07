@@ -211,7 +211,7 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
 
   // Viewport methods
   const pan = useCallback((delta: Vec2) => {
-    graphRef.current?.pan(delta);
+    graphRef.current?.pan(delta.x, delta.y);
   }, []);
 
   const zoom = useCallback((scale: number, center?: Vec2) => {
@@ -223,12 +223,12 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   }, []);
 
   const resetView = useCallback(() => {
-    graphRef.current?.resetView();
+    graphRef.current?.fitToView();
   }, []);
 
   // Node operations
   const setNodePosition = useCallback((nodeId: NodeId, position: Vec2) => {
-    graphRef.current?.setNodePosition(nodeId, position);
+    graphRef.current?.setNodePosition(nodeId, position.x, position.y);
   }, []);
 
   const pinNode = useCallback((nodeId: NodeId) => {

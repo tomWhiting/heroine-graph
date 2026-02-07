@@ -147,6 +147,8 @@ import {
   initializeBuiltinAlgorithms,
   RelativityAtlasAlgorithm,
   TidyTreeAlgorithm,
+  CommunityLayoutAlgorithm,
+  CodebaseLayoutAlgorithm,
   uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
 import {
@@ -193,6 +195,30 @@ interface WasmEngine extends SpatialQueryEngine {
     siblingSeparation: number,
     subtreeSeparation: number,
     radial: boolean,
+  ): Float32Array;
+  /** Get upper bound on node indices (max index + 1) */
+  nodeBound(): number;
+  /** Detect communities using Louvain algorithm. Returns assignments array with community count as last element. */
+  detectCommunities(
+    resolution: number,
+    maxIterations: number,
+    minModularityGain: number,
+  ): Uint32Array;
+  /** Detect communities and compute layout in a single call (legacy — prefer detectCommunities) */
+  computeCommunityLayoutFromGraph(
+    resolution: number,
+    maxIterations: number,
+    communitySpacing: number,
+    nodeSpacing: number,
+    spreadFactor: number,
+  ): Float32Array;
+  /** Compute codebase layout using the graph's own edges */
+  computeCodebaseLayoutFromGraph(
+    nodeCategories: Uint8Array,
+    rootId: number,
+    directoryPadding: number,
+    filePadding: number,
+    spreadFactor: number,
   ): Float32Array;
 }
 
@@ -724,6 +750,10 @@ export class HeroineGraph {
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
+        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
       };
       this.currentAlgorithm.updateUniforms(device, this.algorithmBuffers, context);
     }
@@ -857,6 +887,10 @@ export class HeroineGraph {
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds: this.frameBounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
+        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -970,13 +1004,16 @@ export class HeroineGraph {
       );
     }
 
-    // Render nodes (on top)
+    // Render nodes (on top) — use nodeHighWater as instance count so all
+    // occupied slots are drawn. Dead slots (from removals) have radius=0
+    // and are invisible; using nodeCount would skip live nodes in high slots.
+    const nodeInstanceCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
     if (
       this.nodePipeline &&
       this.viewportBindGroup &&
       this.nodeBindGroup &&
       this.renderConfigBindGroup &&
-      this.state.nodeCount > 0
+      nodeInstanceCount > 0
     ) {
       renderNodes(
         renderPass,
@@ -984,7 +1021,7 @@ export class HeroineGraph {
         this.viewportBindGroup,
         this.nodeBindGroup,
         this.renderConfigBindGroup,
-        this.state.nodeCount,
+        nodeInstanceCount,
       );
     }
 
@@ -1313,6 +1350,10 @@ export class HeroineGraph {
         edgeCount: parsed.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: parsed.edgeSources,
+        edgeTargetsData: parsed.edgeTargets,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -1691,8 +1732,9 @@ export class HeroineGraph {
     const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
     if (slot === undefined) return false;
 
-    // Remove all connected edges first
-    const connectedEdges = new Set(gs.getConnectedEdges(slot));
+    // Remove all connected edges first — sort descending so swap-remove only
+    // moves edges from higher indices to lower, not affecting edges still to process
+    const connectedEdges = [...gs.getConnectedEdges(slot)].sort((a, b) => b - a);
     for (const edgeIndex of connectedEdges) {
       await this.removeEdgeByIndex(edgeIndex);
     }
@@ -1829,7 +1871,8 @@ export class HeroineGraph {
     if (!this.graphState) return false;
 
     const gs = this.graphState;
-    const slot = typeof id === "number" && id < gs.edgeCount ? id : gs.edgeIdMap.get(id);
+    // Always resolve through IdMap — numeric shortcut is invalid after swap-remove
+    const slot = gs.edgeIdMap.get(id);
     if (slot === undefined) return false;
 
     return this.removeEdgeByIndex(slot);
@@ -1857,10 +1900,10 @@ export class HeroineGraph {
     // Perform swap-remove on CPU shadow
     const swappedFromIndex = gs.freeEdgeSlot(index);
 
-    // Update the swapped edge's ID map entry
+    // Update the swapped edge's ID map entry — force-assign to the vacated slot
     if (swappedId !== undefined && swappedFromIndex >= 0) {
       gs.edgeIdMap.remove(swappedId);
-      gs.edgeIdMap.add(swappedId); // Re-add at new position
+      gs.edgeIdMap.set(swappedId, index);
     }
 
     // Write the swapped edge data to GPU at the vacated slot
@@ -1997,23 +2040,15 @@ export class HeroineGraph {
    * @returns Number of nodes actually removed
    */
   async removeNodes(ids: (NodeId | string)[]): Promise<number> {
-    let removed = 0;
-    for (const id of ids) {
-      if (await this.removeNode(id)) removed++;
+    if (ids.length === 0) return 0;
+    if (ids.length === 1) {
+      const ok = await this.removeNode(ids[0]);
+      return ok ? 1 : 0;
     }
 
-    if (removed > 0) {
-      this.events.emit({
-        type: "graph:mutate",
-        timestamp: Date.now(),
-        nodesAdded: 0,
-        nodesRemoved: removed,
-        edgesAdded: 0,
-        edgesRemoved: 0,
-      });
-    }
-
-    return removed;
+    // Delegate to batch for O(N+E) instead of O(N^2)
+    const result = await this.removeNodesBatch(ids);
+    return result.removedCount;
   }
 
   /**
@@ -2052,7 +2087,7 @@ export class HeroineGraph {
         typeof id === "number" && id < gs.nodeHighWater
           ? id
           : gs.nodeIdMap.get(id);
-      if (slot !== undefined && !gs.nodeFreeList.includes(slot)) {
+      if (slot !== undefined && !gs.nodeFreeSet.has(slot)) {
         slotsToRemove.add(slot);
       }
     }
@@ -2164,6 +2199,7 @@ export class HeroineGraph {
     gs.nodeCount = nodeWriteIdx;
     gs.nodeHighWater = nodeWriteIdx;
     gs.nodeFreeList = [];
+    gs.nodeFreeSet.clear();
 
     // Rebuild nodeIdMap with compact indices
     gs.nodeIdMap.clear();
@@ -2659,6 +2695,10 @@ export class HeroineGraph {
       edgeCount: gs.edgeCount,
       forceConfig: this.forceConfig,
       bounds,
+      edgeSources: this.simBuffers.edgeSources,
+      edgeTargets: this.simBuffers.edgeTargets,
+      edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
+      edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
     };
 
     this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -2815,6 +2855,10 @@ export class HeroineGraph {
         edgeCount: gs.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
+        edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -2969,6 +3013,10 @@ export class HeroineGraph {
         edgeCount: gs.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
+        edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -3276,6 +3324,10 @@ export class HeroineGraph {
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
+        edgeSources: this.simBuffers.edgeSources,
+        edgeTargets: this.simBuffers.edgeTargets,
+        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
+        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
       };
 
       this.algorithmBindGroups = algorithm.createBindGroups(
@@ -3341,6 +3393,126 @@ export class HeroineGraph {
     );
 
     // Reheat simulation so spring forces can animate toward targets
+    this.simulationController.setAlpha(1.0);
+  }
+
+  /**
+   * Compute community layout and upload target positions to GPU.
+   *
+   * Detects communities using Louvain modularity optimization, then computes
+   * a circular cluster layout. The current algorithm must be "community".
+   *
+   * @param rootId - Unused (present for API symmetry with tree layout)
+   */
+  computeCommunityLayout(): void {
+    if (!this.wasmEngine) {
+      throw new HeroineGraphError(
+        ErrorCode.WASM_LOAD_FAILED,
+        "WASM engine not available for community layout computation",
+      );
+    }
+
+    if (!(this.currentAlgorithm instanceof CommunityLayoutAlgorithm)) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Community layout requires community algorithm. Call setForceAlgorithm('community') first.",
+      );
+    }
+
+    const config = this.forceConfig;
+
+    // Detect communities via Louvain (returns assignments + count as last element)
+    const raw = this.wasmEngine.detectCommunities(
+      config.communityResolution,
+      config.communityMaxIterations,
+      0.0001, // convergence threshold
+    );
+
+    // Last element is community count, rest are assignments
+    const communityCount = raw[raw.length - 1];
+    const assignments = new Uint32Array(raw.buffer as ArrayBuffer, raw.byteOffset, raw.length - 1);
+
+    // Log community detection results for diagnostics
+    const commDistribution = new Map<number, number>();
+    for (let i = 0; i < assignments.length; i++) {
+      commDistribution.set(assignments[i], (commDistribution.get(assignments[i]) ?? 0) + 1);
+    }
+    const sizes = [...commDistribution.values()].sort((a, b) => b - a);
+    console.log(
+      `[Community] Detected ${communityCount} communities from ${assignments.length} nodes. ` +
+      `Largest: ${sizes.slice(0, 5).join(", ")}`,
+    );
+
+    this.currentAlgorithm.uploadCommunityIds(
+      this.gpuContext.device,
+      assignments,
+      communityCount,
+    );
+
+    // Reheat simulation so cluster forces can take effect
+    this.simulationController.setAlpha(1.0);
+  }
+
+  /**
+   * Compute codebase layout and upload target positions to GPU.
+   *
+   * Uses the graph's edges as containment hierarchy and produces a
+   * circle-packing layout. The current algorithm must be "codebase".
+   *
+   * @param nodeCategories - Uint8Array mapping node IDs to categories
+   *   (0=repo, 1=dir, 2=file, 3=symbol, 4=other).
+   *   If not provided, all nodes are treated as "other" (category 4).
+   * @param rootId - Root node ID, or undefined for auto-detection
+   */
+  computeCodebaseLayout(
+    _nodeCategories?: Uint8Array,
+    _rootId?: number,
+  ): void {
+    if (!this.wasmEngine) {
+      throw new HeroineGraphError(
+        ErrorCode.WASM_LOAD_FAILED,
+        "WASM engine not available for codebase layout computation",
+      );
+    }
+
+    if (!(this.currentAlgorithm instanceof CodebaseLayoutAlgorithm)) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Codebase layout requires codebase algorithm. Call setForceAlgorithm('codebase') first.",
+      );
+    }
+
+    const config = this.forceConfig;
+
+    // Detect communities via Louvain using the graph's natural structure.
+    // For hierarchical codebases, Louvain detects subtree clusters automatically.
+    const raw = this.wasmEngine.detectCommunities(
+      config.communityResolution,
+      config.communityMaxIterations,
+      0.0001,
+    );
+
+    const communityCount = raw[raw.length - 1];
+    const assignments = new Uint32Array(raw.buffer as ArrayBuffer, raw.byteOffset, raw.length - 1);
+
+    // Log community detection results for diagnostics
+    const commDist = new Map<number, number>();
+    for (let i = 0; i < assignments.length; i++) {
+      commDist.set(assignments[i], (commDist.get(assignments[i]) ?? 0) + 1);
+    }
+    const sizes2 = [...commDist.values()].sort((a, b) => b - a);
+    console.log(
+      `[Codebase] Detected ${communityCount} communities from ${assignments.length} nodes. ` +
+      `Largest: ${sizes2.slice(0, 5).join(", ")}`,
+    );
+
+    this.currentAlgorithm.uploadCommunityIds(
+      this.gpuContext.device,
+      assignments,
+      communityCount,
+    );
+
+    // Reheat simulation so cluster forces can take effect
     this.simulationController.setAlpha(1.0);
   }
 

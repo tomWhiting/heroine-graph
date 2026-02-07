@@ -74,6 +74,7 @@ export class LabelsLayer implements Layer {
   private maxGlyphCapacity: number = 10000;
   private needsRebuild: boolean = true;
   private _order: number = 100; // Labels render on top
+  private isInitialized: boolean = false;
 
   constructor(
     id: string,
@@ -90,8 +91,11 @@ export class LabelsLayer implements Layer {
       labelPadding: this.config.labelPadding,
     });
 
-    // Start loading font atlas
+    // Start loading font atlas and auto-initialize
     this.atlasLoading = this.loadAtlas();
+    this.initialize().catch((err) => {
+      console.error("[HeroineGraph] LabelsLayer initialization failed:", err);
+    });
   }
 
   get enabled(): boolean {
@@ -172,7 +176,7 @@ export class LabelsLayer implements Layer {
 
     this.labelUniformBuffer = device.createBuffer({
       label: "Label Uniforms",
-      size: 32, // vec4 + 4 floats = 32 bytes
+      size: 48, // vec4 + 4 floats + atlas_font_size + 3 padding = 48 bytes
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -307,6 +311,7 @@ export class LabelsLayer implements Layer {
     });
 
     this.needsRebuild = false;
+    this.isInitialized = true;
   }
 
   /**
@@ -371,8 +376,8 @@ export class LabelsLayer implements Layer {
       return;
     }
 
-    if (!this.fontAtlas || !this.pipeline || this.needsRebuild) {
-      // Not ready yet
+    if (!this.isInitialized || !this.fontAtlas || !this.pipeline || this.needsRebuild) {
+      // Not ready yet - initialization is in progress
       return;
     }
 
@@ -458,6 +463,7 @@ export class LabelsLayer implements Layer {
 
     // Update label uniforms
     const [r, g, b, a] = parseColor(this.config.fontColor);
+    const atlasFontSize = this.fontAtlas.info?.size ?? 42;
     const labelData = new Float32Array([
       r,
       g,
@@ -467,6 +473,10 @@ export class LabelsLayer implements Layer {
       this.fontAtlas.distanceRange,
       this.fontAtlas.common.scaleW,
       this.fontAtlas.common.scaleH,
+      atlasFontSize, // atlas_font_size
+      0, // _pad0
+      0, // _pad1
+      0, // _pad2
     ]);
     device.queue.writeBuffer(this.labelUniformBuffer!, 0, labelData);
 

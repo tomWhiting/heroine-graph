@@ -12,7 +12,7 @@ import type { FullForceConfig } from "../config.ts";
 /**
  * Available force algorithm types
  */
-export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree";
+export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree" | "linlog" | "t-fdp" | "community" | "codebase";
 
 /**
  * Algorithm metadata for display
@@ -55,6 +55,8 @@ export class EmptyAlgorithmBuffers implements AlgorithmBuffers {
 export interface AlgorithmBindGroups {
   /** Repulsion pass bind group */
   repulsion: GPUBindGroup;
+  /** Additional named bind groups for multi-phase algorithms */
+  [key: string]: GPUBindGroup;
 }
 
 /**
@@ -63,6 +65,8 @@ export interface AlgorithmBindGroups {
 export interface AlgorithmPipelines {
   /** Repulsion compute pipeline */
   repulsion: GPUComputePipeline;
+  /** Additional named pipelines for multi-phase algorithms */
+  [key: string]: GPUComputePipeline;
 }
 
 /**
@@ -90,6 +94,14 @@ export interface AlgorithmRenderContext {
     maxX: number;
     maxY: number;
   } | undefined;
+  /** Edge source indices buffer (for algorithms that handle their own springs) */
+  edgeSources?: GPUBuffer;
+  /** Edge target indices buffer (for algorithms that handle their own springs) */
+  edgeTargets?: GPUBuffer;
+  /** CPU-side edge source indices (for degree computation without GPU readback) */
+  edgeSourcesData?: Uint32Array | undefined;
+  /** CPU-side edge target indices (for degree computation without GPU readback) */
+  edgeTargetsData?: Uint32Array | undefined;
 }
 
 /**

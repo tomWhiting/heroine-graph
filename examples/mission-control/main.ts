@@ -1880,9 +1880,13 @@ async function main(): Promise<void> {
   const algorithmVal = $("force-algorithm-val");
   const raControls = $("relativity-controls");
   const ttControls = $("tidy-tree-controls");
+  const llControls = document.getElementById("linlog-controls");
+  const tfdpControls = document.getElementById("t-fdp-controls");
+  const commControls = document.getElementById("community-controls");
+  const cbControls = document.getElementById("codebase-controls");
 
   algorithmSelect.addEventListener("change", () => {
-    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree";
+    const type = algorithmSelect.value as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree" | "linlog" | "t-fdp" | "community" | "codebase";
     try {
       state.graph?.setForceAlgorithm(type);
       const algorithms = state.graph?.getAvailableAlgorithms() ?? [];
@@ -1897,6 +1901,18 @@ async function main(): Promise<void> {
       if (ttControls) {
         ttControls.style.display = type === "tidy-tree" ? "block" : "none";
       }
+      if (llControls) {
+        llControls.style.display = type === "linlog" ? "block" : "none";
+      }
+      if (tfdpControls) {
+        tfdpControls.style.display = type === "t-fdp" ? "block" : "none";
+      }
+      if (commControls) {
+        commControls.style.display = type === "community" ? "block" : "none";
+      }
+      if (cbControls) {
+        cbControls.style.display = type === "codebase" ? "block" : "none";
+      }
 
       // Auto-compute tree layout when switching to tidy-tree
       if (type === "tidy-tree" && state.graph) {
@@ -1905,6 +1921,44 @@ async function main(): Promise<void> {
           console.log("Auto-computed tree layout on algorithm switch");
         } catch (err) {
           console.warn("Could not auto-compute tree layout:", err);
+        }
+      }
+
+      // Auto-compute community layout when switching to community
+      if (type === "community" && state.graph) {
+        try {
+          state.graph.computeCommunityLayout();
+          console.log("Auto-computed community layout on algorithm switch");
+        } catch (err) {
+          console.warn("Could not auto-compute community layout:", err);
+        }
+      }
+
+      // Auto-compute codebase layout when switching to codebase
+      if (type === "codebase" && state.graph) {
+        try {
+          // Map node types to categories if codebase data is available
+          let categories: Uint8Array | undefined;
+          if (state.codebaseData) {
+            const nodeBound = state.graph.nodeCount;
+            categories = new Uint8Array(nodeBound);
+            for (const node of state.codebaseData.nodes) {
+              if (node.id < nodeBound) {
+                switch (node.type) {
+                  case "repository": categories[node.id] = 0; break;
+                  case "directory": categories[node.id] = 1; break;
+                  case "file": categories[node.id] = 2; break;
+                  case "function": case "class": case "method": case "variable": case "interface": case "type":
+                    categories[node.id] = 3; break;
+                  default: categories[node.id] = 4; break;
+                }
+              }
+            }
+          }
+          state.graph.computeCodebaseLayout(categories);
+          console.log("Auto-computed codebase layout on algorithm switch");
+        } catch (err) {
+          console.warn("Could not auto-compute codebase layout:", err);
         }
       }
     } catch (e) {
@@ -1972,6 +2026,13 @@ async function main(): Promise<void> {
     (v) => state.graph?.setForceConfig({ maxVelocity: v }),
   );
 
+  // Pin root node (node 0 stays at center)
+  $input("pin-root-node").addEventListener("change", (e) => {
+    const pinned = (e.target as HTMLInputElement).checked;
+    state.graph?.setForceConfig({ pinnedNode: pinned ? 0 : 0xFFFFFFFF });
+    console.log(`Pin root node: ${pinned ? "enabled" : "disabled"}`);
+  });
+
   // ========================================================================
   // Relativity Atlas Controls
   // ========================================================================
@@ -2038,7 +2099,7 @@ async function main(): Promise<void> {
     (v) => v.toFixed(2),
   );
 
-  // Cousin repulsion toggle (future feature - wired but disabled)
+  // Cousin repulsion toggle (2-hop: same grandparent)
   $input("ra-cousin-enabled").addEventListener("change", (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
     state.graph?.setForceConfig({ relativityCousinRepulsion: enabled });
@@ -2053,18 +2114,122 @@ async function main(): Promise<void> {
     (v) => v.toFixed(2),
   );
 
-  // Phantom zones toggle (future feature - wired but disabled)
+  // Phantom zones toggle (mass-based collision boundaries)
   $input("ra-phantom-enabled").addEventListener("change", (e) => {
     const enabled = (e.target as HTMLInputElement).checked;
     state.graph?.setForceConfig({ relativityPhantomZone: enabled });
     console.log(`Phantom zones: ${enabled ? "enabled" : "disabled"}`);
   });
 
+  // Density repulsion (cross-subtree repulsion via density field)
+  setupSlider(
+    "ra-density-repulsion",
+    "ra-density-repulsion-val",
+    (v) => state.graph?.setForceConfig({ relativityDensityRepulsion: v }),
+    (v) => v.toFixed(2),
+  );
+
   // Phantom multiplier
   setupSlider(
     "ra-phantom-mult",
     "ra-phantom-mult-val",
     (v) => state.graph?.setForceConfig({ relativityPhantomMultiplier: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Orbit strength (radial spring pulling children to target orbit radius)
+  setupSlider(
+    "ra-orbit-strength",
+    "ra-orbit-strength-val",
+    (v) => state.graph?.setForceConfig({ relativityOrbitStrength: v }),
+    (v) => v.toFixed(1),
+  );
+
+  // Tangential amplifier (>1 spreads siblings angularly around parent)
+  setupSlider(
+    "ra-tangential-mult",
+    "ra-tangential-mult-val",
+    (v) => state.graph?.setForceConfig({ relativityTangentialMultiplier: v }),
+    (v) => v.toFixed(1),
+  );
+
+  // Orbit radius (base distance from parent, scales with sqrt(sibling count))
+  setupSlider(
+    "ra-orbit-radius",
+    "ra-orbit-radius-val",
+    (v) => state.graph?.setForceConfig({ relativityOrbitRadius: v }),
+    (v) => v.toFixed(0),
+  );
+
+  // ========================================================================
+  // LinLog Controls
+  // ========================================================================
+
+  // LinLog scaling (kr)
+  setupSlider(
+    "ll-scaling",
+    "ll-scaling-val",
+    (v) => state.graph?.setForceConfig({ linlogScaling: v }),
+    (v) => v.toFixed(1),
+  );
+
+  // LinLog gravity (kg)
+  setupSlider(
+    "ll-gravity",
+    "ll-gravity-val",
+    (v) => state.graph?.setForceConfig({ linlogGravity: v }),
+    (v) => v.toFixed(1),
+  );
+
+  // LinLog edge weight influence
+  setupSlider(
+    "ll-weight",
+    "ll-weight-val",
+    (v) => state.graph?.setForceConfig({ linlogEdgeWeightInfluence: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // LinLog strong gravity toggle
+  const llStrongGravity = document.getElementById("ll-strong-gravity") as HTMLInputElement | null;
+  llStrongGravity?.addEventListener("change", (e) => {
+    const enabled = (e.target as HTMLInputElement).checked;
+    state.graph?.setForceConfig({ linlogStrongGravity: enabled });
+    console.log(`LinLog strong gravity: ${enabled ? "enabled" : "disabled"}`);
+  });
+
+  // ========================================================================
+  // t-FDP Controls
+  // ========================================================================
+
+  // t-FDP gamma
+  setupSlider(
+    "tfdp-gamma",
+    "tfdp-gamma-val",
+    (v) => state.graph?.setForceConfig({ tFdpGamma: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // t-FDP repulsion scale
+  setupSlider(
+    "tfdp-repulsion",
+    "tfdp-repulsion-val",
+    (v) => state.graph?.setForceConfig({ tFdpRepulsionScale: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // t-FDP alpha (linear spring weight)
+  setupSlider(
+    "tfdp-alpha",
+    "tfdp-alpha-val",
+    (v) => state.graph?.setForceConfig({ tFdpAlpha: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // t-FDP beta (attractive t-force weight)
+  setupSlider(
+    "tfdp-beta",
+    "tfdp-beta-val",
+    (v) => state.graph?.setForceConfig({ tFdpBeta: v }),
     (v) => v.toFixed(2),
   );
 
@@ -2127,6 +2292,138 @@ async function main(): Promise<void> {
       console.log("Tree layout computed and uploaded to GPU");
     } catch (err) {
       console.error("Failed to compute tree layout:", err);
+    }
+  });
+
+  // ========================================================================
+  // Community Layout Controls
+  // ========================================================================
+
+  // Resolution (higher = more communities)
+  setupSlider(
+    "comm-resolution",
+    "comm-resolution-val",
+    (v) => state.graph?.setForceConfig({ communityResolution: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Cluster spacing
+  setupSlider(
+    "comm-spacing",
+    "comm-spacing-val",
+    (v) => state.graph?.setForceConfig({ communitySpacing: v }),
+  );
+
+  // Node spacing within community
+  setupSlider(
+    "comm-node-spacing",
+    "comm-node-spacing-val",
+    (v) => state.graph?.setForceConfig({ communityNodeSpacing: v }),
+  );
+
+  // Spread factor
+  setupSlider(
+    "comm-spread",
+    "comm-spread-val",
+    (v) => state.graph?.setForceConfig({ communitySpreadFactor: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Stiffness (spring strength toward target)
+  setupSlider(
+    "comm-stiffness",
+    "comm-stiffness-val",
+    (v) => state.graph?.setForceConfig({ communityStiffness: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Damping
+  setupSlider(
+    "comm-damping",
+    "comm-damping-val",
+    (v) => state.graph?.setForceConfig({ communityDamping: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Recompute button - triggers Louvain detection and layout upload
+  $("comm-recompute").addEventListener("click", () => {
+    if (!state.graph) return;
+    try {
+      state.graph.computeCommunityLayout();
+      console.log("Community layout computed and uploaded to GPU");
+    } catch (err) {
+      console.error("Failed to compute community layout:", err);
+    }
+  });
+
+  // ========================================================================
+  // Codebase Layout Controls
+  // ========================================================================
+
+  // Directory padding
+  setupSlider(
+    "cb-dir-padding",
+    "cb-dir-padding-val",
+    (v) => state.graph?.setForceConfig({ codebaseDirectoryPadding: v }),
+  );
+
+  // File padding
+  setupSlider(
+    "cb-file-padding",
+    "cb-file-padding-val",
+    (v) => state.graph?.setForceConfig({ codebaseFilePadding: v }),
+  );
+
+  // Spread factor
+  setupSlider(
+    "cb-spread",
+    "cb-spread-val",
+    (v) => state.graph?.setForceConfig({ codebaseSpreadFactor: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Stiffness (spring strength toward target)
+  setupSlider(
+    "cb-stiffness",
+    "cb-stiffness-val",
+    (v) => state.graph?.setForceConfig({ codebaseStiffness: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Damping
+  setupSlider(
+    "cb-damping",
+    "cb-damping-val",
+    (v) => state.graph?.setForceConfig({ codebaseDamping: v }),
+    (v) => v.toFixed(2),
+  );
+
+  // Recompute button - triggers circle packing layout and upload
+  $("cb-recompute").addEventListener("click", () => {
+    if (!state.graph) return;
+    try {
+      // Build node categories from codebase data if available
+      let categories: Uint8Array | undefined;
+      if (state.codebaseData) {
+        const nodeBound = state.graph.nodeCount;
+        categories = new Uint8Array(nodeBound);
+        for (const node of state.codebaseData.nodes) {
+          if (node.id < nodeBound) {
+            switch (node.type) {
+              case "repository": categories[node.id] = 0; break;
+              case "directory": categories[node.id] = 1; break;
+              case "file": categories[node.id] = 2; break;
+              case "function": case "class": case "method": case "variable": case "interface": case "type":
+                categories[node.id] = 3; break;
+              default: categories[node.id] = 4; break;
+            }
+          }
+        }
+      }
+      state.graph.computeCodebaseLayout(categories);
+      console.log("Codebase layout computed and uploaded to GPU");
+    } catch (err) {
+      console.error("Failed to compute codebase layout:", err);
     }
   });
 
@@ -2754,10 +3051,595 @@ async function main(): Promise<void> {
   }
 
   // ========================================================================
-  // Load Initial Data
+  // Load Config from JSON
   // ========================================================================
 
-  await loadNodes(1000);
+  /**
+   * Helper to set a slider value and its display element.
+   * Updates the HTML input and the visible value label.
+   */
+  function setSlider(
+    inputId: string,
+    valueId: string,
+    value: number,
+    format: (v: number) => string = (v) => v.toString(),
+  ): void {
+    const input = document.getElementById(inputId) as HTMLInputElement | null;
+    const display = document.getElementById(valueId) as HTMLElement | null;
+    if (input) input.value = String(value);
+    if (display) display.textContent = format(value);
+  }
+
+  /**
+   * Helper to set a select dropdown value.
+   */
+  function setSelect(selectId: string, value: string): void {
+    const el = document.getElementById(selectId) as HTMLSelectElement | null;
+    if (el) el.value = value;
+  }
+
+  /**
+   * Helper to set a checkbox.
+   */
+  function setCheckbox(checkboxId: string, checked: boolean): void {
+    const el = document.getElementById(checkboxId) as HTMLInputElement | null;
+    if (el) el.checked = checked;
+  }
+
+  /**
+   * Helper to set a color input.
+   */
+  function setColor(colorId: string, value: string): void {
+    const el = document.getElementById(colorId) as HTMLInputElement | null;
+    if (el) el.value = value;
+  }
+
+  /**
+   * Convert hex color string to RGBA tuple (0-1 range).
+   */
+  function hexToRgbaTuple(hex: string): readonly [number, number, number, number] {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return [r, g, b, 1.0] as const;
+  }
+
+  /**
+   * Load config.json and apply all settings to both the graph API and UI controls.
+   * Falls back to defaults if config.json is missing or malformed.
+   */
+  async function loadConfig(): Promise<void> {
+    let config: Record<string, unknown>;
+    try {
+      const resp = await fetch("/config.json");
+      if (!resp.ok) {
+        console.warn(`config.json not found (${resp.status}), using defaults`);
+        await loadNodes(1000);
+        return;
+      }
+      config = await resp.json();
+      console.log("Loaded config.json:", config);
+    } catch (err) {
+      console.warn("Failed to load config.json, using defaults:", err);
+      await loadNodes(1000);
+      return;
+    }
+
+    const g = config.generator as Record<string, unknown> | undefined;
+    const f = config.force as Record<string, unknown> | undefined;
+    const ra = config.relativityAtlas as Record<string, unknown> | undefined;
+    const ll = config.linlog as Record<string, unknown> | undefined;
+    const tfdp = config.tFdp as Record<string, unknown> | undefined;
+    const tt = config.tidyTree as Record<string, unknown> | undefined;
+    const comm = config.community as Record<string, unknown> | undefined;
+    const cb = config.codebase as Record<string, unknown> | undefined;
+    const disp = config.display as Record<string, unknown> | undefined;
+    const hm = config.heatmap as Record<string, unknown> | undefined;
+    const ct = config.contours as Record<string, unknown> | undefined;
+    const mb = config.metaballs as Record<string, unknown> | undefined;
+    const lb = config.labels as Record<string, unknown> | undefined;
+    const ns = config.nodeStyle as Record<string, unknown> | undefined;
+    const es = config.edgeStyle as Record<string, unknown> | undefined;
+    const ef = config.edgeFlow as Record<string, unknown> | undefined;
+
+    // --- Generator ---
+    if (g) {
+      if (g.type) setSelect("graph-type", String(g.type));
+      if (g.branching != null) {
+        setSlider("branch-factor", "branch-factor-val", Number(g.branching));
+      }
+    }
+
+    // --- Force Algorithm ---
+    if (f?.algorithm) {
+      const alg = String(f.algorithm) as "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree" | "linlog" | "t-fdp" | "community" | "codebase";
+      try {
+        state.graph?.setForceAlgorithm(alg);
+        setSelect("force-algorithm", alg);
+
+        // Update algorithm display name
+        const algorithms = state.graph?.getAvailableAlgorithms() ?? [];
+        const selected = algorithms.find((a) => a.id === alg);
+        $("force-algorithm-val").textContent = selected?.name ?? alg;
+
+        // Show/hide algorithm-specific controls
+        const raCtrl = document.getElementById("relativity-controls");
+        const ttCtrl = document.getElementById("tidy-tree-controls");
+        const llCtrl = document.getElementById("linlog-controls");
+        const tfdpCtrl = document.getElementById("t-fdp-controls");
+        const commCtrl = document.getElementById("community-controls");
+        const cbCtrl = document.getElementById("codebase-controls");
+        if (raCtrl) raCtrl.style.display = alg === "relativity-atlas" ? "block" : "none";
+        if (ttCtrl) ttCtrl.style.display = alg === "tidy-tree" ? "block" : "none";
+        if (llCtrl) llCtrl.style.display = alg === "linlog" ? "block" : "none";
+        if (tfdpCtrl) tfdpCtrl.style.display = alg === "t-fdp" ? "block" : "none";
+        if (commCtrl) commCtrl.style.display = alg === "community" ? "block" : "none";
+        if (cbCtrl) cbCtrl.style.display = alg === "codebase" ? "block" : "none";
+      } catch (e) {
+        console.error("Failed to set algorithm from config:", e);
+      }
+    }
+
+    // --- Force Config ---
+    if (f) {
+      const forceConfig: Record<string, unknown> = {};
+
+      if (f.repulsion != null) {
+        forceConfig.repulsionStrength = -Math.abs(Number(f.repulsion));
+        setSlider("force-repulsion", "force-repulsion-val", Math.abs(Number(f.repulsion)));
+      }
+      if (f.springStrength != null) {
+        forceConfig.springStrength = Number(f.springStrength);
+        setSlider("force-spring", "force-spring-val", Number(f.springStrength), (v) => v.toFixed(2));
+      }
+      if (f.linkDistance != null) {
+        forceConfig.springLength = Number(f.linkDistance);
+        setSlider("force-distance", "force-distance-val", Number(f.linkDistance));
+      }
+      if (f.centerGravity != null) {
+        forceConfig.centerStrength = Number(f.centerGravity);
+        setSlider("force-center", "force-center-val", Number(f.centerGravity), (v) => v.toFixed(2));
+      }
+      if (f.damping != null) {
+        forceConfig.velocityDecay = Number(f.damping);
+        setSlider("force-damping", "force-damping-val", Number(f.damping), (v) => v.toFixed(2));
+      }
+      if (f.maxRepelDist != null) {
+        forceConfig.repulsionDistanceMax = Number(f.maxRepelDist);
+        setSlider("force-max-dist", "force-max-dist-val", Number(f.maxRepelDist));
+      }
+      if (f.theta != null) {
+        forceConfig.theta = Number(f.theta);
+        setSlider("force-theta", "force-theta-val", Number(f.theta), (v) => v.toFixed(2));
+      }
+      if (f.maxVelocity != null) {
+        forceConfig.maxVelocity = Number(f.maxVelocity);
+        setSlider("force-max-vel", "force-max-vel-val", Number(f.maxVelocity));
+      }
+      if (f.pinRootNode != null) {
+        forceConfig.pinnedNode = f.pinRootNode ? 0 : 0xFFFFFFFF;
+        setCheckbox("pin-root-node", Boolean(f.pinRootNode));
+      }
+
+      // --- Relativity Atlas params ---
+      if (ra) {
+        if (ra.baseMass != null) {
+          forceConfig.relativityBaseMass = Number(ra.baseMass);
+          setSlider("ra-base-mass", "ra-base-mass-val", Number(ra.baseMass), (v) => v.toFixed(1));
+        }
+        if (ra.childFactor != null) {
+          forceConfig.relativityChildMassFactor = Number(ra.childFactor);
+          setSlider("ra-child-factor", "ra-child-factor-val", Number(ra.childFactor), (v) => v.toFixed(2));
+        }
+        if (ra.massExponent != null) {
+          forceConfig.relativityMassExponent = Number(ra.massExponent);
+          setSlider("ra-mass-exp", "ra-mass-exp-val", Number(ra.massExponent), (v) => v.toFixed(2));
+        }
+        if (ra.gravityCurve != null) {
+          forceConfig.relativityGravityCurve = String(ra.gravityCurve);
+          setSelect("ra-gravity-curve", String(ra.gravityCurve));
+        }
+        if (ra.gravityExponent != null) {
+          forceConfig.relativityGravityExponent = Number(ra.gravityExponent);
+          setSlider("ra-gravity-exp", "ra-gravity-exp-val", Number(ra.gravityExponent), (v) => v.toFixed(2));
+        }
+        if (ra.maxSiblings != null) {
+          forceConfig.relativityMaxSiblings = Number(ra.maxSiblings);
+          setSlider("ra-max-siblings", "ra-max-siblings-val", Number(ra.maxSiblings));
+        }
+        if (ra.parentChildMult != null) {
+          forceConfig.relativityParentChildMultiplier = Number(ra.parentChildMult);
+          setSlider("ra-parent-child", "ra-parent-child-val", Number(ra.parentChildMult), (v) => v.toFixed(2));
+        }
+        if (ra.densityRepulsion != null) {
+          forceConfig.relativityDensityRepulsion = Number(ra.densityRepulsion);
+          setSlider("ra-density-repulsion", "ra-density-repulsion-val", Number(ra.densityRepulsion), (v) => v.toFixed(2));
+        }
+        if (ra.cousinRepulsion != null) {
+          forceConfig.relativityCousinRepulsion = Boolean(ra.cousinRepulsion);
+          setCheckbox("ra-cousin-enabled", Boolean(ra.cousinRepulsion));
+        }
+        if (ra.cousinStrength != null) {
+          forceConfig.relativityCousinStrength = Number(ra.cousinStrength);
+          setSlider("ra-cousin-strength", "ra-cousin-strength-val", Number(ra.cousinStrength), (v) => v.toFixed(2));
+        }
+        if (ra.phantomZone != null) {
+          forceConfig.relativityPhantomZone = Boolean(ra.phantomZone);
+          setCheckbox("ra-phantom-enabled", Boolean(ra.phantomZone));
+        }
+        if (ra.phantomMultiplier != null) {
+          forceConfig.relativityPhantomMultiplier = Number(ra.phantomMultiplier);
+          setSlider("ra-phantom-mult", "ra-phantom-mult-val", Number(ra.phantomMultiplier), (v) => v.toFixed(2));
+        }
+        if (ra.orbitStrength != null) {
+          forceConfig.relativityOrbitStrength = Number(ra.orbitStrength);
+          setSlider("ra-orbit-strength", "ra-orbit-strength-val", Number(ra.orbitStrength), (v) => v.toFixed(1));
+        }
+        if (ra.tangentialMultiplier != null) {
+          forceConfig.relativityTangentialMultiplier = Number(ra.tangentialMultiplier);
+          setSlider("ra-tangential-mult", "ra-tangential-mult-val", Number(ra.tangentialMultiplier), (v) => v.toFixed(1));
+        }
+        if (ra.orbitRadius != null) {
+          forceConfig.relativityOrbitRadius = Number(ra.orbitRadius);
+          setSlider("ra-orbit-radius", "ra-orbit-radius-val", Number(ra.orbitRadius), (v) => v.toFixed(0));
+        }
+      }
+
+      // --- LinLog params ---
+      if (ll) {
+        if (ll.scaling != null) {
+          forceConfig.linlogScaling = Number(ll.scaling);
+          setSlider("ll-scaling", "ll-scaling-val", Number(ll.scaling), (v) => v.toFixed(1));
+        }
+        if (ll.gravity != null) {
+          forceConfig.linlogGravity = Number(ll.gravity);
+          setSlider("ll-gravity", "ll-gravity-val", Number(ll.gravity), (v) => v.toFixed(1));
+        }
+        if (ll.edgeWeightInfluence != null) {
+          forceConfig.linlogEdgeWeightInfluence = Number(ll.edgeWeightInfluence);
+          setSlider("ll-weight", "ll-weight-val", Number(ll.edgeWeightInfluence), (v) => v.toFixed(2));
+        }
+        if (ll.strongGravity != null) {
+          forceConfig.linlogStrongGravity = Boolean(ll.strongGravity);
+          setCheckbox("ll-strong-gravity", Boolean(ll.strongGravity));
+        }
+      }
+
+      // --- t-FDP params ---
+      if (tfdp) {
+        if (tfdp.gamma != null) {
+          forceConfig.tFdpGamma = Number(tfdp.gamma);
+          setSlider("tfdp-gamma", "tfdp-gamma-val", Number(tfdp.gamma), (v) => v.toFixed(2));
+        }
+        if (tfdp.repulsionScale != null) {
+          forceConfig.tFdpRepulsionScale = Number(tfdp.repulsionScale);
+          setSlider("tfdp-repulsion", "tfdp-repulsion-val", Number(tfdp.repulsionScale), (v) => v.toFixed(2));
+        }
+        if (tfdp.alpha != null) {
+          forceConfig.tFdpAlpha = Number(tfdp.alpha);
+          setSlider("tfdp-alpha", "tfdp-alpha-val", Number(tfdp.alpha), (v) => v.toFixed(2));
+        }
+        if (tfdp.beta != null) {
+          forceConfig.tFdpBeta = Number(tfdp.beta);
+          setSlider("tfdp-beta", "tfdp-beta-val", Number(tfdp.beta), (v) => v.toFixed(2));
+        }
+      }
+
+      // --- Tidy Tree params ---
+      if (tt) {
+        if (tt.levelSeparation != null) {
+          forceConfig.tidyTreeLevelSeparation = Number(tt.levelSeparation);
+          setSlider("tt-level-sep", "tt-level-sep-val", Number(tt.levelSeparation));
+        }
+        if (tt.siblingSeparation != null) {
+          forceConfig.tidyTreeSiblingSeparation = Number(tt.siblingSeparation);
+          setSlider("tt-sibling-sep", "tt-sibling-sep-val", Number(tt.siblingSeparation), (v) => v.toFixed(2));
+        }
+        if (tt.subtreeSeparation != null) {
+          forceConfig.tidyTreeSubtreeSeparation = Number(tt.subtreeSeparation);
+          setSlider("tt-subtree-sep", "tt-subtree-sep-val", Number(tt.subtreeSeparation), (v) => v.toFixed(2));
+        }
+        if (tt.stiffness != null) {
+          forceConfig.tidyTreeStiffness = Number(tt.stiffness);
+          setSlider("tt-stiffness", "tt-stiffness-val", Number(tt.stiffness), (v) => v.toFixed(2));
+        }
+        if (tt.damping != null) {
+          forceConfig.tidyTreeDamping = Number(tt.damping);
+          setSlider("tt-damping", "tt-damping-val", Number(tt.damping), (v) => v.toFixed(2));
+        }
+        if (tt.coordMode != null) {
+          forceConfig.tidyTreeRadial = String(tt.coordMode) === "radial";
+          setSelect("tt-coord-mode", String(tt.coordMode));
+        }
+      }
+
+      // --- Community Layout params ---
+      if (comm) {
+        if (comm.resolution != null) {
+          forceConfig.communityResolution = Number(comm.resolution);
+          setSlider("comm-resolution", "comm-resolution-val", Number(comm.resolution), (v) => v.toFixed(2));
+        }
+        if (comm.spacing != null) {
+          forceConfig.communitySpacing = Number(comm.spacing);
+          setSlider("comm-spacing", "comm-spacing-val", Number(comm.spacing));
+        }
+        if (comm.nodeSpacing != null) {
+          forceConfig.communityNodeSpacing = Number(comm.nodeSpacing);
+          setSlider("comm-node-spacing", "comm-node-spacing-val", Number(comm.nodeSpacing));
+        }
+        if (comm.spreadFactor != null) {
+          forceConfig.communitySpreadFactor = Number(comm.spreadFactor);
+          setSlider("comm-spread", "comm-spread-val", Number(comm.spreadFactor), (v) => v.toFixed(2));
+        }
+        if (comm.stiffness != null) {
+          forceConfig.communityStiffness = Number(comm.stiffness);
+          setSlider("comm-stiffness", "comm-stiffness-val", Number(comm.stiffness), (v) => v.toFixed(2));
+        }
+        if (comm.damping != null) {
+          forceConfig.communityDamping = Number(comm.damping);
+          setSlider("comm-damping", "comm-damping-val", Number(comm.damping), (v) => v.toFixed(2));
+        }
+      }
+
+      // --- Codebase Layout params ---
+      if (cb) {
+        if (cb.directoryPadding != null) {
+          forceConfig.codebaseDirectoryPadding = Number(cb.directoryPadding);
+          setSlider("cb-dir-padding", "cb-dir-padding-val", Number(cb.directoryPadding));
+        }
+        if (cb.filePadding != null) {
+          forceConfig.codebaseFilePadding = Number(cb.filePadding);
+          setSlider("cb-file-padding", "cb-file-padding-val", Number(cb.filePadding));
+        }
+        if (cb.spreadFactor != null) {
+          forceConfig.codebaseSpreadFactor = Number(cb.spreadFactor);
+          setSlider("cb-spread", "cb-spread-val", Number(cb.spreadFactor), (v) => v.toFixed(2));
+        }
+        if (cb.stiffness != null) {
+          forceConfig.codebaseStiffness = Number(cb.stiffness);
+          setSlider("cb-stiffness", "cb-stiffness-val", Number(cb.stiffness), (v) => v.toFixed(2));
+        }
+        if (cb.damping != null) {
+          forceConfig.codebaseDamping = Number(cb.damping);
+          setSlider("cb-damping", "cb-damping-val", Number(cb.damping), (v) => v.toFixed(2));
+        }
+      }
+
+      // Apply all force config at once
+      if (Object.keys(forceConfig).length > 0) {
+        state.graph?.setForceConfig(forceConfig);
+      }
+    }
+
+    // --- Load nodes (uses generator settings already applied to UI) ---
+    const nodeCount = g?.nodes ? Number(g.nodes) : 1000;
+    await loadNodes(nodeCount);
+
+    // --- Display ---
+    if (disp) {
+      if (disp.theme) setSelect("display-theme", String(disp.theme));
+      if (disp.backgroundColor) {
+        setColor("display-bg-color", String(disp.backgroundColor));
+        state.graph?.setBackgroundColor(String(disp.backgroundColor));
+      }
+      if (disp.defaultEdgeColor) {
+        setColor("display-edge-color", String(disp.defaultEdgeColor));
+      }
+    }
+
+    // --- Heatmap ---
+    if (hm) {
+      if (hm.colorScale) setSelect("heatmap-colorscale", String(hm.colorScale));
+      if (hm.dataSource) setSelect("heatmap-datasource", String(hm.dataSource));
+      if (hm.radius != null) setSlider("heatmap-radius", "heatmap-radius-val", Number(hm.radius));
+      if (hm.intensity != null) setSlider("heatmap-intensity", "heatmap-intensity-val", Number(hm.intensity), (v) => v.toFixed(1));
+      if (hm.opacity != null) setSlider("heatmap-opacity", "heatmap-opacity-val", Number(hm.opacity), (v) => v.toFixed(2));
+      setCheckbox("heatmap-enabled", Boolean(hm.enabled));
+      if (hm.enabled) {
+        state.graph?.enableHeatmap({
+          colorScale: String(hm.colorScale ?? "viridis") as "viridis" | "plasma" | "inferno" | "magma" | "cividis" | "turbo" | "hot" | "cool" | "spectral" | "coolwarm" | "blues" | "greens" | "reds" | "grayscale",
+          radius: Number(hm.radius ?? 50),
+          intensity: Number(hm.intensity ?? 1.0),
+          opacity: Number(hm.opacity ?? 0.8),
+        });
+      }
+    }
+
+    // --- Contours ---
+    if (ct) {
+      if (ct.strokeWidth != null) setSlider("contour-width", "contour-width-val", Number(ct.strokeWidth));
+      if (ct.strokeColor) setColor("contour-color", String(ct.strokeColor));
+      if (ct.thresholdCount != null) setSlider("contour-thresholds", "contour-thresholds-val", Number(ct.thresholdCount));
+      if (ct.minThreshold != null) setSlider("contour-min", "contour-min-val", Number(ct.minThreshold), (v) => v.toFixed(2));
+      setCheckbox("contour-enabled", Boolean(ct.enabled));
+      if (ct.enabled) {
+        const count = Number(ct.thresholdCount ?? 4);
+        const min = Number(ct.minThreshold ?? 0.10);
+        const thresholds = Array.from({ length: count }, (_, i) => min + (i * (1 - min)) / count);
+        state.graph?.enableContour({
+          thresholds,
+          strokeWidth: Number(ct.strokeWidth ?? 2),
+          strokeColor: String(ct.strokeColor ?? "#ffffff"),
+        });
+      }
+    }
+
+    // --- Metaballs ---
+    if (mb) {
+      if (mb.threshold != null) setSlider("metaball-threshold", "metaball-threshold-val", Number(mb.threshold), (v) => v.toFixed(2));
+      if (mb.opacity != null) setSlider("metaball-opacity", "metaball-opacity-val", Number(mb.opacity), (v) => v.toFixed(2));
+      if (mb.fillColor) setColor("metaball-colorscale", String(mb.fillColor));
+      setCheckbox("metaball-enabled", Boolean(mb.enabled));
+      if (mb.enabled) {
+        state.graph?.enableMetaball({
+          fillColor: String(mb.fillColor ?? "#4f8cff"),
+          threshold: Number(mb.threshold ?? 0.5),
+          opacity: Number(mb.opacity ?? 0.6),
+        });
+      }
+    }
+
+    // --- Labels ---
+    if (lb) {
+      if (lb.fontSize != null) setSlider("labels-fontsize", "labels-fontsize-val", Number(lb.fontSize));
+      if (lb.textColor) setColor("labels-color", String(lb.textColor));
+      if (lb.maxLabels != null) setSlider("labels-max", "labels-max-val", Number(lb.maxLabels));
+      setCheckbox("labels-enabled", Boolean(lb.enabled));
+      if (lb.enabled) {
+        await state.graph?.enableLabels({
+          fontSize: Number(lb.fontSize ?? 14),
+          fontColor: String(lb.textColor ?? "#ffffff"),
+          maxLabels: Number(lb.maxLabels ?? 100),
+        });
+      }
+    }
+
+    // --- Node Style ---
+    if (ns) {
+      if (ns.sizeScale != null) {
+        setSlider("node-size-scale", "node-size-scale-val", Number(ns.sizeScale), (v) => v.toFixed(2));
+      }
+      const borders = ns.borders as Record<string, unknown> | undefined;
+      if (borders) {
+        if (borders.width != null) setSlider("border-width", "border-width-val", Number(borders.width), (v) => v.toFixed(1));
+        if (borders.color) setColor("border-color", String(borders.color));
+        setCheckbox("border-enabled", Boolean(borders.enabled));
+        if (borders.enabled) {
+          state.graph?.enableNodeBorder(
+            Number(borders.width ?? 2.0),
+            String(borders.color ?? "#000000"),
+          );
+        }
+      }
+    }
+
+    // --- Edge Style ---
+    if (es) {
+      if (es.opacity != null) setSlider("edge-opacity", "edge-opacity-val", Number(es.opacity), (v) => v.toFixed(2));
+      if (es.widthScale != null) setSlider("edge-width-scale", "edge-width-scale-val", Number(es.widthScale), (v) => v.toFixed(1));
+      const curved = es.curved as Record<string, unknown> | undefined;
+      if (curved) {
+        if (curved.segments != null) setSlider("curved-segments", "curved-segments-val", Number(curved.segments));
+        if (curved.weight != null) setSlider("curved-weight", "curved-weight-val", Number(curved.weight), (v) => v.toFixed(2));
+        if (curved.curvature != null) setSlider("curved-curvature", "curved-curvature-val", Number(curved.curvature), (v) => v.toFixed(2));
+        setCheckbox("curved-enabled", Boolean(curved.enabled));
+        if (curved.enabled) {
+          state.graph?.enableCurvedEdges(
+            Number(curved.segments ?? 19),
+            Number(curved.weight ?? 0.80),
+          );
+        }
+      }
+    }
+
+    // --- Edge Flow ---
+    if (ef) {
+      const l1 = ef.layer1 as Record<string, unknown> | undefined;
+      const l2 = ef.layer2 as Record<string, unknown> | undefined;
+
+      if (l1) {
+        if (l1.waveShape) setSelect("flow-wave-shape", String(l1.waveShape));
+        if (l1.pulseWidth != null) setSlider("flow-width", "flow-width-val", Number(l1.pulseWidth), (v) => v.toFixed(2));
+        if (l1.pulseCount != null) setSlider("flow-count", "flow-count-val", Number(l1.pulseCount));
+        if (l1.speed != null) setSlider("flow-speed", "flow-speed-val", Number(l1.speed), (v) => v.toFixed(2));
+        if (l1.brightness != null) setSlider("flow-brightness", "flow-brightness-val", Number(l1.brightness), (v) => v.toFixed(1));
+        if (l1.fade != null) setSlider("flow-fade", "flow-fade-val", Number(l1.fade), (v) => v.toFixed(2));
+        if (l1.color) setColor("flow-color", String(l1.color));
+        setCheckbox("flow-use-edge-color", Boolean(l1.useEdgeColor));
+      }
+      if (l2) {
+        if (l2.waveShape) setSelect("flow2-wave-shape", String(l2.waveShape));
+        if (l2.pulseWidth != null) setSlider("flow2-width", "flow2-width-val", Number(l2.pulseWidth), (v) => v.toFixed(2));
+        if (l2.pulseCount != null) setSlider("flow2-count", "flow2-count-val", Number(l2.pulseCount));
+        if (l2.speed != null) setSlider("flow2-speed", "flow2-speed-val", Number(l2.speed), (v) => v.toFixed(2));
+        if (l2.brightness != null) setSlider("flow2-brightness", "flow2-brightness-val", Number(l2.brightness), (v) => v.toFixed(1));
+        if (l2.fade != null) setSlider("flow2-fade", "flow2-fade-val", Number(l2.fade), (v) => v.toFixed(2));
+        if (l2.color) setColor("flow2-color", String(l2.color));
+        setCheckbox("flow2-use-edge-color", Boolean(l2.useEdgeColor));
+        setCheckbox("flow2-enabled", Boolean(l2.enabled));
+      }
+
+      setCheckbox("flow-enabled", Boolean(ef.enabled));
+      if (ef.enabled && l1) {
+        state.graph?.setEdgeFlowConfig({
+          layer1: {
+            enabled: true,
+            speed: Number(l1.speed ?? 0.30),
+            pulseWidth: Number(l1.pulseWidth ?? 0.10),
+            pulseCount: Number(l1.pulseCount ?? 3),
+            brightness: Number(l1.brightness ?? 2.0),
+            fade: Number(l1.fade ?? 0.30),
+            waveShape: (String(l1.waveShape ?? "sine")) as "sine" | "square" | "triangle",
+            color: l1.useEdgeColor ? null : hexToRgbaTuple(String(l1.color ?? "#00ffff")),
+          },
+          layer2: l2 ? {
+            enabled: Boolean(l2.enabled),
+            speed: Number(l2.speed ?? 0.50),
+            pulseWidth: Number(l2.pulseWidth ?? 0.05),
+            pulseCount: Number(l2.pulseCount ?? 6),
+            brightness: Number(l2.brightness ?? 1.5),
+            fade: Number(l2.fade ?? 0.20),
+            waveShape: (String(l2.waveShape ?? "square")) as "sine" | "square" | "triangle",
+            color: l2.useEdgeColor ? null : hexToRgbaTuple(String(l2.color ?? "#ff6b6b")),
+          } : undefined,
+        });
+      }
+    }
+
+    // --- Auto-compute layout for structure-aware algorithms ---
+    if (f?.algorithm) {
+      const alg = String(f.algorithm);
+      if (alg === "community" && state.graph) {
+        try {
+          state.graph.computeCommunityLayout();
+          console.log("Auto-computed community layout from config");
+        } catch (err) {
+          console.warn("Could not auto-compute community layout:", err);
+        }
+      }
+      if (alg === "codebase" && state.graph) {
+        try {
+          let categories: Uint8Array | undefined;
+          if (state.codebaseData) {
+            const nodeBound = state.graph.nodeCount;
+            categories = new Uint8Array(nodeBound);
+            for (const node of state.codebaseData.nodes) {
+              if (node.id < nodeBound) {
+                switch (node.type) {
+                  case "repository": categories[node.id] = 0; break;
+                  case "directory": categories[node.id] = 1; break;
+                  case "file": categories[node.id] = 2; break;
+                  case "function": case "class": case "method": case "variable": case "interface": case "type":
+                    categories[node.id] = 3; break;
+                  default: categories[node.id] = 4; break;
+                }
+              }
+            }
+          }
+          state.graph.computeCodebaseLayout(categories);
+          console.log("Auto-computed codebase layout from config");
+        } catch (err) {
+          console.warn("Could not auto-compute codebase layout:", err);
+        }
+      }
+      if (alg === "tidy-tree" && state.graph) {
+        try {
+          state.graph.computeTreeLayout();
+          console.log("Auto-computed tree layout from config");
+        } catch (err) {
+          console.warn("Could not auto-compute tree layout:", err);
+        }
+      }
+    }
+
+    console.log("Config applied successfully");
+  }
+
+  // ========================================================================
+  // Load Initial Data (from config.json or defaults)
+  // ========================================================================
+
+  await loadConfig();
 }
 
 // Start the application

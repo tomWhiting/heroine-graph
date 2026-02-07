@@ -228,7 +228,6 @@ impl TidyTreeLayout {
 
         // Run Buchheim's algorithm
         self.first_walk(0, &mut layout_nodes);
-        self.second_walk(0, 0.0, &layout_nodes, &mut vec![0.0; layout_nodes.len()]);
 
         // Collect final prelim values after second walk
         let mut final_x: Vec<f32> = vec![0.0; layout_nodes.len()];
@@ -479,7 +478,7 @@ impl TidyTreeLayout {
 
     /// Check if two layout nodes are siblings (share the same parent).
     fn are_siblings(&self, a: usize, b: usize, nodes: &[LayoutNode]) -> bool {
-        nodes[a].depth == nodes[b].depth
+        nodes[a].parent.is_some() && nodes[a].parent == nodes[b].parent
     }
 
     /// Get the next node on the right contour of a subtree.
@@ -641,20 +640,6 @@ impl TidyTreeLayout {
     }
 
     /// Second walk: apply accumulated modifiers to get final x-coordinates.
-    fn second_walk(
-        &self,
-        v: usize,
-        modifier_sum: f32,
-        nodes: &[LayoutNode],
-        _final_x: &mut Vec<f32>,
-    ) {
-        // This version just recurses; actual collection is in second_walk_collect
-        for &child in &nodes[v].children {
-            self.second_walk(child, modifier_sum + nodes[v].modifier, nodes, _final_x);
-        }
-    }
-
-    /// Second walk that collects final x positions.
     fn second_walk_collect(
         &self,
         v: usize,

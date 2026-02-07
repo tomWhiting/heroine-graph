@@ -24,6 +24,11 @@ struct LabelUniforms {
     // Atlas texture dimensions
     atlas_width: f32,
     atlas_height: f32,
+    // Font size used when generating the atlas
+    atlas_font_size: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 // Per-glyph instance data (48 bytes, aligned to 16)
@@ -80,7 +85,7 @@ fn vs_main(
     let screen_pos = graph_offset * viewport.scale + screen_center;
 
     // Apply glyph offset and size (in screen pixels)
-    let scale_factor = label_uniforms.font_size / 42.0; // 42 is typical atlas font size
+    let scale_factor = label_uniforms.font_size / label_uniforms.atlas_font_size;
     let glyph_offset = glyph.offset * scale_factor;
     let glyph_size = glyph.size * scale_factor;
 

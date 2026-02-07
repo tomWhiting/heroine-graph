@@ -7,7 +7,7 @@
   @module
 -->
 <script lang="ts">
-  import { onMount, onDestroy, createEventDispatcher } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import type {
     GraphConfig,
     GraphInput,
@@ -46,6 +46,24 @@
     class?: string;
     /** Enable debug mode */
     debug?: boolean;
+    // Event callback props
+    onready?: (graph: HeroineGraphCore) => void;
+    onerror?: (error: Error) => void;
+    onnodeClick?: (event: NodeClickEvent) => void;
+    onnodeDoubleClick?: (event: NodeDoubleClickEvent) => void;
+    onnodeHoverEnter?: (event: NodeHoverEnterEvent) => void;
+    onnodeHoverLeave?: (event: NodeHoverLeaveEvent) => void;
+    onnodeDragStart?: (event: NodeDragStartEvent) => void;
+    onnodeDragMove?: (event: NodeDragMoveEvent) => void;
+    onnodeDragEnd?: (event: NodeDragEndEvent) => void;
+    onedgeClick?: (event: EdgeClickEvent) => void;
+    onedgeHoverEnter?: (event: EdgeHoverEnterEvent) => void;
+    onedgeHoverLeave?: (event: EdgeHoverLeaveEvent) => void;
+    onselectionChange?: (event: SelectionChangeEvent) => void;
+    onviewportChange?: (event: ViewportChangeEvent) => void;
+    onsimulationTick?: (event: SimulationTickEvent) => void;
+    onsimulationEnd?: (event: SimulationEndEvent) => void;
+    onbackgroundClick?: (event: BackgroundClickEvent) => void;
   }
 
   let {
@@ -55,28 +73,24 @@
     height = "100%",
     class: className = "",
     debug = false,
+    onready = undefined,
+    onerror = undefined,
+    onnodeClick = undefined,
+    onnodeDoubleClick = undefined,
+    onnodeHoverEnter = undefined,
+    onnodeHoverLeave = undefined,
+    onnodeDragStart = undefined,
+    onnodeDragMove = undefined,
+    onnodeDragEnd = undefined,
+    onedgeClick = undefined,
+    onedgeHoverEnter = undefined,
+    onedgeHoverLeave = undefined,
+    onselectionChange = undefined,
+    onviewportChange = undefined,
+    onsimulationTick = undefined,
+    onsimulationEnd = undefined,
+    onbackgroundClick = undefined,
   }: Props = $props();
-
-  // Event dispatcher
-  const dispatch = createEventDispatcher<{
-    ready: HeroineGraphCore;
-    error: Error;
-    nodeClick: NodeClickEvent;
-    nodeDoubleClick: NodeDoubleClickEvent;
-    nodeHoverEnter: NodeHoverEnterEvent;
-    nodeHoverLeave: NodeHoverLeaveEvent;
-    nodeDragStart: NodeDragStartEvent;
-    nodeDragMove: NodeDragMoveEvent;
-    nodeDragEnd: NodeDragEndEvent;
-    edgeClick: EdgeClickEvent;
-    edgeHoverEnter: EdgeHoverEnterEvent;
-    edgeHoverLeave: EdgeHoverLeaveEvent;
-    selectionChange: SelectionChangeEvent;
-    viewportChange: ViewportChangeEvent;
-    simulationTick: SimulationTickEvent;
-    simulationEnd: SimulationEndEvent;
-    backgroundClick: BackgroundClickEvent;
-  }>();
 
   // State
   let containerEl: HTMLDivElement;
@@ -103,21 +117,21 @@
 
   // Event handler registration
   function registerEventHandlers(g: HeroineGraphCore) {
-    g.on("node:click", (e) => dispatch("nodeClick", e));
-    g.on("node:doubleclick", (e) => dispatch("nodeDoubleClick", e));
-    g.on("node:hoverenter", (e) => dispatch("nodeHoverEnter", e));
-    g.on("node:hoverleave", (e) => dispatch("nodeHoverLeave", e));
-    g.on("node:dragstart", (e) => dispatch("nodeDragStart", e));
-    g.on("node:dragmove", (e) => dispatch("nodeDragMove", e));
-    g.on("node:dragend", (e) => dispatch("nodeDragEnd", e));
-    g.on("edge:click", (e) => dispatch("edgeClick", e));
-    g.on("edge:hoverenter", (e) => dispatch("edgeHoverEnter", e));
-    g.on("edge:hoverleave", (e) => dispatch("edgeHoverLeave", e));
-    g.on("selection:change", (e) => dispatch("selectionChange", e));
-    g.on("viewport:change", (e) => dispatch("viewportChange", e));
-    g.on("simulation:tick", (e) => dispatch("simulationTick", e));
-    g.on("simulation:end", (e) => dispatch("simulationEnd", e));
-    g.on("background:click", (e) => dispatch("backgroundClick", e));
+    g.on("node:click", (e) => onnodeClick?.(e));
+    g.on("node:doubleclick", (e) => onnodeDoubleClick?.(e));
+    g.on("node:hoverenter", (e) => onnodeHoverEnter?.(e));
+    g.on("node:hoverleave", (e) => onnodeHoverLeave?.(e));
+    g.on("node:dragstart", (e) => onnodeDragStart?.(e));
+    g.on("node:dragmove", (e) => onnodeDragMove?.(e));
+    g.on("node:dragend", (e) => onnodeDragEnd?.(e));
+    g.on("edge:click", (e) => onedgeClick?.(e));
+    g.on("edge:hoverenter", (e) => onedgeHoverEnter?.(e));
+    g.on("edge:hoverleave", (e) => onedgeHoverLeave?.(e));
+    g.on("selection:change", (e) => onselectionChange?.(e));
+    g.on("viewport:change", (e) => onviewportChange?.(e));
+    g.on("simulation:tick", (e) => onsimulationTick?.(e));
+    g.on("simulation:end", (e) => onsimulationEnd?.(e));
+    g.on("background:click", (e) => onbackgroundClick?.(e));
   }
 
   // ResizeObserver
@@ -148,12 +162,9 @@
       registerEventHandlers(graphInstance);
 
       // Emit ready event
-      dispatch("ready", graphInstance);
+      onready?.(graphInstance);
 
-      // Load initial data if provided
-      if (data) {
-        await graphInstance.load(data);
-      }
+      // Data loading is handled by the $effect below
 
       // Setup resize observer
       resizeObserver = new ResizeObserver(() => {
@@ -165,7 +176,7 @@
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       error = e;
-      dispatch("error", e);
+      onerror?.(e);
     }
   });
 
@@ -180,14 +191,14 @@
     }
   });
 
-  // Watch for data changes using $effect
+  // Watch for data changes using $effect (also handles initial load)
   $effect(() => {
     if (!graph || !isInitialized || !data) return;
 
     graph.load(data).catch((err) => {
       const e = err instanceof Error ? err : new Error(String(err));
       error = e;
-      dispatch("error", e);
+      onerror?.(e);
     });
   });
 </script>

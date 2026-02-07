@@ -157,7 +157,9 @@ export class PointerManager {
     addListener("wheel", this.handleWheel, { passive: false });
 
     // Prevent context menu on right-click
-    this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    const contextMenuHandler = (e: Event) => e.preventDefault();
+    this.canvas.addEventListener("contextmenu", contextMenuHandler);
+    this.boundHandlers.set("contextmenu", contextMenuHandler);
   }
 
   private handlePointerDown = (e: Event): void => {

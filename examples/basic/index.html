@@ -273,8 +273,9 @@
         loading.style.display = "none";
         controls.style.display = "flex";
 
-        // Start updating stats
-        setInterval(updateStats, 100);
+        // Start updating stats (clear previous interval if any)
+        if (window._statsInterval) clearInterval(window._statsInterval);
+        window._statsInterval = setInterval(updateStats, 100);
       }
 
       // Initialize the application
@@ -380,16 +381,17 @@
             // Viewport changed (pan/zoom)
           });
         } catch (err) {
-          loading.innerHTML = `
-          <div class="error">
-            <h2>Initialization Error</h2>
-            <p>${err.message}</p>
-            <p style="margin-top: 15px; font-size: 13px; opacity: 0.8;">
-              WebGPU requires Chrome 113+, Edge 113+, or Safari 18+.
-              Make sure you're using a supported browser with WebGPU enabled.
-            </p>
-          </div>
-        `;
+          const errorDiv = document.createElement("div");
+          errorDiv.className = "error";
+          const h2 = document.createElement("h2");
+          h2.textContent = "Initialization Error";
+          const p1 = document.createElement("p");
+          p1.textContent = err.message;
+          const p2 = document.createElement("p");
+          p2.style.cssText = "margin-top: 15px; font-size: 13px; opacity: 0.8;";
+          p2.textContent = "WebGPU requires Chrome 113+, Edge 113+, or Safari 18+. Make sure you're using a supported browser with WebGPU enabled.";
+          errorDiv.append(h2, p1, p2);
+          loading.replaceChildren(errorDiv);
           console.error("HeroineGraph initialization failed:", err);
         }
       }

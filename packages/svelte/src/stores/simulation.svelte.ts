@@ -6,7 +6,6 @@
  * @module
  */
 
-import { onDestroy } from "svelte";
 import type { HeroineGraph, SimulationStatus, ForceConfig } from "@heroine-graph/core";
 import type { GraphStore } from "./graph.svelte";
 
@@ -109,11 +108,6 @@ export function createSimulationStore(options: SimulationStoreOptions) {
     }
   });
 
-  // Cleanup on component destroy
-  onDestroy(() => {
-    cleanupEventListeners();
-  });
-
   // Methods
   function start(): void {
     graphStore.graph?.startSimulation();
@@ -135,8 +129,8 @@ export function createSimulationStore(options: SimulationStoreOptions) {
     status = "running";
   }
 
-  function restart(newAlpha?: number): void {
-    graphStore.graph?.restartSimulation(newAlpha);
+  function restart(): void {
+    graphStore.graph?.restartSimulation();
     status = "running";
   }
 
@@ -165,6 +159,7 @@ export function createSimulationStore(options: SimulationStoreOptions) {
     restart,
     setForceConfig,
     setAlpha,
+    dispose: cleanupEventListeners,
   };
 }
 

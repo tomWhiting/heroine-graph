@@ -179,7 +179,6 @@ export type { BufferPair, PingPongBufferConfig } from "./src/renderer/buffers/pi
 
 export {
   createSimulationUniformBuffer,
-  createViewportUniformBuffer as createViewportUniformBuffer2,
   DEFAULT_SIMULATION_UNIFORMS,
   forceConfigToUniforms,
   SIMULATION_UNIFORMS_SIZE,

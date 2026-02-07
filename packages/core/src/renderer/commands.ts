@@ -74,6 +74,10 @@ export interface FrameBindGroups {
   nodes: GPUBindGroup;
   /** Edge data bind group */
   edges: GPUBindGroup;
+  /** Node render config bind group (group 2 - selection, hover, border) */
+  nodeRenderConfig?: GPUBindGroup;
+  /** Edge flow animation bind group (group 2 - flow uniforms) */
+  edgeFlowConfig?: GPUBindGroup;
 }
 
 /**
@@ -217,6 +221,9 @@ export function createCommandOrchestrator(
       renderPass.setPipeline(edgePipeline.pipeline);
       renderPass.setBindGroup(0, bindGroups.viewport);
       renderPass.setBindGroup(1, bindGroups.edges);
+      if (bindGroups.edgeFlowConfig) {
+        renderPass.setBindGroup(2, bindGroups.edgeFlowConfig);
+      }
       renderPass.draw(6, edgeCount);
       stats.drawCalls++;
     }
@@ -226,6 +233,9 @@ export function createCommandOrchestrator(
       renderPass.setPipeline(nodePipeline.pipeline);
       renderPass.setBindGroup(0, bindGroups.viewport);
       renderPass.setBindGroup(1, bindGroups.nodes);
+      if (bindGroups.nodeRenderConfig) {
+        renderPass.setBindGroup(2, bindGroups.nodeRenderConfig);
+      }
       renderPass.draw(6, nodeCount);
       stats.drawCalls++;
     }

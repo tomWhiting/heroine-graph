@@ -146,6 +146,12 @@ export function parseGraphInput(
   // Parse nodes
   for (let i = 0; i < nodeCount; i++) {
     const node = nodes[i];
+    if (nodeIdMap.has(node.id)) {
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        `Duplicate node ID: "${node.id}" at index ${i}`,
+      );
+    }
     const idx = nodeIdMap.add(node.id);
 
     // Position (default to 0,0 - will be randomized later)
@@ -168,8 +174,9 @@ export function parseGraphInput(
       nodeMetadata.set(idx, nodeMetadataValue);
     }
 
-    // Extract type for type-based styling
-    const nodeType = node["type"] as string | undefined;
+    // Extract type for type-based styling (top-level or metadata.type)
+    const nodeType = (node["type"] as string | undefined)
+      ?? (nodeMetadataValue?.["type"] as string | undefined);
     if (nodeType) {
       nodeTypes[idx] = nodeType;
       hasNodeTypes = true;
