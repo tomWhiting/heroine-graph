@@ -4,6 +4,11 @@
 // Implements velocity Verlet integration with adaptive damping
 // for stable force-directed layout convergence.
 //
+// Hierarchical settling: parents freeze before children via depth-scaled alpha.
+// Deeper nodes retain higher effective alpha, so they keep adjusting position
+// after their parents have settled. This gives children time to orbit into
+// natural positions around already-stable parents.
+//
 // All position, velocity, and force data uses vec2<f32> layout.
 
 struct IntegrationUniforms {
@@ -12,7 +17,7 @@ struct IntegrationUniforms {
     damping: f32,               // Velocity damping (0.9 typical)
     max_velocity: f32,          // Velocity cap to prevent instability
     alpha: f32,                 // Simulation "temperature" (decreases over time)
-    alpha_decay: f32,           // Rate of alpha decrease per step
+    depth_settling_spread: f32, // Depth-based settling: alpha *= (1 + depth * spread)
     alpha_min: f32,             // Minimum alpha (simulation stops below this)
     gravity_strength: f32,      // Pull toward center
     center_x: f32,              // Gravity center X
@@ -33,6 +38,9 @@ struct IntegrationUniforms {
 
 // Forces (input) - vec2<f32> per node
 @group(0) @binding(5) var<storage, read> forces: array<vec2<f32>>;
+
+// Node depth from root (f32 per node, 0.0 = root or non-hierarchical)
+@group(0) @binding(6) var<storage, read> node_depth: array<f32>;
 
 // Clamp vector magnitude
 fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
@@ -71,10 +79,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let gravity_force = to_center * uniforms.gravity_strength;
     let total_force = force + gravity_force;
 
+    // Hierarchical settling: deeper nodes retain more alpha (settle later).
+    // When depth_settling_spread = 0, all nodes use raw alpha (no hierarchy).
+    // When spread > 0, effective_alpha = alpha * (1 + depth * spread), clamped to 1.
+    let depth = node_depth[node_idx];
+    let effective_alpha = min(uniforms.alpha * (1.0 + depth * uniforms.depth_settling_spread), 1.0);
+
     // Update velocity: v' = v * damping + (F/m) * dt * alpha
     // We assume unit mass, so F/m = F
     // Alpha acts as temperature, reducing force effect as simulation cools
-    let acceleration = total_force * uniforms.alpha;
+    let acceleration = total_force * effective_alpha;
     vel = vel * uniforms.damping + acceleration * uniforms.dt;
 
     // Cap velocity to prevent instability
@@ -87,4 +101,3 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     positions_out[node_idx] = new_pos;
     velocities_out[node_idx] = vel;
 }
-

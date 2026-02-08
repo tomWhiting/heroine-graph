@@ -82,6 +82,8 @@ export interface SimulationBuffers {
   integrationUniforms: GPUBuffer;
   // Node state flags (for pinned nodes)
   nodeFlags: GPUBuffer;
+  // Node depth from root (f32 per node) for hierarchical settling
+  nodeDepth: GPUBuffer;
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
   readback: GPUBuffer;
   // Node count for readback sizing
@@ -338,8 +340,7 @@ export function createSimulationBindGroups(
     ],
   });
 
-  // Integration bind group (bindings 0-5)
-  // With vec2 consolidation, we now have room for node_flags if needed
+  // Integration bind group (bindings 0-6)
   const integration = device.createBindGroup({
     label: "Integration Bind Group",
     layout: pipeline.pipelines.integrate.getBindGroupLayout(0),
@@ -350,6 +351,7 @@ export function createSimulationBindGroups(
       { binding: 3, resource: { buffer: buffers.velocities } },
       { binding: 4, resource: { buffer: buffers.velocitiesOut } },
       { binding: 5, resource: { buffer: buffers.forces } },
+      { binding: 6, resource: { buffer: buffers.nodeDepth } },
     ],
   });
 
@@ -461,6 +463,14 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Node depth from root (f32 per node) for hierarchical settling.
+  // Zero-initialized: non-hierarchical algorithms get depth=0 (no effect).
+  const nodeDepth = device.createBuffer({
+    label: "Node Depth",
+    size: nodeFlagBytes, // f32 per node = same size as flags
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
   const readback = device.createBuffer({
     label: "Position Readback",
@@ -481,6 +491,7 @@ export function createSimulationBuffers(
     springUniforms,
     integrationUniforms,
     nodeFlags,
+    nodeDepth,
     readback,
     nodeCount,
     nodeCapacity: effectiveNodeCap,
@@ -538,7 +549,7 @@ export function updateSimulationUniforms(
   //   damping: f32,            // offset 8
   //   max_velocity: f32,       // offset 12
   //   alpha: f32,              // offset 16
-  //   alpha_decay: f32,        // offset 20
+  //   depth_settling_spread: f32, // offset 20 (parents settle before children)
   //   alpha_min: f32,          // offset 24
   //   gravity_strength: f32,   // offset 28
   //   center_x: f32,           // offset 32
@@ -562,7 +573,7 @@ export function updateSimulationUniforms(
   intView.setFloat32(8, effectiveDamping, true);                  // damping (progressive)
   intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
   intView.setFloat32(16, alpha, true);                            // alpha
-  intView.setFloat32(20, 0.0, true);                               // alpha_decay (unused by shader — decay managed on CPU)
+  intView.setFloat32(20, 0.5, true);                              // depth_settling_spread (parents settle before children)
   intView.setFloat32(24, 0.0, true);                              // alpha_min (unused by shader — convergence managed on CPU)
   intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
   intView.setFloat32(32, forceConfig.centerX, true);              // center_x

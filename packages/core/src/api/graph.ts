@@ -1506,28 +1506,37 @@ export class HeroineGraph {
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
       // Upload bubble data (wellRadius + nodeDepth) for nested bubble mode
+      // Always compute depths for hierarchical settling (parents settle before children).
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
-      if (this.forceConfig.relativityBubbleMode && this.wasmEngine) {
+      const nodeCount = gs.nodeHighWater;
+      if (this.wasmEngine) {
         const bubbleData = this.wasmEngine.computeBubbleData(
           this.forceConfig.relativityBubbleBaseRadius,
           this.forceConfig.relativityBubblePadding,
         );
-        const nodeCount = gs.nodeHighWater;
         if (bubbleData.length >= nodeCount * 2) {
           const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
           const depths = new Float32Array(bubbleData.buffer, bubbleData.byteOffset + nodeCount * 4, nodeCount);
-          device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
+
+          if (this.forceConfig.relativityBubbleMode) {
+            device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
+          } else {
+            const defaultWellRadii = new Float32Array(nodeCount);
+            defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
+            device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
+          }
           device.queue.writeBuffer(b.nodeDepth, 0, depths);
+          // Also upload to shared integration buffer for depth-based settling
+          device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, depths);
         }
       } else {
-        // Safe defaults: uniform splat radius, zero depth (no depth decay effect)
-        const nodeCount = gs.nodeHighWater;
+        // No WASM: zero defaults for both algorithm and integration buffers
         const defaultWellRadii = new Float32Array(nodeCount);
         defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
         device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
-        // nodeDepth: zero-initialized ArrayBuffer is already 0.0 for all elements
         const defaultDepths = new Float32Array(nodeCount);
         device.queue.writeBuffer(b.nodeDepth, 0, defaultDepths);
+        device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, defaultDepths);
       }
 
       if (this.debug) {
@@ -2817,6 +2826,7 @@ export class HeroineGraph {
     this.simBuffers.velocitiesOut.destroy();
     this.simBuffers.forces.destroy();
     this.simBuffers.nodeFlags.destroy();
+    this.simBuffers.nodeDepth.destroy();
     this.simBuffers.readback.destroy();
 
     const nodeVec2Bytes = newCapacity * 8;
@@ -2850,6 +2860,11 @@ export class HeroineGraph {
     });
     this.simBuffers.nodeFlags = device.createBuffer({
       label: "Sim Node Flags",
+      size: nodeFlagBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.simBuffers.nodeDepth = device.createBuffer({
+      label: "Sim Node Depth",
       size: nodeFlagBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
@@ -5917,6 +5932,7 @@ export class HeroineGraph {
       this.simBuffers.repulsionUniforms.destroy();
       this.simBuffers.springUniforms.destroy();
       this.simBuffers.integrationUniforms.destroy();
+      this.simBuffers.nodeDepth.destroy();
       this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
