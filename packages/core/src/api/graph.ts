@@ -1509,8 +1509,11 @@ export class HeroineGraph {
       // Always compute depths for hierarchical settling (parents settle before children).
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
       const nodeCount = gs.nodeHighWater;
-      if (this.wasmEngine) {
-        const bubbleData = this.wasmEngine.computeBubbleData(
+      // deno-lint-ignore no-explicit-any
+      const hasComputeBubble = this.wasmEngine &&
+        typeof (this.wasmEngine as any).computeBubbleData === "function";
+      if (hasComputeBubble) {
+        const bubbleData = this.wasmEngine!.computeBubbleData(
           this.forceConfig.relativityBubbleBaseRadius,
           this.forceConfig.relativityBubblePadding,
         );
@@ -1530,7 +1533,7 @@ export class HeroineGraph {
           device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, depths);
         }
       } else {
-        // No WASM: zero defaults for both algorithm and integration buffers
+        // No WASM or computeBubbleData not available: zero defaults
         const defaultWellRadii = new Float32Array(nodeCount);
         defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
         device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
