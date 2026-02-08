@@ -28,7 +28,8 @@ struct SiblingUniforms {
     orbit_strength: f32,            // Radial spring pulling children to target orbit radius
     tangential_multiplier: f32,     // Amplify tangential repulsion (>1 = more angular spreading)
     orbit_radius_base: f32,         // Base orbit distance from parent
-    _pad1: u32,
+    bubble_mode: u32,               // 0 = off, 1 = use wellRadius for phantom zones + orbit
+    orbit_scale: f32,               // Bubble mode: orbit radius = parent_wellRadius * scale
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SiblingUniforms;
@@ -52,6 +53,9 @@ struct SiblingUniforms {
 // Node masses (for mass-weighted repulsion)
 @group(0) @binding(7) var<storage, read> node_mass: array<f32>;
 
+// Well radii (bubble mode: subtree-based collision boundaries)
+@group(0) @binding(8) var<storage, read> well_radius: array<f32>;
+
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 // Cap on cousin iterations to prevent runaway loops in wide hierarchies
@@ -71,12 +75,20 @@ fn compute_repulsion(delta: vec2<f32>, mass_i: f32, mass_j: f32) -> vec2<f32> {
     return (delta / dist) * force_magnitude;
 }
 
-// Phantom zone repulsion: extra force when mass-proportional collision zones overlap.
-// Zone radius = phantom_multiplier * sqrt(mass).
+// Phantom zone repulsion: extra force when collision zones overlap.
+// Normal mode: zone radius = phantom_multiplier * sqrt(mass).
+// Bubble mode: zone radius = wellRadius (computed from subtree).
 // When zones overlap, apply a soft push proportional to the overlap depth.
-fn compute_phantom_force(delta: vec2<f32>, dist: f32, mass_i: f32, mass_j: f32) -> vec2<f32> {
-    let zone_i = uniforms.phantom_multiplier * sqrt(mass_i);
-    let zone_j = uniforms.phantom_multiplier * sqrt(mass_j);
+fn compute_phantom_force(delta: vec2<f32>, dist: f32, mass_i: f32, mass_j: f32, idx_i: u32, idx_j: u32) -> vec2<f32> {
+    var zone_i: f32;
+    var zone_j: f32;
+    if (uniforms.bubble_mode != 0u) {
+        zone_i = well_radius[idx_i];
+        zone_j = well_radius[idx_j];
+    } else {
+        zone_i = uniforms.phantom_multiplier * sqrt(mass_i);
+        zone_j = uniforms.phantom_multiplier * sqrt(mass_j);
+    }
     let combined_radius = zone_i + zone_j;
 
     // No overlap — no phantom force
@@ -98,7 +110,7 @@ fn compute_phantom_force(delta: vec2<f32>, dist: f32, mass_i: f32, mass_j: f32) 
 }
 
 // Apply repulsion between this node and another, including phantom zone check.
-fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f32, strength_mult: f32) -> vec2<f32> {
+fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f32, strength_mult: f32, idx_i: u32, idx_j: u32) -> vec2<f32> {
     let delta = pos - other_pos;
     let dist_sq = dot(delta, delta);
 
@@ -111,7 +123,7 @@ fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f3
     // Phantom zone overlay — extra push when collision zones overlap
     if (uniforms.phantom_enabled != 0u) {
         let dist = sqrt(dist_sq);
-        f += compute_phantom_force(delta, dist, mass_i, mass_j) * strength_mult;
+        f += compute_phantom_force(delta, dist, mass_i, mass_j, idx_i, idx_j) * strength_mult;
     }
 
     return f;
@@ -125,7 +137,8 @@ fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f3
 fn apply_tangential_repulsion(
     pos: vec2<f32>, sib_pos: vec2<f32>,
     parent_pos: vec2<f32>, parent_dist: f32,
-    mass_i: f32, mass_j: f32, strength_mult: f32
+    mass_i: f32, mass_j: f32, strength_mult: f32,
+    idx_i: u32, idx_j: u32
 ) -> vec2<f32> {
     let delta = pos - sib_pos;
     let dist_sq = dot(delta, delta);
@@ -140,7 +153,7 @@ fn apply_tangential_repulsion(
     var phantom_force = vec2<f32>(0.0, 0.0);
     if (uniforms.phantom_enabled != 0u) {
         let dist = sqrt(dist_sq);
-        phantom_force = compute_phantom_force(delta, dist, mass_i, mass_j) * strength_mult;
+        phantom_force = compute_phantom_force(delta, dist, mass_i, mass_j, idx_i, idx_j) * strength_mult;
     }
 
     // If tangential amplification is active and we have a valid parent direction
@@ -201,9 +214,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // -- A: Orbit force --
         // Push child toward a target orbit distance from parent.
-        // Target radius scales with sqrt(sibling count) so more children = wider orbit.
+        // Normal: scales with sqrt(sibling count). Bubble: scales with parent's wellRadius.
         if (uniforms.orbit_strength > 0.0 && parent_dist > EPSILON) {
-            let target_radius = uniforms.orbit_radius_base * sqrt(max(f32(num_siblings), 1.0));
+            var target_radius: f32;
+            if (uniforms.bubble_mode != 0u) {
+                target_radius = well_radius[parent_idx] * uniforms.orbit_scale;
+            } else {
+                target_radius = uniforms.orbit_radius_base * sqrt(max(f32(num_siblings), 1.0));
+            }
             let radial_dir = to_parent / parent_dist;
             let orbit_error = parent_dist - target_radius;
 
@@ -229,7 +247,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             force += apply_tangential_repulsion(
                 pos, sib_pos, parent_pos, parent_dist,
-                mass_i, mass_j, 1.0
+                mass_i, mass_j, 1.0,
+                node_idx, sibling_idx
             );
         }
 
@@ -285,7 +304,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                         let mass_j = max(node_mass[cousin_idx], 1.0);
 
                         // Cousin repulsion — uses standard (non-tangential) repulsion
-                        force += apply_repulsion(pos, cousin_pos, mass_i, mass_j, uniforms.cousin_strength);
+                        force += apply_repulsion(pos, cousin_pos, mass_i, mass_j, uniforms.cousin_strength, node_idx, cousin_idx);
                         cousin_count++;
                     }
 
@@ -319,7 +338,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let child_pos = positions[child_idx];
         let mass_j = max(node_mass[child_idx], 1.0);
 
-        force += apply_repulsion(pos, child_pos, mass_i, mass_j, uniforms.parent_child_multiplier);
+        force += apply_repulsion(pos, child_pos, mass_i, mass_j, uniforms.parent_child_multiplier, node_idx, child_idx);
     }
 
     // Accumulate forces

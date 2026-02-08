@@ -69,7 +69,7 @@ export interface FullForceConfig extends ForceConfig {
   relativityMassExponent: number;
   /** Cap on sibling checks per node (default: 100) */
   relativityMaxSiblings: number;
-  /** Weaker repulsion multiplier for parent-child pairs (default: 0.3) */
+  /** Weaker repulsion multiplier for parent-child pairs (default: 0.15) */
   relativityParentChildMultiplier: number;
   /** Gravity curve type: 'linear' | 'inverse' | 'soft' | 'custom' */
   relativityGravityCurve: "linear" | "inverse" | "soft" | "custom";
@@ -85,12 +85,24 @@ export interface FullForceConfig extends ForceConfig {
   relativityPhantomMultiplier: number;
   /** Density field global repulsion strength relative to repulsionStrength (default: 0.5) */
   relativityDensityRepulsion: number;
-  /** Orbit force strength — radial spring keeping children at target distance from parent (default: 2.0) */
+  /** Orbit force strength — radial spring keeping children at target distance from parent (default: 1.0) */
   relativityOrbitStrength: number;
-  /** Tangential repulsion amplifier — >1 spreads siblings angularly around parent (default: 3.0) */
+  /** Tangential repulsion amplifier — >1 spreads siblings angularly around parent (default: 2.0) */
   relativityTangentialMultiplier: number;
-  /** Base orbit radius from parent — scales with sqrt(sibling count) (default: 30.0) */
+  /** Base orbit radius from parent — scales with sqrt(sibling count) (default: 25.0) */
   relativityOrbitRadius: number;
+
+  // Relativity Atlas Bubble Mode parameters
+  /** Enable nested bubble mode for subtree separation (default: false) */
+  relativityBubbleMode: boolean;
+  /** Base well radius for leaf nodes in bubble computation (default: 10.0) */
+  relativityBubbleBaseRadius: number;
+  /** Padding added to internal node bubble radii (default: 5.0) */
+  relativityBubblePadding: number;
+  /** Gravity depth decay rate: gravity *= decay^depth. 0 = no gravity at leaves, 1 = no effect (default: 0.7) */
+  relativityDepthDecay: number;
+  /** Orbit radius as fraction of parent wellRadius in bubble mode (default: 0.6) */
+  relativityBubbleOrbitScale: number;
 
   // LinLog specific parameters
   /** LinLog edge weight influence exponent (default: 1.0) */
@@ -211,6 +223,13 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   relativityOrbitStrength: 1.0,
   relativityTangentialMultiplier: 2.0,
   relativityOrbitRadius: 25.0,
+
+  // Relativity Atlas Bubble Mode defaults
+  relativityBubbleMode: false,
+  relativityBubbleBaseRadius: 10.0,
+  relativityBubblePadding: 5.0,
+  relativityDepthDecay: 0.7,
+  relativityBubbleOrbitScale: 0.6,
 
   // LinLog defaults
   linlogEdgeWeightInfluence: 1.0,
@@ -431,6 +450,12 @@ export function validateForceConfig(
   result.relativityOrbitStrength = Math.max(0, Math.min(20, result.relativityOrbitStrength));
   result.relativityTangentialMultiplier = Math.max(1, Math.min(20, result.relativityTangentialMultiplier));
   result.relativityOrbitRadius = Math.max(1, Math.min(200, result.relativityOrbitRadius));
+
+  // Validate Bubble Mode parameters
+  result.relativityBubbleBaseRadius = Math.max(1.0, Math.min(100, result.relativityBubbleBaseRadius));
+  result.relativityBubblePadding = Math.max(0, Math.min(50, result.relativityBubblePadding));
+  result.relativityDepthDecay = Math.max(0, Math.min(1, result.relativityDepthDecay));
+  result.relativityBubbleOrbitScale = Math.max(0.1, Math.min(2, result.relativityBubbleOrbitScale));
 
   // Validate LinLog parameters
   result.linlogEdgeWeightInfluence = Math.max(0, Math.min(2, result.linlogEdgeWeightInfluence));

@@ -146,6 +146,7 @@ import {
   getAlgorithmRegistry,
   initializeBuiltinAlgorithms,
   RelativityAtlasAlgorithm,
+  RelativityAtlasBuffers,
   TidyTreeAlgorithm,
   CommunityLayoutAlgorithm,
   CodebaseLayoutAlgorithm,
@@ -167,6 +168,9 @@ import {
 } from "../styling/mod.ts";
 import { initialCapacity, growCapacity } from "./buffer_capacity.ts";
 import { MutableGraphState } from "./graph_state.ts";
+
+// Default well radius for non-bubble mode (matches density field default splat in grid cells)
+const DEFAULT_WELL_RADIUS = 0.0;
 
 /**
  * WASM engine interface for spatial queries and graph structure.
@@ -220,6 +224,8 @@ interface WasmEngine extends SpatialQueryEngine {
     filePadding: number,
     spreadFactor: number,
   ): Float32Array;
+  /** Compute bubble data (wellRadius + depth) for nested bubble layout mode */
+  computeBubbleData(baseRadius: number, padding: number): Float32Array;
 }
 
 /**
@@ -1499,9 +1505,35 @@ export class HeroineGraph {
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
+      // Upload bubble data (wellRadius + nodeDepth) for nested bubble mode
+      const b = this.algorithmBuffers as RelativityAtlasBuffers;
+      if (this.forceConfig.relativityBubbleMode && this.wasmEngine) {
+        const bubbleData = this.wasmEngine.computeBubbleData(
+          this.forceConfig.relativityBubbleBaseRadius,
+          this.forceConfig.relativityBubblePadding,
+        );
+        const nodeCount = gs.nodeHighWater;
+        if (bubbleData.length >= nodeCount * 2) {
+          const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
+          const depths = new Float32Array(bubbleData.buffer, bubbleData.byteOffset + nodeCount * 4, nodeCount);
+          device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
+          device.queue.writeBuffer(b.nodeDepth, 0, depths);
+        }
+      } else {
+        // Safe defaults: uniform splat radius, zero depth (no depth decay effect)
+        const nodeCount = gs.nodeHighWater;
+        const defaultWellRadii = new Float32Array(nodeCount);
+        defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
+        device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
+        // nodeDepth: zero-initialized ArrayBuffer is already 0.0 for all elements
+        const defaultDepths = new Float32Array(nodeCount);
+        device.queue.writeBuffer(b.nodeDepth, 0, defaultDepths);
+      }
+
       if (this.debug) {
         console.log(
-          `Relativity Atlas: uploaded CSR (${gs.nodeHighWater} nodes, ${gs.edgeCount} edges)`,
+          `Relativity Atlas: uploaded CSR (${gs.nodeHighWater} nodes, ${gs.edgeCount} edges)` +
+          (this.forceConfig.relativityBubbleMode ? " [bubble mode]" : ""),
         );
       }
     }

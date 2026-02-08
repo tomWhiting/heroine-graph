@@ -28,6 +28,9 @@ struct DensityUniforms {
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read_write> density_grid: array<atomic<u32>>;
 
+// Well radii (bubble mode: per-node splat radius from subtree)
+@group(0) @binding(4) var<storage, read> well_radius: array<f32>;
+
 const WORKGROUP_SIZE: u32 = 256u;
 const DENSITY_SCALE: f32 = 1000.0;  // Scale for atomic integer accumulation
 
@@ -88,8 +91,16 @@ fn accumulate_density(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pos = positions[node_idx];
     let center_cell = world_to_grid(pos);
 
-    // Splat to nearby cells with Gaussian falloff
-    let radius = i32(ceil(uniforms.splat_radius));
+    // Per-node splat radius: use wellRadius scaled to grid cells when available
+    let bounds_extent = max(
+        uniforms.bounds_max_x - uniforms.bounds_min_x,
+        uniforms.bounds_max_y - uniforms.bounds_min_y
+    );
+    let cell_size = bounds_extent / f32(uniforms.grid_width);
+    let node_well = well_radius[node_idx];
+    // Use the larger of default splat radius or wellRadius-based radius, capped at 16
+    let effective_splat = min(max(uniforms.splat_radius, node_well / max(cell_size, 0.001)), 16.0);
+    let radius = i32(ceil(effective_splat));
 
     for (var dy = -radius; dy <= radius; dy++) {
         for (var dx = -radius; dx <= radius; dx++) {
@@ -102,11 +113,11 @@ fn accumulate_density(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
 
             let dist_sq = f32(dx * dx + dy * dy);
-            if (dist_sq > uniforms.splat_radius * uniforms.splat_radius) {
+            if (dist_sq > effective_splat * effective_splat) {
                 continue;
             }
 
-            let weight = gaussian(dist_sq, uniforms.splat_radius);
+            let weight = gaussian(dist_sq, effective_splat);
             let contribution = u32(weight * DENSITY_SCALE);
 
             if (contribution > 0u) {

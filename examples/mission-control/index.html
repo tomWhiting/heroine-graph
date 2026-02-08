@@ -5,11 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HeroineGraph - Mission Control</title>
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
 
       :root {
         --bg-dark: #0a0a0f;
@@ -33,1768 +29,305 @@
         height: 100vh;
       }
 
-      /* Main canvas container */
-      #graph-container {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-      }
+      /* Canvas */
+      #graph-container { position: fixed; inset: 0; }
+      #graph-canvas { width: 100%; height: 100%; display: block; }
 
-      #graph-canvas {
-        width: 100%;
-        height: 100%;
-        display: block;
-      }
-
-      /* Loading overlay */
+      /* Loading */
       #loading-overlay {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        position: fixed; inset: 0;
         background: var(--bg-dark);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        z-index: 1000;
-        transition: opacity 0.3s ease;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        z-index: 1000; transition: opacity 0.3s;
       }
-
-      #loading-overlay.hidden {
-        opacity: 0;
-        pointer-events: none;
-      }
-
+      #loading-overlay.hidden { opacity: 0; pointer-events: none; }
       .loading-spinner {
-        width: 48px;
-        height: 48px;
+        width: 40px; height: 40px;
         border: 3px solid var(--border);
         border-top-color: var(--accent);
         border-radius: 50%;
         animation: spin 1s linear infinite;
       }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .loading-text { margin-top: 12px; color: var(--text-dim); font-size: 13px; }
 
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
+      /* Error */
+      #error-message {
+        position: fixed; top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--bg-panel); border: 1px solid var(--danger);
+        border-radius: 12px; padding: 24px; text-align: center;
+        max-width: 400px; z-index: 1000; display: none;
       }
+      #error-message.visible { display: block; }
+      #error-message h3 { color: var(--danger); margin-bottom: 12px; }
 
-      .loading-text {
-        margin-top: 16px;
-        color: var(--text-dim);
-      }
-
-      /* Stats display */
-      #stats {
-        position: fixed;
-        top: 16px;
-        left: 16px;
-        background: var(--bg-panel);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 12px 16px;
-        font-size: 13px;
-        z-index: 100;
-        min-width: 160px;
-      }
-
-      .stat-row {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 4px;
-      }
-
-      .stat-row:last-child {
-        margin-bottom: 0;
-      }
-
-      .stat-label {
-        color: var(--text-dim);
-      }
-
-      .stat-value {
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* Node buttons */
-      #node-buttons {
-        position: fixed;
-        top: 16px;
-        right: 16px;
-        display: flex;
-        gap: 8px;
-        z-index: 100;
-      }
-
-      .node-btn {
-        background: var(--bg-panel);
-        border: 1px solid var(--border);
-        color: var(--text);
-        padding: 10px 16px;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 13px;
-        font-weight: 500;
-        transition: all 0.15s ease;
-      }
-
-      .node-btn:hover {
-        background: var(--bg-card);
-        border-color: var(--accent);
-      }
-
-      .node-btn:active {
-        transform: scale(0.98);
-      }
-
-      .node-btn.danger {
-        border-color: var(--danger);
-        color: var(--danger);
-      }
-
-      .node-btn.danger:hover {
-        background: rgba(244, 67, 54, 0.1);
-      }
-
-      .node-btn.codebase {
-        border-color: var(--accent);
-        color: var(--accent);
-        font-weight: 600;
-      }
-
-      .node-btn.codebase:hover {
-        background: rgba(0, 200, 255, 0.15);
-      }
-
-      /* Drawer toggle */
-      #drawer-toggle {
-        position: fixed;
-        bottom: 16px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: var(--bg-panel);
-        border: 1px solid var(--border);
-        color: var(--text);
-        padding: 10px 24px;
-        border-radius: 20px;
-        cursor: pointer;
-        font-size: 13px;
-        font-weight: 500;
-        z-index: 200;
-        transition: all 0.2s ease;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      #drawer-toggle:hover {
-        background: var(--bg-card);
-        border-color: var(--accent);
-      }
-
-      #drawer-toggle .arrow {
-        transition: transform 0.3s ease;
-      }
-
-      #drawer-toggle.open .arrow {
-        transform: rotate(180deg);
-      }
-
-      /* Control drawer */
+      /* ===== Bottom Drawer ===== */
       #drawer {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
+        position: fixed; bottom: 0; left: 0; right: 0;
+        z-index: 200; display: flex; flex-direction: column;
+        pointer-events: none;
+      }
+
+      /* Header bar - always visible */
+      #drawer-header {
+        height: 32px; background: var(--bg-panel);
+        border-top: 1px solid var(--border);
+        display: flex; align-items: center;
+        padding: 0 12px; gap: 12px;
+        font-size: 11px; pointer-events: auto;
+        cursor: pointer; user-select: none;
+      }
+      #drawer-header:hover { background: var(--bg-card); }
+
+      .stat { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+      .stat b { color: var(--text); font-weight: 600; }
+
+      .header-spacer { flex: 1; }
+
+      .header-btn {
+        background: none; border: 1px solid var(--border);
+        color: var(--text); padding: 2px 8px; border-radius: 4px;
+        font-size: 10px; cursor: pointer; white-space: nowrap;
+      }
+      .header-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+      #algo-select {
+        background: var(--bg-dark); border: 1px solid var(--border);
+        color: var(--text); padding: 2px 20px 2px 6px; border-radius: 4px;
+        font-size: 10px; cursor: pointer; outline: none;
+        -webkit-appearance: none; appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23808090' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 4px center;
+      }
+      #algo-select option { background: var(--bg-dark); }
+
+      #drawer-chevron {
+        font-size: 8px; color: var(--text-dim);
+        transition: transform 0.2s;
+      }
+      #drawer.open #drawer-chevron { transform: rotate(180deg); }
+
+      /* Tab bar */
+      #drawer-tabs {
+        display: none; /* shown when open */
         background: var(--bg-panel);
         border-top: 1px solid var(--border);
-        transform: translateY(100%);
-        transition: transform 0.3s ease;
-        z-index: 150;
-        max-height: 40vh;
-        overflow-y: auto;
+        pointer-events: auto;
+      }
+      #drawer.open #drawer-tabs { display: flex; }
+
+      .tab {
+        padding: 6px 16px; font-size: 11px;
+        cursor: pointer; color: var(--text-dim);
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s;
+      }
+      .tab:hover { color: var(--text); }
+      .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+      /* Drawer body */
+      #drawer-body {
+        display: none;
+        background: var(--bg-panel);
+        max-height: 280px; overflow-y: auto;
+        pointer-events: auto;
+      }
+      #drawer.open #drawer-body { display: block; }
+
+      .tab-panel { display: none; padding: 12px 16px; }
+      .tab-panel.active { display: block; }
+
+      /* ===== Compact Fader ===== */
+      .fader-row {
+        display: flex; gap: 2px; align-items: flex-start;
+        overflow-x: auto; padding: 4px 0;
       }
 
-      #drawer.open {
-        transform: translateY(0);
+      .fader {
+        display: flex; flex-direction: column;
+        align-items: center; width: 42px; flex-shrink: 0;
+        gap: 2px;
+      }
+      .fader-value {
+        font-size: 9px; font-family: "SF Mono", "Consolas", monospace;
+        color: var(--text); text-align: center; width: 100%;
+        user-select: none; line-height: 1;
+      }
+      .fader-track {
+        position: relative; width: 2px; height: 80px;
+        background: var(--border); border-radius: 1px;
+        cursor: pointer;
+      }
+      .fader-thumb {
+        position: absolute; width: 14px; height: 8px;
+        left: -6px; bottom: 0;
+        background: var(--accent); border-radius: 2px;
+        cursor: grab; transition: background 0.1s;
+      }
+      .fader-thumb:hover { background: var(--accent-hover); }
+      .fader-thumb.dragging { cursor: grabbing; background: var(--accent-hover); }
+      .fader-label {
+        font-size: 8px; color: var(--text-dim);
+        text-align: center; width: 100%;
+        user-select: none; line-height: 1;
+        overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
-      .drawer-content {
-        padding: 16px 20px;
-        padding-bottom: 60px;
+      /* ===== Toggle ===== */
+      .toggle {
+        position: relative; width: 32px; height: 18px;
+        flex-shrink: 0;
+      }
+      .toggle input { opacity: 0; width: 0; height: 0; }
+      .toggle-track {
+        position: absolute; inset: 0;
+        background: var(--border); border-radius: 9px;
+        cursor: pointer; transition: background 0.2s;
+      }
+      .toggle-track::before {
+        content: ""; position: absolute;
+        width: 14px; height: 14px; left: 2px; bottom: 2px;
+        background: white; border-radius: 50%;
+        transition: transform 0.2s;
+      }
+      .toggle input:checked + .toggle-track { background: var(--accent); }
+      .toggle input:checked + .toggle-track::before { transform: translateX(14px); }
+
+      /* ===== Cards / Sections ===== */
+      .section-label {
+        font-size: 10px; color: var(--text-dim);
+        text-transform: uppercase; letter-spacing: 0.5px;
+        margin: 8px 0 6px;
+      }
+      .section-label:first-child { margin-top: 0; }
+
+      .card {
+        background: var(--bg-card); border: 1px solid var(--border);
+        border-radius: 6px; padding: 8px 10px; margin-bottom: 6px;
       }
 
-      .drawer-header {
-        display: flex;
-        align-items: center;
+      .card-header {
+        display: flex; align-items: center;
         justify-content: space-between;
-        margin-bottom: 12px;
+        margin-bottom: 6px;
+      }
+      .card-title {
+        font-size: 11px; font-weight: 600;
+        display: flex; align-items: center; gap: 6px;
       }
 
-      .drawer-title {
-        font-size: 15px;
-        font-weight: 600;
-      }
-
-      /* Layer sections */
-      .layers-grid {
+      .layer-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 10px;
-      }
-
-      .layer-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 12px;
-      }
-
-      .layer-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 10px;
-      }
-
-      .layer-title {
-        font-size: 13px;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
+        grid-template-columns: repeat(3, 1fr);
         gap: 6px;
       }
 
-      .layer-icon {
-        width: 16px;
-        height: 16px;
-        border-radius: 3px;
-      }
-
-      /* Toggle switch */
-      .toggle {
-        position: relative;
-        width: 44px;
-        height: 24px;
-      }
-
-      .toggle input {
-        opacity: 0;
-        width: 0;
-        height: 0;
-      }
-
-      .toggle-slider {
-        position: absolute;
-        cursor: pointer;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: var(--border);
-        border-radius: 12px;
-        transition: 0.2s;
-      }
-
-      .toggle-slider:before {
-        position: absolute;
-        content: "";
-        height: 18px;
-        width: 18px;
-        left: 3px;
-        bottom: 3px;
-        background: white;
-        border-radius: 50%;
-        transition: 0.2s;
-      }
-
-      .toggle input:checked + .toggle-slider {
-        background: var(--accent);
-      }
-
-      .toggle input:checked + .toggle-slider:before {
-        transform: translateX(20px);
-      }
-
-      /* Control rows */
-      .control-row {
-        margin-bottom: 8px;
-      }
-
-      .control-row:last-child {
-        margin-bottom: 0;
-      }
-
-      .control-label {
-        display: flex;
+      /* ===== Small Controls ===== */
+      .ctrl-row {
+        display: flex; align-items: center;
         justify-content: space-between;
-        align-items: center;
-        margin-bottom: 4px;
-        font-size: 11px;
-        color: var(--text-dim);
+        margin-bottom: 4px; font-size: 11px;
+      }
+      .ctrl-row:last-child { margin-bottom: 0; }
+      .ctrl-label { color: var(--text-dim); }
+
+      .btn {
+        background: var(--bg-card); border: 1px solid var(--border);
+        color: var(--text); padding: 4px 10px; border-radius: 4px;
+        font-size: 10px; cursor: pointer; white-space: nowrap;
+      }
+      .btn:hover { border-color: var(--accent); }
+      .btn.primary { background: var(--accent); border-color: var(--accent); }
+      .btn.primary:hover { background: var(--accent-hover); }
+      .btn.danger { border-color: var(--danger); color: var(--danger); }
+
+      .btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+
+      .sm-select {
+        background: var(--bg-dark); border: 1px solid var(--border);
+        color: var(--text); padding: 3px 18px 3px 6px; border-radius: 4px;
+        font-size: 10px; cursor: pointer; outline: none;
+        -webkit-appearance: none; appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23808090' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 4px center;
+      }
+      .sm-select option { background: var(--bg-dark); }
+
+      input[type="color"].sm-color {
+        width: 24px; height: 18px; padding: 1px;
+        background: var(--bg-dark); border: 1px solid var(--border);
+        border-radius: 3px; cursor: pointer; -webkit-appearance: none;
+      }
+      input[type="color"].sm-color::-webkit-color-swatch-wrapper { padding: 1px; }
+      input[type="color"].sm-color::-webkit-color-swatch { border: none; border-radius: 2px; }
+
+      /* Inline range (for layer card expanded config) */
+      input[type="range"].sm-range {
+        width: 100%; height: 4px;
+        -webkit-appearance: none; background: var(--border);
+        border-radius: 2px; outline: none;
+      }
+      input[type="range"].sm-range::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 10px; height: 10px;
+        background: var(--accent); border-radius: 50%; cursor: pointer;
       }
 
-      .control-value {
-        font-variant-numeric: tabular-nums;
-        color: var(--text);
+      /* Drop zone */
+      .drop-zone {
+        border: 1px dashed var(--border); border-radius: 6px;
+        padding: 12px; text-align: center; font-size: 11px;
+        color: var(--text-dim); cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
       }
-
-      /* Color gradient inputs */
-      .color-gradient-inputs {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-
-      .color-gradient-inputs input[type="color"] {
-        width: 32px;
-        height: 24px;
-        padding: 0;
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        cursor: pointer;
-        background: transparent;
-      }
-
-      .color-gradient-inputs input[type="color"]::-webkit-color-swatch-wrapper {
-        padding: 2px;
-      }
-
-      .color-gradient-inputs input[type="color"]::-webkit-color-swatch {
-        border-radius: 2px;
-        border: none;
-      }
-
-      /* Range slider */
-      input[type="range"] {
-        width: 100%;
-        height: 6px;
-        -webkit-appearance: none;
-        background: var(--border);
-        border-radius: 3px;
-        outline: none;
-      }
-
-      input[type="range"]::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 16px;
-        height: 16px;
-        background: var(--accent);
-        border-radius: 50%;
-        cursor: pointer;
-        transition: transform 0.1s;
-      }
-
-      input[type="range"]::-webkit-slider-thumb:hover {
-        transform: scale(1.1);
-      }
-
-      input[type="range"]::-moz-range-thumb {
-        width: 16px;
-        height: 16px;
-        background: var(--accent);
-        border-radius: 50%;
-        cursor: pointer;
-        border: none;
-      }
-
-      /* Select dropdown */
-      select {
-        width: 100%;
-        padding: 6px 28px 6px 10px;
-        background: var(--bg-dark);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: var(--text);
-        font-size: 12px;
-        cursor: pointer;
-        outline: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        appearance: none;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23808090' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
-        background-repeat: no-repeat;
-        background-position: right 8px center;
-      }
-
-      select:focus {
+      .drop-zone:hover,
+      .drop-zone.dragover {
         border-color: var(--accent);
+        background: rgba(79, 140, 255, 0.05);
       }
 
-      select option {
-        background: var(--bg-dark);
-        color: var(--text);
-        padding: 8px;
-      }
-
-      /* Color input */
-      input[type="color"] {
-        width: 100%;
-        height: 26px;
-        padding: 2px;
-        background: var(--bg-dark);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        cursor: pointer;
-        -webkit-appearance: none;
-      }
-
-      input[type="color"]::-webkit-color-swatch-wrapper {
-        padding: 2px;
-      }
-
-      input[type="color"]::-webkit-color-swatch {
-        border: none;
-        border-radius: 4px;
-      }
-
-      /* Simulation section */
-      .simulation-section {
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px solid var(--border);
-      }
-
-      .section-title {
-        font-size: 12px;
-        font-weight: 600;
-        margin-bottom: 10px;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-
-      .simulation-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 8px;
-      }
-
-      .simulation-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 8px 10px;
-      }
-
-      .sim-note {
-        font-size: 10px;
-        color: var(--text-dim);
-        font-style: italic;
-        margin-top: 8px;
-      }
-
-      /* Buttons row */
-      .sim-buttons {
-        display: flex;
-        gap: 8px;
-        margin-top: 10px;
-      }
-
-      .sim-btn {
-        flex: 1;
-        padding: 8px 12px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: var(--bg-card);
-        color: var(--text);
-        font-size: 12px;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-
-      .sim-btn:hover {
-        border-color: var(--accent);
-        background: var(--bg-panel);
-      }
-
-      .sim-btn.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-      }
-
-      .sim-btn.primary:hover {
-        background: var(--accent-hover);
-      }
-
-      /* Error state */
-      #error-message {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: var(--bg-panel);
-        border: 1px solid var(--danger);
-        border-radius: 12px;
-        padding: 24px;
-        text-align: center;
-        max-width: 400px;
-        z-index: 1000;
-        display: none;
-      }
-
-      #error-message.visible {
-        display: block;
-      }
-
-      #error-message h3 {
-        color: var(--danger);
-        margin-bottom: 12px;
-      }
+      /* Scrollbar styling */
+      #drawer-body::-webkit-scrollbar { width: 4px; }
+      #drawer-body::-webkit-scrollbar-track { background: transparent; }
+      #drawer-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
       /* Keyboard hint */
-      .keyboard-hint {
-        position: fixed;
-        bottom: 60px;
-        right: 16px;
-        font-size: 11px;
-        color: var(--text-dim);
-        z-index: 100;
+      .kbd-hint {
+        position: fixed; bottom: 40px; right: 12px;
+        font-size: 10px; color: var(--text-dim); z-index: 100;
       }
-
       kbd {
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 2px 6px;
-        font-family: inherit;
+        background: var(--bg-card); border: 1px solid var(--border);
+        border-radius: 3px; padding: 1px 4px; font-family: inherit;
       }
     </style>
   </head>
   <body>
-    <!-- Loading overlay -->
     <div id="loading-overlay">
       <div class="loading-spinner"></div>
       <div class="loading-text">Initializing WebGPU...</div>
     </div>
 
-    <!-- Error message -->
     <div id="error-message">
       <h3>WebGPU Not Available</h3>
-      <p id="error-text">
-        Your browser does not support WebGPU. Please use Chrome 113+, Edge 113+, or Safari 18+.
-      </p>
+      <p id="error-text">Your browser does not support WebGPU. Please use Chrome 113+, Edge 113+, or Safari 18+.</p>
     </div>
 
-    <!-- Graph container -->
     <div id="graph-container">
       <canvas id="graph-canvas"></canvas>
     </div>
 
-    <!-- Graph Generator Controls -->
-    <div id="graph-generator" style="position: fixed; top: 16px; left: 16px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; z-index: 100; display: flex; flex-direction: column; gap: 8px; min-width: 220px;">
-      <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Graph Generator</div>
-      <select id="graph-type" style="padding: 6px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-card); color: inherit;">
-        <option value="corporate">Corporate (Random)</option>
-        <option value="hierarchical">Hierarchical (Tree)</option>
-      </select>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 12px; min-width: 70px;">Branching</span>
-        <input type="range" id="branch-factor" min="2" max="10" value="4" style="flex: 1;">
-        <span id="branch-factor-val" style="font-size: 12px; min-width: 35px; text-align: right;">4</span>
-      </div>
-      <!-- Generate buttons (restart with clean graph) -->
-      <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-        <button class="gen-btn" data-count="100" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">100</button>
-        <button class="gen-btn" data-count="1000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">1K</button>
-        <button class="gen-btn" data-count="10000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">10K</button>
-        <button class="gen-btn" data-count="100000" style="flex: 1; min-width: 45px; padding: 4px 8px; font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">100K</button>
-      </div>
-      <!-- Cross-talk section -->
-      <div style="margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);">
-        <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Add Cross-Talk (Live)</div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 12px; min-width: 50px;">Edges</span>
-          <input type="number" id="crosstalk-count" value="50" min="1" max="10000" style="flex: 1; padding: 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-card); color: inherit; width: 60px;">
-          <button id="add-crosstalk-btn" style="padding: 4px 10px; font-size: 11px; background: #ff6b6b33; border: 1px solid var(--border); border-radius: 4px; color: inherit; cursor: pointer;">+ Add</button>
-        </div>
-      </div>
-      <!-- Stats display -->
-      <div style="margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);">
-        <div class="stat-row">
-          <span class="stat-label">Nodes</span>
-          <span class="stat-value" id="stat-nodes">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Edges</span>
-          <span class="stat-value" id="stat-edges">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">FPS</span>
-          <span class="stat-value" id="stat-fps">0</span>
-        </div>
-      </div>
+    <div class="kbd-hint">
+      <kbd>Space</kbd> drawer &nbsp; <kbd>R</kbd> restart &nbsp; <kbd>F</kbd> fit
     </div>
 
-    <!-- Node count buttons -->
-    <div id="node-buttons">
-      <button class="node-btn codebase" id="load-codebase-btn">Codebase</button>
-      <button class="node-btn" data-count="100">+ 100</button>
-      <button class="node-btn" data-count="1000">+ 1K</button>
-      <button class="node-btn" data-count="10000">+ 10K</button>
-      <button class="node-btn" data-count="100000">+ 100K</button>
-      <button class="node-btn danger" id="clear-btn">Clear</button>
-      <span style="margin-left: 8px; border-left: 1px solid var(--border); padding-left: 8px; opacity: 0.6;">Mutate:</span>
-      <button class="node-btn" id="mutate-add-nodes">+10 Nodes</button>
-      <button class="node-btn" id="mutate-add-edges">+20 Edges</button>
-      <button class="node-btn danger" id="mutate-remove-nodes">-5 Nodes</button>
-    </div>
-
-    <!-- Keyboard hint -->
-    <div class="keyboard-hint">
-      <kbd>Space</kbd> Toggle drawer &nbsp; <kbd>R</kbd> Restart simulation
-    </div>
-
-    <!-- Drawer toggle -->
-    <button id="drawer-toggle">
-      <span>Mission Control</span>
-      <span class="arrow">&#9650;</span>
-    </button>
-
-    <!-- Control drawer -->
+    <!-- Bottom drawer - built by main.ts -->
     <div id="drawer">
-      <div class="drawer-content">
-        <div class="drawer-header">
-          <h2 class="drawer-title">Layer Configuration</h2>
-        </div>
-
-        <!-- Layers grid -->
-        <div class="layers-grid">
-          <!-- Display Settings -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(135deg, #fff 50%, #000 50%)"
-                ></span>
-                Display
-              </span>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Theme</span>
-              </div>
-              <select id="display-theme">
-                <option value="dark">Dark (Default)</option>
-                <option value="light">Light</option>
-                <option value="midnight">Midnight</option>
-                <option value="contrast">High Contrast</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Background</span>
-              </div>
-              <input type="color" id="display-bg-color" value="#0a0a0f">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Default Edge Color</span>
-              </div>
-              <input type="color" id="display-edge-color" value="#808080">
-            </div>
-          </div>
-
-          <!-- Heatmap -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(135deg, #440154, #21918c, #fde725)"
-                ></span>
-                Heatmap
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="heatmap-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Color Scale</span>
-              </div>
-              <select id="heatmap-colorscale">
-                <option value="viridis">Viridis</option>
-                <option value="plasma">Plasma</option>
-                <option value="inferno">Inferno</option>
-                <option value="magma">Magma</option>
-                <option value="cividis">Cividis</option>
-                <option value="turbo">Turbo</option>
-                <option value="spectral">Spectral</option>
-                <option value="coolwarm">Cool/Warm</option>
-                <option value="blues">Blues</option>
-                <option value="reds">Reds</option>
-                <option value="greens">Greens</option>
-                <option value="custom">Custom...</option>
-              </select>
-            </div>
-            <div class="control-row custom-colors" id="heatmap-custom-colors" style="display: none;">
-              <div class="control-label">
-                <span>Custom Gradient</span>
-              </div>
-              <div class="color-gradient-inputs">
-                <input type="color" id="heatmap-color-start" value="#000000" title="Low">
-                <input type="color" id="heatmap-color-mid" value="#ff6600" title="Mid">
-                <input type="color" id="heatmap-color-end" value="#ffff00" title="High">
-              </div>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Data Source</span>
-              </div>
-              <select id="heatmap-datasource">
-                <option value="density">Density (uniform)</option>
-                <option value="errors">Errors</option>
-                <option value="warnings">Warnings</option>
-                <option value="complexity">Complexity</option>
-                <option value="lines">Lines of Code</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Radius</span>
-                <span class="control-value" id="heatmap-radius-val">50</span>
-              </div>
-              <input type="range" id="heatmap-radius" min="10" max="200" value="50">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Intensity</span>
-                <span class="control-value" id="heatmap-intensity-val">1.0</span>
-              </div>
-              <input type="range" id="heatmap-intensity" min="0.1" max="5" step="0.1" value="1">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Opacity</span>
-                <span class="control-value" id="heatmap-opacity-val">0.8</span>
-              </div>
-              <input type="range" id="heatmap-opacity" min="0" max="1" step="0.05" value="0.8">
-            </div>
-          </div>
-
-          <!-- Contours -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: #fff; border: 2px solid var(--border)"
-                ></span>
-                Contours
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="contour-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Stroke Width</span>
-                <span class="control-value" id="contour-width-val">2</span>
-              </div>
-              <input type="range" id="contour-width" min="0.5" max="8" step="0.5" value="2">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Stroke Color</span>
-              </div>
-              <input type="color" id="contour-color" value="#ffffff">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Threshold Count</span>
-                <span class="control-value" id="contour-thresholds-val">4</span>
-              </div>
-              <input type="range" id="contour-thresholds" min="1" max="10" value="4">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Min Threshold</span>
-                <span class="control-value" id="contour-min-val">0.10</span>
-              </div>
-              <input type="range" id="contour-min" min="0.02" max="0.5" step="0.02" value="0.1">
-            </div>
-          </div>
-
-          <!-- Metaballs -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: radial-gradient(circle, #6ba0ff, #4f8cff)"
-                ></span>
-                Metaballs
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="metaball-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Fill Color</span>
-              </div>
-              <input type="color" id="metaball-colorscale" value="#4f8cff">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Threshold</span>
-                <span class="control-value" id="metaball-threshold-val">0.5</span>
-              </div>
-              <input type="range" id="metaball-threshold" min="0.1" max="1" step="0.05" value="0.5">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Opacity</span>
-                <span class="control-value" id="metaball-opacity-val">0.6</span>
-              </div>
-              <input type="range" id="metaball-opacity" min="0" max="1" step="0.05" value="0.6">
-            </div>
-          </div>
-
-          <!-- Labels -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: var(--bg-dark); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold"
-                >A</span>
-                Labels
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="labels-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Font Size</span>
-                <span class="control-value" id="labels-fontsize-val">14</span>
-              </div>
-              <input type="range" id="labels-fontsize" min="8" max="32" value="14">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Text Color</span>
-              </div>
-              <input type="color" id="labels-color" value="#ffffff">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Max Labels</span>
-                <span class="control-value" id="labels-max-val">100</span>
-              </div>
-              <input type="range" id="labels-max" min="10" max="500" step="10" value="100">
-            </div>
-          </div>
-
-          <!-- Node Styling (includes borders) -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(135deg, #4facfe, #fa709a, #a18cd1)"
-                ></span>
-                Node Styling
-              </span>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Size Scale</span>
-                <span class="control-value" id="node-size-scale-val">1.0</span>
-              </div>
-              <input type="range" id="node-size-scale" min="0.25" max="4" step="0.25" value="1">
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="style-by-type" style="width: 100%">Color by Type</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="style-by-role" style="width: 100%">Size by Role</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="style-highlight-leads" style="width: 100%">Highlight Leaders</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="style-random-colors" style="width: 100%">Random Colors</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="style-reset" style="width: 100%">Reset to Default</button>
-            </div>
-            <!-- Node Borders subsection -->
-            <div class="control-row" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);">
-              <div class="control-label" style="font-weight: 600;">
-                <span>Borders</span>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="border-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Border Width</span>
-                <span class="control-value" id="border-width-val">2.0</span>
-              </div>
-              <input type="range" id="border-width" min="0.5" max="5" step="0.5" value="2">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Border Color</span>
-              </div>
-              <input type="color" id="border-color" value="#000000" style="width: 60px; height: 28px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer;">
-            </div>
-          </div>
-
-          <!-- Edge Styling (includes curved edges) -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(135deg, #a18cd1, #4facfe)"
-                ></span>
-                Edge Styling
-              </span>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="edge-color-by-type" style="width: 100%">Color by Type</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="edge-width-by-type" style="width: 100%">Width by Type</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="edge-highlight-services" style="width: 100%">Highlight Service Deps</button>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Edge Opacity</span>
-                <span class="control-value" id="edge-opacity-val">0.40</span>
-              </div>
-              <input type="range" id="edge-opacity" min="0.05" max="1" step="0.05" value="0.4">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Edge Width Scale</span>
-                <span class="control-value" id="edge-width-scale-val">1.0</span>
-              </div>
-              <input type="range" id="edge-width-scale" min="0.1" max="5" step="0.1" value="1">
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="edge-reset" style="width: 100%">Reset Edges</button>
-            </div>
-            <!-- Curved Edges subsection -->
-            <div class="control-row" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);">
-              <div class="control-label" style="font-weight: 600;">
-                <span>Curved Edges</span>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="curved-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Segments</span>
-                <span class="control-value" id="curved-segments-val">19</span>
-              </div>
-              <input type="range" id="curved-segments" min="3" max="50" step="1" value="19">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Weight</span>
-                <span class="control-value" id="curved-weight-val">0.80</span>
-              </div>
-              <input type="range" id="curved-weight" min="0.1" max="2" step="0.05" value="0.8">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Curvature</span>
-                <span class="control-value" id="curved-curvature-val">0.25</span>
-              </div>
-              <input type="range" id="curved-curvature" min="-0.5" max="0.5" step="0.01" value="0.25">
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="curved-randomize" style="width: 100%">Randomize Curvatures</button>
-            </div>
-          </div>
-
-          <!-- Value Streams -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(135deg, #ff6b6b, #fee140, #4facfe)"
-                ></span>
-                Value Streams
-              </span>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Demo Streams</span>
-              </div>
-              <select id="stream-demo-select">
-                <option value="none">None</option>
-                <option value="errors">Errors (Red)</option>
-                <option value="activity">Activity (Blue)</option>
-                <option value="importance">Importance (Purple)</option>
-                <option value="multi">Multi-Stream Demo</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Stream Opacity</span>
-                <span class="control-value" id="stream-opacity-val">0.80</span>
-              </div>
-              <input type="range" id="stream-opacity" min="0.1" max="1" step="0.05" value="0.8">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Blend Mode</span>
-              </div>
-              <select id="stream-blend-mode">
-                <option value="additive">Additive</option>
-                <option value="max">Max</option>
-                <option value="multiply">Multiply</option>
-                <option value="replace">Replace</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="stream-randomize" style="width: 100%">Randomize Values</button>
-            </div>
-            <div class="control-row">
-              <button class="sim-btn" id="stream-clear" style="width: 100%">Clear Streams</button>
-            </div>
-          </div>
-
-          <!-- Edge Flow -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(90deg, #4f8cff 0%, transparent 50%, #4f8cff 100%)"
-                ></span>
-                Edge Flow
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="flow-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Preset</span>
-              </div>
-              <select id="flow-preset">
-                <option value="none">None</option>
-                <option value="particles">Particles</option>
-                <option value="waves">Waves</option>
-                <option value="dataStream">Data Stream</option>
-                <option value="sparks">Sparks</option>
-                <option value="warning">Warning</option>
-                <option value="energy">Energy</option>
-                <option value="dualLayer">Dual Layer</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Wave Shape</span>
-              </div>
-              <select id="flow-wave-shape">
-                <option value="sine">Sine</option>
-                <option value="square">Square</option>
-                <option value="triangle">Triangle</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Pulse Width</span>
-                <span class="control-value" id="flow-width-val">0.10</span>
-              </div>
-              <input type="range" id="flow-width" min="0.01" max="0.5" step="0.01" value="0.1">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Pulse Count</span>
-                <span class="control-value" id="flow-count-val">3</span>
-              </div>
-              <input type="range" id="flow-count" min="1" max="8" step="1" value="3">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Speed</span>
-                <span class="control-value" id="flow-speed-val">0.30</span>
-              </div>
-              <input type="range" id="flow-speed" min="0.05" max="2" step="0.05" value="0.3">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Brightness</span>
-                <span class="control-value" id="flow-brightness-val">2.0</span>
-              </div>
-              <input type="range" id="flow-brightness" min="1" max="5" step="0.1" value="2">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Fade</span>
-                <span class="control-value" id="flow-fade-val">0.30</span>
-              </div>
-              <input type="range" id="flow-fade" min="0" max="1" step="0.05" value="0.3">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Flow Color</span>
-              </div>
-              <input type="color" id="flow-color" value="#00ffff" style="width: 60px;">
-              <label style="font-size: 10px; margin-left: 8px;">
-                <input type="checkbox" id="flow-use-edge-color"> Use edge color
-              </label>
-            </div>
-          </div>
-
-          <!-- Edge Flow Layer 2 -->
-          <div class="layer-card">
-            <div class="layer-header">
-              <span class="layer-title">
-                <span
-                  class="layer-icon"
-                  style="background: linear-gradient(90deg, #ff6b6b 0%, transparent 50%, #ff6b6b 100%)"
-                ></span>
-                Flow Layer 2
-              </span>
-              <label class="toggle">
-                <input type="checkbox" id="flow2-enabled">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Wave Shape</span>
-              </div>
-              <select id="flow2-wave-shape">
-                <option value="sine">Sine</option>
-                <option value="square" selected>Square</option>
-                <option value="triangle">Triangle</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Pulse Width</span>
-                <span class="control-value" id="flow2-width-val">0.05</span>
-              </div>
-              <input type="range" id="flow2-width" min="0.01" max="0.5" step="0.01" value="0.05">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Pulse Count</span>
-                <span class="control-value" id="flow2-count-val">6</span>
-              </div>
-              <input type="range" id="flow2-count" min="1" max="12" step="1" value="6">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Speed</span>
-                <span class="control-value" id="flow2-speed-val">0.50</span>
-              </div>
-              <input type="range" id="flow2-speed" min="0.05" max="2" step="0.05" value="0.5">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Brightness</span>
-                <span class="control-value" id="flow2-brightness-val">1.5</span>
-              </div>
-              <input type="range" id="flow2-brightness" min="0.5" max="5" step="0.1" value="1.5">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Fade</span>
-                <span class="control-value" id="flow2-fade-val">0.20</span>
-              </div>
-              <input type="range" id="flow2-fade" min="0" max="1" step="0.05" value="0.2">
-            </div>
-            <div class="control-row">
-              <div class="control-label">
-                <span>Flow Color</span>
-              </div>
-              <input type="color" id="flow2-color" value="#ff6b6b" style="width: 60px;">
-              <label style="font-size: 10px; margin-left: 8px;">
-                <input type="checkbox" id="flow2-use-edge-color"> Use edge color
-              </label>
-            </div>
-          </div>
-
-        </div>
-
-        <!-- Force Configuration section -->
-        <div class="simulation-section">
-          <h3 class="section-title">Force Configuration</h3>
-          <div class="simulation-grid">
-            <!-- Algorithm Selector -->
-            <div class="simulation-card" style="grid-column: span 2;">
-              <div class="control-row">
-                <span class="control-label">Algorithm</span>
-                <span class="control-value" id="force-algorithm-val">N²</span>
-              </div>
-              <select id="force-algorithm" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 13px;">
-                <option value="n2">N² (Direct) - up to 10K nodes</option>
-                <option value="force-atlas2">ForceAtlas2 - network visualization</option>
-                <option value="barnes-hut">Barnes-Hut - up to 100K nodes</option>
-                <option value="density">Density Field - O(n) for 100K+ nodes</option>
-                <option value="relativity-atlas">Relativity Atlas - hierarchical O(N+E)</option>
-                <option value="tidy-tree">Tidy Tree - tree/hierarchy O(n)</option>
-                <option value="linlog">LinLog - community cluster separation</option>
-                <option value="t-fdp">t-FDP - bounded repulsion O(n²)</option>
-                <option value="community">Community Layout - Louvain O(n log n)</option>
-                <option value="codebase">Codebase Layout - circle packing O(n)</option>
-              </select>
-            </div>
-
-            <!-- Repulsion -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Repulsion</span>
-                <span class="control-value" id="force-repulsion-val">30</span>
-              </div>
-              <input type="range" id="force-repulsion" min="1" max="1000" step="1" value="30">
-            </div>
-
-            <!-- Spring Strength -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Spring Strength</span>
-                <span class="control-value" id="force-spring-val">0.10</span>
-              </div>
-              <input type="range" id="force-spring" min="0.01" max="1" step="0.01" value="0.1">
-            </div>
-
-            <!-- Spring Length -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Link Distance</span>
-                <span class="control-value" id="force-distance-val">30</span>
-              </div>
-              <input type="range" id="force-distance" min="1" max="500" step="1" value="30">
-            </div>
-
-            <!-- Center Gravity -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Center Gravity</span>
-                <span class="control-value" id="force-center-val">0.01</span>
-              </div>
-              <input type="range" id="force-center" min="0" max="0.5" step="0.01" value="0.01">
-            </div>
-
-            <!-- Velocity Decay -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Damping</span>
-                <span class="control-value" id="force-damping-val">0.40</span>
-              </div>
-              <input type="range" id="force-damping" min="0.1" max="0.9" step="0.05" value="0.4">
-            </div>
-
-            <!-- Max Repulsion Distance -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Max Repel Dist</span>
-                <span class="control-value" id="force-max-dist-val">1000</span>
-              </div>
-              <input type="range" id="force-max-dist" min="100" max="5000" step="100" value="1000">
-            </div>
-
-            <!-- Barnes-Hut Theta -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Theta (accuracy)</span>
-                <span class="control-value" id="force-theta-val">0.80</span>
-              </div>
-              <input type="range" id="force-theta" min="0.3" max="1.5" step="0.1" value="0.8">
-            </div>
-
-            <!-- Max Velocity -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Max Velocity</span>
-                <span class="control-value" id="force-max-vel-val">50</span>
-              </div>
-              <input type="range" id="force-max-vel" min="10" max="200" step="10" value="50">
-            </div>
-
-            <!-- Pin Root Node -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Pin Root Node</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="pin-root-node" checked>
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Relativity Atlas Controls (shown when algorithm = relativity-atlas) -->
-        <div class="simulation-section" id="relativity-controls" style="display: none;">
-          <h3 class="section-title">Relativity Atlas</h3>
-          <div class="simulation-grid">
-
-            <!-- Mass Inheritance -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Base Mass</span>
-                <span class="control-value" id="ra-base-mass-val">1.0</span>
-              </div>
-              <input type="range" id="ra-base-mass" min="0.1" max="10" step="0.1" value="1.0">
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Child Factor</span>
-                <span class="control-value" id="ra-child-factor-val">0.50</span>
-              </div>
-              <input type="range" id="ra-child-factor" min="0" max="1" step="0.05" value="0.5">
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Mass Exponent</span>
-                <span class="control-value" id="ra-mass-exp-val">0.50</span>
-              </div>
-              <input type="range" id="ra-mass-exp" min="0" max="2" step="0.1" value="0.5">
-            </div>
-
-            <!-- Gravity Curve -->
-            <div class="simulation-card" style="grid-column: span 2;">
-              <div class="control-row">
-                <span class="control-label">Gravity Curve</span>
-              </div>
-              <select id="ra-gravity-curve" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 12px;">
-                <option value="linear">Linear</option>
-                <option value="inverse">Inverse-Square (stable orbits)</option>
-                <option value="soft" selected>Soft (gentle close-range, default)</option>
-                <option value="custom">Custom Exponent</option>
-              </select>
-            </div>
-
-            <div class="simulation-card" id="ra-gravity-exp-card">
-              <div class="control-row">
-                <span class="control-label">Gravity Exponent</span>
-                <span class="control-value" id="ra-gravity-exp-val">1.00</span>
-              </div>
-              <input type="range" id="ra-gravity-exp" min="-2" max="2" step="0.1" value="1.0">
-            </div>
-
-            <!-- Sibling Settings -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Max Siblings</span>
-                <span class="control-value" id="ra-max-siblings-val">100</span>
-              </div>
-              <input type="range" id="ra-max-siblings" min="10" max="500" step="10" value="100">
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Parent-Child Mult</span>
-                <span class="control-value" id="ra-parent-child-val">0.30</span>
-              </div>
-              <input type="range" id="ra-parent-child" min="0" max="1" step="0.05" value="0.3">
-            </div>
-
-            <!-- Cousin Repulsion (2-hop: same grandparent) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Cousin Repulsion</span>
-                <label class="toggle">
-                  <input type="checkbox" id="ra-cousin-enabled">
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-              <p class="sim-note">Repel nodes sharing a grandparent</p>
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Cousin Strength</span>
-                <span class="control-value" id="ra-cousin-strength-val">0.50</span>
-              </div>
-              <input type="range" id="ra-cousin-strength" min="0" max="1" step="0.05" value="0.5">
-            </div>
-
-            <!-- Density Repulsion (cross-subtree) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Density Repulsion</span>
-                <span class="control-value" id="ra-density-repulsion-val">0.50</span>
-              </div>
-              <input type="range" id="ra-density-repulsion" min="0" max="2" step="0.05" value="0.5">
-            </div>
-
-            <!-- Phantom Zones (mass-based collision boundaries) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Phantom Zones</span>
-                <label class="toggle">
-                  <input type="checkbox" id="ra-phantom-enabled">
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-              <p class="sim-note">Mass-proportional collision radius</p>
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Phantom Multiplier</span>
-                <span class="control-value" id="ra-phantom-mult-val">0.50</span>
-              </div>
-              <input type="range" id="ra-phantom-mult" min="0" max="100" step="1" value="0.5">
-            </div>
-
-            <!-- Orbital Layout (children circle around parents) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Orbit Strength</span>
-                <span class="control-value" id="ra-orbit-strength-val">2.00</span>
-              </div>
-              <input type="range" id="ra-orbit-strength" min="0" max="20" step="0.5" value="2.0">
-              <p class="sim-note">Radial spring pulling children to orbit distance</p>
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Tangential Amp</span>
-                <span class="control-value" id="ra-tangential-mult-val">3.00</span>
-              </div>
-              <input type="range" id="ra-tangential-mult" min="1" max="20" step="0.5" value="3.0">
-              <p class="sim-note">Angular spreading around parent (>1 = more circular)</p>
-            </div>
-
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Orbit Radius</span>
-                <span class="control-value" id="ra-orbit-radius-val">30</span>
-              </div>
-              <input type="range" id="ra-orbit-radius" min="1" max="200" step="1" value="30">
-              <p class="sim-note">Base distance from parent (scales with sibling count)</p>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Tidy Tree Controls (shown when algorithm = tidy-tree) -->
-        <div class="simulation-section" id="tidy-tree-controls" style="display: none;">
-          <h3 class="section-title">Tidy Tree</h3>
-          <div class="simulation-grid">
-
-            <!-- Level Separation -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Level Spacing</span>
-                <span class="control-value" id="tt-level-sep-val">80</span>
-              </div>
-              <input type="range" id="tt-level-sep" min="20" max="300" step="5" value="80">
-            </div>
-
-            <!-- Sibling Separation -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Sibling Gap</span>
-                <span class="control-value" id="tt-sibling-sep-val">1.00</span>
-              </div>
-              <input type="range" id="tt-sibling-sep" min="0.1" max="5" step="0.1" value="1.0">
-            </div>
-
-            <!-- Subtree Separation -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Subtree Gap</span>
-                <span class="control-value" id="tt-subtree-sep-val">2.00</span>
-              </div>
-              <input type="range" id="tt-subtree-sep" min="0.5" max="10" step="0.5" value="2.0">
-            </div>
-
-            <!-- Stiffness -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Stiffness</span>
-                <span class="control-value" id="tt-stiffness-val">0.30</span>
-              </div>
-              <input type="range" id="tt-stiffness" min="0.01" max="1" step="0.01" value="0.3">
-            </div>
-
-            <!-- Damping -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Damping</span>
-                <span class="control-value" id="tt-damping-val">0.50</span>
-              </div>
-              <input type="range" id="tt-damping" min="0.01" max="2" step="0.01" value="0.5">
-            </div>
-
-            <!-- Coordinate Mode -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Coordinate Mode</span>
-              </div>
-              <select id="tt-coord-mode" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: inherit; font-size: 12px;">
-                <option value="radial" selected>Radial (sunburst)</option>
-                <option value="linear">Linear (top-down)</option>
-              </select>
-            </div>
-
-            <!-- Recompute button -->
-            <div class="simulation-card" style="grid-column: span 2;">
-              <button class="sim-btn primary" id="tt-recompute" style="width: 100%">Recompute Tree Layout</button>
-              <p class="sim-note">Runs Buchheim algorithm on current graph edges and uploads target positions to GPU</p>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- LinLog Controls (shown when algorithm = linlog) -->
-        <div class="simulation-section" id="linlog-controls" style="display: none;">
-          <h3 class="section-title">LinLog</h3>
-          <div class="simulation-grid">
-
-            <!-- Repulsion Scaling (kr) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Scaling (kr)</span>
-                <span class="control-value" id="ll-scaling-val">10.0</span>
-              </div>
-              <input type="range" id="ll-scaling" min="0.1" max="100" step="0.1" value="10.0">
-            </div>
-
-            <!-- Gravity (kg) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Gravity (kg)</span>
-                <span class="control-value" id="ll-gravity-val">1.0</span>
-              </div>
-              <input type="range" id="ll-gravity" min="0" max="10" step="0.1" value="1.0">
-            </div>
-
-            <!-- Edge Weight Influence -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Weight Influence</span>
-                <span class="control-value" id="ll-weight-val">1.00</span>
-              </div>
-              <input type="range" id="ll-weight" min="0" max="2" step="0.05" value="1.0">
-            </div>
-
-            <!-- Strong Gravity Toggle -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Strong Gravity</span>
-                <label class="toggle">
-                  <input type="checkbox" id="ll-strong-gravity">
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-              <p class="sim-note">Scales gravity with distance from center</p>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- t-FDP Controls (shown when algorithm = t-fdp) -->
-        <div class="simulation-section" id="t-fdp-controls" style="display: none;">
-          <h3 class="section-title">t-FDP</h3>
-          <div class="simulation-grid">
-
-            <!-- Gamma (degrees of freedom) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Gamma</span>
-                <span class="control-value" id="tfdp-gamma-val">2.00</span>
-              </div>
-              <input type="range" id="tfdp-gamma" min="1.0" max="5.0" step="0.1" value="2.0">
-              <p class="sim-note">Higher = narrower bounded zone</p>
-            </div>
-
-            <!-- Repulsion Scale -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Repulsion Scale</span>
-                <span class="control-value" id="tfdp-repulsion-val">1.00</span>
-              </div>
-              <input type="range" id="tfdp-repulsion" min="0.1" max="50" step="0.1" value="1.0">
-            </div>
-
-            <!-- Alpha (linear spring weight) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Alpha (Spring)</span>
-                <span class="control-value" id="tfdp-alpha-val">0.10</span>
-              </div>
-              <input type="range" id="tfdp-alpha" min="0.01" max="1.0" step="0.01" value="0.1">
-              <p class="sim-note">Linear spring weight for attraction</p>
-            </div>
-
-            <!-- Beta (t-force weight) -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Beta (t-Force)</span>
-                <span class="control-value" id="tfdp-beta-val">8.00</span>
-              </div>
-              <input type="range" id="tfdp-beta" min="0" max="20" step="0.5" value="8.0">
-              <p class="sim-note">Short-range neighborhood pull</p>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Community Layout Controls (shown when algorithm = community) -->
-        <div class="simulation-section" id="community-controls" style="display: none;">
-          <h3 class="section-title">Community Layout</h3>
-          <div class="simulation-grid">
-
-            <!-- Resolution -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Resolution</span>
-                <span class="control-value" id="comm-resolution-val">1.00</span>
-              </div>
-              <input type="range" id="comm-resolution" min="0.1" max="5.0" step="0.1" value="1.0">
-              <p class="sim-note">Higher = more, smaller communities</p>
-            </div>
-
-            <!-- Community Spacing -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Cluster Spacing</span>
-                <span class="control-value" id="comm-spacing-val">50.0</span>
-              </div>
-              <input type="range" id="comm-spacing" min="5" max="500" step="5" value="50">
-            </div>
-
-            <!-- Node Spacing -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Node Spacing</span>
-                <span class="control-value" id="comm-node-spacing-val">10.0</span>
-              </div>
-              <input type="range" id="comm-node-spacing" min="1" max="100" step="1" value="10">
-            </div>
-
-            <!-- Spread Factor -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Spread</span>
-                <span class="control-value" id="comm-spread-val">1.50</span>
-              </div>
-              <input type="range" id="comm-spread" min="0.1" max="5.0" step="0.1" value="1.5">
-            </div>
-
-            <!-- Stiffness -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Stiffness</span>
-                <span class="control-value" id="comm-stiffness-val">0.30</span>
-              </div>
-              <input type="range" id="comm-stiffness" min="0.01" max="1" step="0.01" value="0.3">
-            </div>
-
-            <!-- Damping -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Damping</span>
-                <span class="control-value" id="comm-damping-val">0.50</span>
-              </div>
-              <input type="range" id="comm-damping" min="0.01" max="2" step="0.01" value="0.5">
-            </div>
-
-            <!-- Recompute button -->
-            <div class="simulation-card" style="grid-column: 1 / -1;">
-              <button class="sim-btn primary" id="comm-recompute" style="width: 100%;">Recompute Communities</button>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Codebase Layout Controls (shown when algorithm = codebase) -->
-        <div class="simulation-section" id="codebase-controls" style="display: none;">
-          <h3 class="section-title">Codebase Layout</h3>
-          <div class="simulation-grid">
-
-            <!-- Directory Padding -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Dir Padding</span>
-                <span class="control-value" id="cb-dir-padding-val">15.0</span>
-              </div>
-              <input type="range" id="cb-dir-padding" min="1" max="100" step="1" value="15">
-            </div>
-
-            <!-- File Padding -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">File Padding</span>
-                <span class="control-value" id="cb-file-padding-val">8.0</span>
-              </div>
-              <input type="range" id="cb-file-padding" min="1" max="50" step="1" value="8">
-            </div>
-
-            <!-- Spread Factor -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Spread</span>
-                <span class="control-value" id="cb-spread-val">1.50</span>
-              </div>
-              <input type="range" id="cb-spread" min="0.1" max="5.0" step="0.1" value="1.5">
-            </div>
-
-            <!-- Stiffness -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Stiffness</span>
-                <span class="control-value" id="cb-stiffness-val">0.30</span>
-              </div>
-              <input type="range" id="cb-stiffness" min="0.01" max="1" step="0.01" value="0.3">
-            </div>
-
-            <!-- Damping -->
-            <div class="simulation-card">
-              <div class="control-row">
-                <span class="control-label">Damping</span>
-                <span class="control-value" id="cb-damping-val">0.50</span>
-              </div>
-              <input type="range" id="cb-damping" min="0.01" max="2" step="0.01" value="0.5">
-            </div>
-
-            <!-- Recompute button -->
-            <div class="simulation-card" style="grid-column: 1 / -1;">
-              <button class="sim-btn primary" id="cb-recompute" style="width: 100%;">Recompute Layout</button>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Simulation Controls section -->
-        <div class="simulation-section">
-          <h3 class="section-title">Simulation Controls</h3>
-          <div class="sim-buttons">
-            <button class="sim-btn" id="sim-stop">Stop</button>
-            <button class="sim-btn" id="sim-start">Start</button>
-            <button class="sim-btn primary" id="sim-restart">Restart</button>
-          </div>
-        </div>
-      </div>
+      <div id="drawer-header"></div>
+      <div id="drawer-tabs"></div>
+      <div id="drawer-body"></div>
     </div>
 
     <script type="module" src="./main.ts"></script>

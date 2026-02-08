@@ -125,7 +125,7 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
 /**
  * Relativity Atlas algorithm-specific buffers
  */
-class RelativityAtlasBuffers implements AlgorithmBuffers {
+export class RelativityAtlasBuffers implements AlgorithmBuffers {
   constructor(
     // Uniform buffers
     public degreesUniforms: GPUBuffer,
@@ -164,6 +164,10 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
     public attractionUniforms: GPUBuffer,
     public edgeWeightsBuffer: GPUBuffer,
 
+    // Bubble mode buffers (per-node data from WASM)
+    public wellRadius: GPUBuffer,   // f32 per node: subtree-based collision radius
+    public nodeDepth: GPUBuffer,    // f32 per node: BFS depth from root
+
     // Capacities
     public maxNodes: number,
     public maxEdges: number,
@@ -190,6 +194,9 @@ class RelativityAtlasBuffers implements AlgorithmBuffers {
 
     this.attractionUniforms.destroy();
     this.edgeWeightsBuffer.destroy();
+
+    this.wellRadius.destroy();
+    this.nodeDepth.destroy();
   }
 }
 
@@ -280,7 +287,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
 
     // === Sibling Layout ===
     // Bindings: uniforms, positions (vec2), forces (vec2), csr_inverse_offsets, csr_inverse_sources,
-    //           csr_offsets, csr_targets, node_mass
+    //           csr_offsets, csr_targets, node_mass, well_radius
     const siblingLayout = device.createBindGroupLayout({
       label: "RA Sibling Layout",
       entries: [
@@ -292,11 +299,12 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },  // well_radius
       ],
     });
 
     // === Gravity Layout ===
-    // Bindings: uniforms, positions (vec2), forces (vec2), node_mass
+    // Bindings: uniforms, positions (vec2), forces (vec2), node_mass, node_depth
     const gravityLayout = device.createBindGroupLayout({
       label: "RA Gravity Layout",
       entries: [
@@ -304,6 +312,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },  // node_depth
       ],
     });
 
@@ -367,6 +376,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },  // well_radius
       ],
     });
 
@@ -478,8 +488,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     //                   cousin_enabled: u32, cousin_strength: f32,
     //                   phantom_enabled: u32, phantom_multiplier: f32,
     //                   orbit_strength: f32, tangential_multiplier: f32,
-    //                   orbit_radius_base: f32, _pad1: u32 }
-    // Total: 64 bytes
+    //                   orbit_radius_base: f32, bubble_mode: u32, orbit_scale: f32 }
+    // Total: 64 bytes (60 used + 4 implicit padding)
     const siblingUniforms = device.createBuffer({
       label: "RA Sibling Uniforms",
       size: 64,
@@ -487,7 +497,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     });
 
     // GravityUniforms: { node_count: u32, gravity_strength: f32, center_x: f32, center_y: f32,
-    //                   mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, _padding: u32 }
+    //                   mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, depth_decay_rate: f32 }
     // Total: 32 bytes
     const gravityUniforms = device.createBuffer({
       label: "RA Gravity Uniforms",
@@ -575,6 +585,22 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // Bubble mode: per-node well radius (subtree-based collision boundary)
+    // Always allocated with safe defaults (base_radius when bubble mode off)
+    const wellRadius = device.createBuffer({
+      label: "RA Well Radius",
+      size: nodeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    // Bubble mode: per-node depth (BFS distance from root)
+    // Always allocated with safe defaults (0.0 when bubble mode off)
+    const nodeDepth = device.createBuffer({
+      label: "RA Node Depth",
+      size: nodeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     return new RelativityAtlasBuffers(
       degreesUniforms,
       massUniforms,
@@ -592,6 +618,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       densityGrid,
       attractionUniforms,
       edgeWeightsBuffer,
+      wellRadius,
+      nodeDepth,
       safeMaxNodes,
       maxEdges,
     );
@@ -681,6 +709,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 5, resource: { buffer: b.csrOffsets } },
         { binding: 6, resource: { buffer: b.csrTargets } },
         { binding: 7, resource: { buffer: b.massOut } },  // Final mass is in massOut
+        { binding: 8, resource: { buffer: b.wellRadius } },
       ],
     });
 
@@ -694,6 +723,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: b.massOut } },  // Final mass is in massOut
+        { binding: 4, resource: { buffer: b.nodeDepth } },
       ],
     });
 
@@ -728,6 +758,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: b.densityGrid } },
+        { binding: 4, resource: { buffer: b.wellRadius } },
       ],
     });
 
@@ -803,7 +834,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     //                  cousin_enabled: u32, cousin_strength: f32,
     //                  phantom_enabled: u32, phantom_multiplier: f32,
     //                  orbit_strength: f32, tangential_multiplier: f32,
-    //                  orbit_radius_base: f32, _pad1: u32 }
+    //                  orbit_radius_base: f32, bubble_mode: u32, orbit_scale: f32 }
     const siblingData = new ArrayBuffer(64);
     const siblingView = new DataView(siblingData);
     siblingView.setUint32(0, context.nodeCount, true);
@@ -819,13 +850,13 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     siblingView.setFloat32(40, context.forceConfig.relativityOrbitStrength, true);
     siblingView.setFloat32(44, context.forceConfig.relativityTangentialMultiplier, true);
     siblingView.setFloat32(48, context.forceConfig.relativityOrbitRadius, true);
-    siblingView.setUint32(52, 0, true);  // _pad1
-    // Bytes 56-63 are implicit zero (ArrayBuffer is zero-initialized)
+    siblingView.setUint32(52, context.forceConfig.relativityBubbleMode ? 1 : 0, true);  // bubble_mode
+    siblingView.setFloat32(56, context.forceConfig.relativityBubbleOrbitScale, true);    // orbit_scale
     device.queue.writeBuffer(b.siblingUniforms, 0, siblingData);
 
     // Gravity uniforms (32 bytes)
     // Struct layout: { node_count: u32, gravity_strength: f32, center_x: f32, center_y: f32,
-    //                  mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, _padding: u32 }
+    //                  mass_exponent: f32, gravity_curve: u32, gravity_exponent: f32, depth_decay_rate: f32 }
     const gravityData = new ArrayBuffer(32);
     const gravityView = new DataView(gravityData);
     gravityView.setUint32(0, context.nodeCount, true);
@@ -838,7 +869,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     const gravityCurveValue = gravityCurveMap[context.forceConfig.relativityGravityCurve] ?? 0;
     gravityView.setUint32(20, gravityCurveValue, true);
     gravityView.setFloat32(24, context.forceConfig.relativityGravityExponent, true);
-    gravityView.setUint32(28, 0, true);  // _padding
+    gravityView.setFloat32(28, context.forceConfig.relativityDepthDecay, true);  // depth_decay_rate
     device.queue.writeBuffer(b.gravityUniforms, 0, gravityData);
 
     // Cache edge count for attraction pass workgroup dispatch

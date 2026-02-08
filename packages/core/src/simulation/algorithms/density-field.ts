@@ -63,11 +63,13 @@ class DensityFieldBuffers implements AlgorithmBuffers {
   constructor(
     public uniforms: GPUBuffer,
     public densityGrid: GPUBuffer,
+    public wellRadius: GPUBuffer,
   ) {}
 
   destroy(): void {
     this.uniforms.destroy();
     this.densityGrid.destroy();
+    this.wellRadius.destroy();
   }
 }
 
@@ -96,6 +98,7 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -126,7 +129,9 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     return pipelines;
   }
 
-  createBuffers(device: GPUDevice, _maxNodes: number): AlgorithmBuffers {
+  createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
+    const safeMaxNodes = Math.max(maxNodes, 4);
+
     // Uniforms: DensityUniforms struct (48 bytes = 12 x f32)
     const uniforms = device.createBuffer({
       label: "Density Field Uniforms",
@@ -142,7 +147,14 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new DensityFieldBuffers(uniforms, densityGrid);
+    // Well radius buffer (zero-filled = uses default splat_radius in shader)
+    const wellRadius = device.createBuffer({
+      label: "Density Field Well Radius",
+      size: safeMaxNodes * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    return new DensityFieldBuffers(uniforms, densityGrid, wellRadius);
   }
 
   createBindGroups(
@@ -162,6 +174,7 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: b.densityGrid } },
+        { binding: 4, resource: { buffer: b.wellRadius } },
       ],
     });
 

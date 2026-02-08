@@ -16,7 +16,7 @@ struct GravityUniforms {
     mass_exponent: f32,    // How much mass affects gravity (0 = uniform, 1 = linear)
     gravity_curve: u32,    // 0=linear, 1=inverse, 2=soft, 3=custom
     gravity_exponent: f32, // Exponent for custom curve
-    _padding: u32,
+    depth_decay_rate: f32, // Bubble mode: gravity *= decay^depth (1.0 = no effect)
 }
 
 @group(0) @binding(0) var<uniform> uniforms: GravityUniforms;
@@ -29,6 +29,9 @@ struct GravityUniforms {
 
 // Node masses
 @group(0) @binding(3) var<storage, read> node_mass: array<f32>;
+
+// Node depth in hierarchy (0 = root, bubble mode)
+@group(0) @binding(4) var<storage, read> node_depth: array<f32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
@@ -59,7 +62,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Mass-weighted gravity: lighter nodes are pulled more strongly
     // gravity_factor = gravity_strength / mass^exponent
     let mass_factor = pow(mass, uniforms.mass_exponent);
-    let gravity = uniforms.gravity_strength / max(mass_factor, 0.1);
+    var gravity = uniforms.gravity_strength / max(mass_factor, 0.1);
+
+    // Depth-decaying gravity (bubble mode): gravity *= decay^depth
+    // Root (depth 0): full gravity. Deep leaves: near-zero gravity.
+    let depth = node_depth[node_idx];
+    if (depth > 0.0 && uniforms.depth_decay_rate < 1.0) {
+        gravity *= pow(uniforms.depth_decay_rate, depth);
+    }
 
     // Calculate distance for curve calculations
     let dist = sqrt(dist_sq);

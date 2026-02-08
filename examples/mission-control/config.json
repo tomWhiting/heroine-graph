@@ -1,8 +1,7 @@
 {
   "generator": {
-    "type": "hierarchical",
-    "nodes": 10000,
-    "branching": 4
+    "type": "json",
+    "file": "indexer-data.json"
   },
   "force": {
     "algorithm": "relativity-atlas",
@@ -31,7 +30,12 @@
     "phantomMultiplier": 0.5,
     "orbitStrength": 1.0,
     "tangentialMultiplier": 2.0,
-    "orbitRadius": 25
+    "orbitRadius": 25,
+    "bubbleMode": false,
+    "bubbleBaseRadius": 10.0,
+    "bubblePadding": 5.0,
+    "depthDecay": 0.7,
+    "bubbleOrbitScale": 0.6
   },
   "linlog": {
     "scaling": 10.0,

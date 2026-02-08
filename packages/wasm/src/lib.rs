@@ -679,6 +679,63 @@ impl HeroineGraphWasm {
             spread_factor,
         )
     }
+
+    /// Compute bubble data (well radii + depths) from the graph's containment hierarchy.
+    ///
+    /// Returns a `Float32Array` of length `2 * node_bound`:
+    /// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0, ..., depth_{n-1}]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_radius` - Base bubble radius for leaf nodes (default: 10.0)
+    /// * `padding` - Padding added to internal node radii (default: 5.0)
+    #[wasm_bindgen(js_name = computeBubbleData)]
+    pub fn compute_bubble_data(&self, base_radius: f32, padding: f32) -> Float32Array {
+        use layout::bubble::{self, BubbleConfig};
+
+        let node_bound = self.engine.node_bound() as usize;
+
+        if node_bound == 0 {
+            return Float32Array::from(&[][..]);
+        }
+
+        // Extract edges from CSR
+        let csr = self.engine.get_edges_csr();
+
+        if csr.len() <= node_bound + 1 {
+            // No edges — return defaults
+            let config = BubbleConfig {
+                base_radius,
+                padding,
+                ..BubbleConfig::default()
+            };
+            let result = bubble::compute_bubble_data(&[], node_bound, None, &config);
+            return Float32Array::from(&result[..]);
+        }
+
+        let offsets = &csr[..node_bound + 1];
+        let targets = &csr[node_bound + 1..];
+
+        // Convert CSR to flat containment edge pairs
+        let mut edges = Vec::with_capacity(targets.len() * 2);
+        for src in 0..node_bound {
+            let start = offsets[src] as usize;
+            let end = offsets[src + 1] as usize;
+            for &tgt in &targets[start..end.min(targets.len())] {
+                edges.push(src as u32);
+                edges.push(tgt);
+            }
+        }
+
+        let config = BubbleConfig {
+            base_radius,
+            padding,
+            ..BubbleConfig::default()
+        };
+
+        let result = bubble::compute_bubble_data(&edges, node_bound, None, &config);
+        Float32Array::from(&result[..])
+    }
 }
 
 impl Default for HeroineGraphWasm {
