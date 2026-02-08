@@ -547,11 +547,19 @@ export function updateSimulationUniforms(
   // }
   // Note: velocityDecay is the fraction lost per frame, damping is fraction retained
   // damping = 1 - velocityDecay
+  //
+  // Progressive damping: as simulation cools (alpha→0), boost velocity drain
+  // so nodes decelerate smoothly instead of coasting on residual momentum.
+  // At alpha=1 (hot): baseDamping unchanged. At alpha=0 (cold): extra 15% drain.
+  const baseDamping = 1 - forceConfig.velocityDecay;
+  const progressiveBoost = (1 - Math.min(1, Math.max(0, alpha))) * 0.15;
+  const effectiveDamping = Math.max(0.05, baseDamping - progressiveBoost);
+
   const intData = new ArrayBuffer(48);
   const intView = new DataView(intData);
   intView.setUint32(0, nodeCount, true);                          // node_count
   intView.setFloat32(4, forceConfig.timeStep, true);              // dt
-  intView.setFloat32(8, 1 - forceConfig.velocityDecay, true);     // damping
+  intView.setFloat32(8, effectiveDamping, true);                  // damping (progressive)
   intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
   intView.setFloat32(16, alpha, true);                            // alpha
   intView.setFloat32(20, 0.0, true);                               // alpha_decay (unused by shader — decay managed on CPU)

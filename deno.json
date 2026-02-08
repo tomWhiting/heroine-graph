@@ -22,7 +22,7 @@
     "storybook": "npx storybook dev -p 6006 --ci",
     "storybook:build": "npx storybook build",
     "storybook:clean": "rm -rf node_modules/.cache",
-    "example:mission-control": "deno vite examples/mission-control"
+    "example:mission-control": "cd examples/mission-control && dx vite --port 1573"
   },
   "compilerOptions": {
     "strict": true,
