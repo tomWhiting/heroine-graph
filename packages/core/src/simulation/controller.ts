@@ -91,7 +91,7 @@ export const DEFAULT_SIMULATION_CONFIG: Required<SimulationControllerConfig> = {
   alpha: 1.0,
   alphaTarget: 0.0, // Cool to rest; bumpSimulationAlpha() reheats on interaction
   alphaMin: 0.001,
-  alphaDecay: 0.0228, // ~300 iterations to cool down
+  alphaDecay: 0.012, // ~575 iterations to cool down (gentler tail)
   velocityDecay: 0.4,
   maxIterationsPerTick: 1,
   warmUpTicks: 0,

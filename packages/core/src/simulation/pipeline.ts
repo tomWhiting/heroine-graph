@@ -15,6 +15,71 @@ import { calculateWorkgroups } from "../renderer/commands.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
 
+// --- Settling telemetry (temporary, for tuning decay curves) ---
+interface SettlingFrame {
+  frame: number;
+  alpha: number;
+  damping: number;
+  effectiveAlpha: Record<string, number>; // by depth level
+}
+
+let _settlingLog: SettlingFrame[] = [];
+let _settlingFrame = 0;
+let _settlingActive = false;
+const SETTLING_SAMPLE_DEPTHS = [0, 1, 2, 3, 5, 8];
+
+export function startSettlingTelemetry(): void {
+  _settlingLog = [];
+  _settlingFrame = 0;
+  _settlingActive = true;
+  console.log("[settling] Telemetry started. Will dump on simulation stop.");
+}
+
+export function dumpSettlingTelemetry(): void {
+  if (_settlingLog.length === 0) {
+    console.log("[settling] No data captured.");
+    return;
+  }
+  // Print a compact table to console
+  const header = ["frame", "alpha", "damping",
+    ...SETTLING_SAMPLE_DEPTHS.map((d) => `d${d}`)];
+  console.log("[settling] " + header.join("\t"));
+  for (const f of _settlingLog) {
+    const row = [
+      f.frame,
+      f.alpha.toFixed(4),
+      f.damping.toFixed(4),
+      ...SETTLING_SAMPLE_DEPTHS.map((d) => f.effectiveAlpha[`d${d}`].toFixed(4)),
+    ];
+    console.log("[settling] " + row.join("\t"));
+  }
+  console.log(`[settling] ${_settlingLog.length} samples captured over ${_settlingFrame} frames.`);
+  _settlingActive = false;
+}
+
+function recordSettlingFrame(alpha: number, damping: number, spread: number): void {
+  if (!_settlingActive) return;
+  // Sample every 5 frames to keep output manageable
+  if (_settlingFrame % 5 === 0) {
+    const effectiveAlpha: Record<string, number> = {};
+    for (const d of SETTLING_SAMPLE_DEPTHS) {
+      effectiveAlpha[`d${d}`] = Math.min(alpha * (1 + d * spread), 1.0);
+    }
+    _settlingLog.push({
+      frame: _settlingFrame,
+      alpha,
+      damping,
+      effectiveAlpha,
+    });
+  }
+  _settlingFrame++;
+  // Auto-dump when alpha gets very low (simulation essentially done)
+  if (_settlingActive && alpha < 0.0005 && _settlingFrame > 10) {
+    dumpSettlingTelemetry();
+  }
+}
+// --- End settling telemetry ---
+
 // Import shader sources (bundled as text by esbuild)
 import CLEAR_FORCES_WGSL from "./shaders/clear_forces.comp.wgsl";
 import REPULSION_N2_WGSL from "./shaders/repulsion_n2.comp.wgsl";
@@ -563,7 +628,7 @@ export function updateSimulationUniforms(
   // so nodes decelerate smoothly instead of coasting on residual momentum.
   // At alpha=1 (hot): baseDamping unchanged. At alpha=0 (cold): extra 15% drain.
   const baseDamping = 1 - forceConfig.velocityDecay;
-  const progressiveBoost = (1 - Math.min(1, Math.max(0, alpha))) * 0.15;
+  const progressiveBoost = (1 - Math.min(1, Math.max(0, alpha))) * 0.12;
   const effectiveDamping = Math.max(0.05, baseDamping - progressiveBoost);
 
   const intData = new ArrayBuffer(48);
@@ -573,7 +638,7 @@ export function updateSimulationUniforms(
   intView.setFloat32(8, effectiveDamping, true);                  // damping (progressive)
   intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
   intView.setFloat32(16, alpha, true);                            // alpha
-  intView.setFloat32(20, 0.5, true);                              // depth_settling_spread (parents settle before children)
+  intView.setFloat32(20, 2.5, true);                              // depth_settling_spread (parents settle before children)
   intView.setFloat32(24, 0.0, true);                              // alpha_min (unused by shader — convergence managed on CPU)
   intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
   intView.setFloat32(32, forceConfig.centerX, true);              // center_x
@@ -581,6 +646,9 @@ export function updateSimulationUniforms(
   intView.setUint32(40, forceConfig.pinnedNode >>> 0, true);        // pinned_node (0xFFFFFFFF = none)
   intView.setUint32(44, 0, true);                                 // padding[1]
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
+
+  // Record settling telemetry
+  recordSettlingFrame(alpha, effectiveDamping, 2.5);
 }
 
 /**

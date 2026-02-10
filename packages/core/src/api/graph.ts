@@ -83,6 +83,7 @@ import {
   type SimulationPipeline,
   swapSimulationBuffers,
   updateSimulationUniforms,
+  startSettlingTelemetry,
 } from "../simulation/pipeline.ts";
 import {
   type CollisionBindGroup,
@@ -1236,6 +1237,7 @@ export class HeroineGraph {
     this.fitToView();
 
     // Start simulation automatically
+    startSettlingTelemetry();
     this.simulationController.restart();
 
     // Emit load event
@@ -1505,12 +1507,50 @@ export class HeroineGraph {
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
-      // Upload bubble data (wellRadius + nodeDepth) for nested bubble mode
-      // Always compute depths for hierarchical settling (parents settle before children).
+      // Compute BFS depths from CSR data (parents settle before children).
+      // This is O(V+E) and runs once per graph load — no WASM needed.
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
       const nodeCount = gs.nodeHighWater;
+      const depths = new Float32Array(nodeCount);
+      {
+        const visited = new Uint8Array(nodeCount);
+        const queue = new Uint32Array(nodeCount);
+        let qHead = 0;
+        let qTail = 0;
+
+        // Roots = nodes with no incoming edges (inverse CSR has empty range)
+        for (let i = 0; i < nodeCount; i++) {
+          if (inverse.offsets[i] === inverse.offsets[i + 1]) {
+            depths[i] = 0;
+            visited[i] = 1;
+            queue[qTail++] = i;
+          }
+        }
+
+        // BFS using forward CSR (parent → children)
+        while (qHead < qTail) {
+          const node = queue[qHead++];
+          const childStart = forward.offsets[node];
+          const childEnd = forward.offsets[node + 1];
+          for (let j = childStart; j < childEnd; j++) {
+            const child = forward.targets[j];
+            if (!visited[child]) {
+              visited[child] = 1;
+              depths[child] = depths[node] + 1;
+              queue[qTail++] = child;
+            }
+          }
+        }
+      }
+
+      // Upload depths to both algorithm and integration buffers
+      device.queue.writeBuffer(b.nodeDepth, 0, depths);
+      device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, depths);
+
+      // Upload well radii (bubble mode uses WASM if available, otherwise defaults)
       // deno-lint-ignore no-explicit-any
-      const hasComputeBubble = this.wasmEngine &&
+      const hasComputeBubble = this.forceConfig.relativityBubbleMode &&
+        this.wasmEngine &&
         typeof (this.wasmEngine as any).computeBubbleData === "function";
       if (hasComputeBubble) {
         const bubbleData = this.wasmEngine!.computeBubbleData(
@@ -1519,27 +1559,12 @@ export class HeroineGraph {
         );
         if (bubbleData.length >= nodeCount * 2) {
           const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
-          const depths = new Float32Array(bubbleData.buffer, bubbleData.byteOffset + nodeCount * 4, nodeCount);
-
-          if (this.forceConfig.relativityBubbleMode) {
-            device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
-          } else {
-            const defaultWellRadii = new Float32Array(nodeCount);
-            defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
-            device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
-          }
-          device.queue.writeBuffer(b.nodeDepth, 0, depths);
-          // Also upload to shared integration buffer for depth-based settling
-          device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, depths);
+          device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
         }
       } else {
-        // No WASM or computeBubbleData not available: zero defaults
         const defaultWellRadii = new Float32Array(nodeCount);
         defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
         device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
-        const defaultDepths = new Float32Array(nodeCount);
-        device.queue.writeBuffer(b.nodeDepth, 0, defaultDepths);
-        device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, defaultDepths);
       }
 
       if (this.debug) {
