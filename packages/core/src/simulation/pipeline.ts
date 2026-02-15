@@ -588,14 +588,15 @@ export function updateSimulationUniforms(
   clearView.setUint32(0, nodeCount, true);
   device.queue.writeBuffer(buffers.clearUniforms, 0, clearData);
 
-  // RepulsionUniforms: { node_count, repulsion_strength, min_distance, _padding }
+  // RepulsionUniforms: { node_count, repulsion_strength, min_distance, max_distance }
   // Note: repulsionStrength is negative in config (d3 convention), shader uses positive
+  // max_distance = 0 means no limit (shader checks for > 0 before applying cutoff)
   const repulsionData = new ArrayBuffer(16);
   const repulsionView = new DataView(repulsionData);
   repulsionView.setUint32(0, nodeCount, true);
   repulsionView.setFloat32(4, Math.abs(forceConfig.repulsionStrength), true);
   repulsionView.setFloat32(8, forceConfig.repulsionDistanceMin, true);
-  repulsionView.setUint32(12, 0, true); // padding
+  repulsionView.setFloat32(12, forceConfig.repulsionDistanceMax, true);
   device.queue.writeBuffer(buffers.repulsionUniforms, 0, repulsionData);
 
   // SpringUniforms: { edge_count, spring_strength, rest_length, _padding }
@@ -626,7 +627,7 @@ export function updateSimulationUniforms(
   //
   // Progressive damping: as simulation cools (alpha→0), boost velocity drain
   // so nodes decelerate smoothly instead of coasting on residual momentum.
-  // At alpha=1 (hot): baseDamping unchanged. At alpha=0 (cold): extra 15% drain.
+  // At alpha=1 (hot): baseDamping unchanged. At alpha=0 (cold): extra 12% drain.
   const baseDamping = 1 - forceConfig.velocityDecay;
   const progressiveBoost = (1 - Math.min(1, Math.max(0, alpha))) * 0.12;
   const effectiveDamping = Math.max(0.05, baseDamping - progressiveBoost);
@@ -638,7 +639,7 @@ export function updateSimulationUniforms(
   intView.setFloat32(8, effectiveDamping, true);                  // damping (progressive)
   intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
   intView.setFloat32(16, alpha, true);                            // alpha
-  intView.setFloat32(20, 2.5, true);                              // depth_settling_spread (parents settle before children)
+  intView.setFloat32(20, forceConfig.depthSettlingSpread, true);    // depth_settling_spread (parents settle before children)
   intView.setFloat32(24, 0.0, true);                              // alpha_min (unused by shader — convergence managed on CPU)
   intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
   intView.setFloat32(32, forceConfig.centerX, true);              // center_x
@@ -648,7 +649,7 @@ export function updateSimulationUniforms(
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
 
   // Record settling telemetry
-  recordSettlingFrame(alpha, effectiveDamping, 2.5);
+  recordSettlingFrame(alpha, effectiveDamping, forceConfig.depthSettlingSpread);
 }
 
 /**

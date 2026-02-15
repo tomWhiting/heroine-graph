@@ -430,6 +430,11 @@ export class HeroineGraph {
   private readonly CONVERGENCE_THRESHOLD: number = 0.15; // max px/frame displacement
   private readonly CONVERGENCE_CHECKS_REQUIRED: number = 3; // consecutive checks needed
 
+  // Render activity tracking — when false, skip GPU work entirely.
+  // Set true by: simulation compute, viewport changes, selection, hover, resize.
+  // Cleared after each frame. Edge flow animation keeps this permanently true.
+  private renderDirty: boolean = true;
+
   // Layer system
   private layerManager: LayerManager;
 
@@ -470,6 +475,7 @@ export class HeroineGraph {
     this.viewport = createViewport(this.canvas, {
       onViewportChange: (state) => {
         this.updateViewportUniforms();
+        this.markRenderDirty();
         this.events.emit({
           type: "viewport:change",
           timestamp: Date.now(),
@@ -618,6 +624,14 @@ export class HeroineGraph {
       this.nodePipeline,
       this.renderConfigBuffer,
     );
+  }
+
+  /**
+   * Mark that a visual redraw is needed this frame.
+   * Called by viewport changes, selection, hover, resize, and any visual mutation.
+   */
+  private markRenderDirty(): void {
+    this.renderDirty = true;
   }
 
   /**
@@ -939,6 +953,12 @@ export class HeroineGraph {
 
   /**
    * Render a frame
+   *
+   * Two-tier activity gating minimizes GPU work when idle:
+   * - Tier 1 (compute): Skip force simulation when alpha = 0 (no movement needed)
+   * - Tier 2 (render): Skip visual passes when nothing changed on screen
+   *
+   * Edge flow animation forces continuous rendering when enabled.
    */
   private renderFrame(_deltaTime: number, _stats: FrameStats): void {
     if (this.disposed || !this.state.loaded) return;
@@ -946,13 +966,44 @@ export class HeroineGraph {
     // Skip rendering if canvas has no valid dimensions
     if (this.canvas.width === 0 || this.canvas.height === 0) return;
 
+    // Tier 1: Gate GPU simulation compute on needsCompute (alpha > 0).
+    // All wake triggers (drag, mutations, config changes) set alpha > 0,
+    // so compute automatically resumes. When alpha decays to 0, compute stops.
+    const needsCompute = this.simulationController.needsCompute;
+
+    // Edge flow animation requires continuous rendering (time-based uniforms)
+    const hasActiveFlow = this.isEdgeFlowEnabled();
+    if (hasActiveFlow) {
+      this.renderDirty = true;
+    }
+
+    // Simulation compute marks render dirty (positions change each frame)
+    if (needsCompute) {
+      this.renderDirty = true;
+    }
+
+    // Tier 2: Skip all GPU work when nothing visual has changed.
+    // The rAF loop still runs (cost: ~0.01ms per empty callback) so we
+    // respond to wake events within one frame (~16ms).
+    if (!this.renderDirty) {
+      // Still tick the controller so alpha decay continues if somehow > 0
+      // (shouldn't happen since needsCompute was false, but defensive)
+      if (this.simulationController.isRunning) {
+        this.simulationController.tick();
+      }
+      return;
+    }
+
+    // Clear the dirty flag for this frame
+    this.renderDirty = false;
+
     const { device, context } = this.gpuContext;
 
     // Create command encoder
     const encoder = device.createCommandEncoder();
 
-    // Run GPU simulation compute passes
-    if (this.simulationController.isRunning) {
+    // Run GPU simulation compute passes (only when forces need computing)
+    if (needsCompute) {
       this.recordSimulationCommands(encoder);
     }
 
@@ -1040,9 +1091,9 @@ export class HeroineGraph {
       labelsLayer.render(encoder, textureView);
     }
 
-    // Schedule position sync if simulation is running
+    // Schedule position sync only when simulation is actively computing
     let syncEncoder: GPUCommandEncoder | null = null;
-    if (this.simulationController.isRunning && this.simBuffers && !this.syncInProgress) {
+    if (needsCompute && this.simBuffers && !this.syncInProgress) {
       this.syncFrameCounter++;
       if (this.syncFrameCounter >= this.SYNC_INTERVAL) {
         this.syncFrameCounter = 0;
@@ -1061,7 +1112,7 @@ export class HeroineGraph {
     }
 
     // Swap buffers after GPU execution for next frame
-    if (this.simulationController.isRunning) {
+    if (needsCompute) {
       this.swapAndRebuildBindGroups();
     }
   }
@@ -3629,6 +3680,7 @@ export class HeroineGraph {
         }
       }
     }
+    this.markRenderDirty();
   }
 
   /**
@@ -3636,6 +3688,7 @@ export class HeroineGraph {
    */
   disableHeatmap(): void {
     this.layerManager.disableLayer("heatmap");
+    this.markRenderDirty();
   }
 
   /**
@@ -3739,7 +3792,9 @@ export class HeroineGraph {
    * Toggle a layer's visibility.
    */
   toggleLayer(layerId: string): boolean {
-    return this.layerManager.toggleLayer(layerId);
+    const result = this.layerManager.toggleLayer(layerId);
+    this.markRenderDirty();
+    return result;
   }
 
   /**
@@ -3982,6 +4037,7 @@ export class HeroineGraph {
         }
       }
     }
+    this.markRenderDirty();
   }
 
   /**
@@ -3989,6 +4045,7 @@ export class HeroineGraph {
    */
   disableContour(): void {
     this.layerManager.disableLayer("contour");
+    this.markRenderDirty();
   }
 
   /**
@@ -4087,6 +4144,7 @@ export class HeroineGraph {
         }
       }
     }
+    this.markRenderDirty();
   }
 
   /**
@@ -4094,6 +4152,7 @@ export class HeroineGraph {
    */
   disableMetaball(): void {
     this.layerManager.disableLayer("metaball");
+    this.markRenderDirty();
   }
 
   /**
@@ -4187,6 +4246,7 @@ export class HeroineGraph {
         }
       }
     }
+    this.markRenderDirty();
   }
 
   /**
@@ -4194,6 +4254,7 @@ export class HeroineGraph {
    */
   disableLabels(): void {
     this.layerManager.disableLayer("labels");
+    this.markRenderDirty();
   }
 
   /**
@@ -4249,6 +4310,7 @@ export class HeroineGraph {
       );
     }
     this.flowConfig = config;
+    this.markRenderDirty();
   }
 
   /**
@@ -4260,6 +4322,7 @@ export class HeroineGraph {
       layer1: config.layer1 ?? this.flowConfig.layer1,
       layer2: config.layer2 ?? this.flowConfig.layer2,
     };
+    this.markRenderDirty();
   }
 
   /**
@@ -4278,6 +4341,7 @@ export class HeroineGraph {
    */
   disableEdgeFlow(): void {
     this.flowConfig = { ...DEFAULT_EDGE_FLOW_CONFIG };
+    this.markRenderDirty();
   }
 
   /**
@@ -4360,6 +4424,7 @@ export class HeroineGraph {
       0,
       toArrayBuffer(nodeAttrs),
     );
+    this.markRenderDirty();
   }
 
   /**
@@ -4413,6 +4478,7 @@ export class HeroineGraph {
       0,
       toArrayBuffer(nodeAttrs),
     );
+    this.markRenderDirty();
 
     // Also update collision buffers if they're initialized
     if (this.collisionBuffers) {
@@ -4700,6 +4766,7 @@ export class HeroineGraph {
 
     // Update GPU buffer
     this.updateRenderConfigBuffer();
+    this.markRenderDirty();
   }
 
   /**
@@ -4773,6 +4840,7 @@ export class HeroineGraph {
         a: color.a ?? 1.0,
       };
     }
+    this.markRenderDirty();
   }
 
   /**
@@ -5659,6 +5727,7 @@ export class HeroineGraph {
       }
 
       this.hoveredNode = nodeId;
+      this.markRenderDirty();
 
       // Update new hovered node
       if (nodeId !== null) {
@@ -5686,6 +5755,7 @@ export class HeroineGraph {
         }
 
         this.hoveredEdge = edgeId;
+        this.markRenderDirty();
 
         if (edgeId !== null) {
           this.events.emit({
@@ -5730,6 +5800,8 @@ export class HeroineGraph {
           this.syncNodeSelectionToGPU(nodeId, false);
         }
       }
+
+      this.markRenderDirty();
 
       this.events.emit({
         type: "selection:change",
@@ -5871,6 +5943,7 @@ export class HeroineGraph {
     const cssHeight = this.canvas.clientHeight || this.canvas.height;
     this.viewport.resize(cssWidth, cssHeight);
     this.updateViewportUniforms();
+    this.markRenderDirty();
 
     // Resize layers
     this.layerManager.resize(cssWidth, cssHeight);

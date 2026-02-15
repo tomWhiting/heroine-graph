@@ -29,9 +29,6 @@ export interface FullForceConfig extends ForceConfig {
   springStrength: number;
   /** Spring rest length (natural length) */
   springLength: number;
-  /** Spring length variation by node degree */
-  springLengthByDegree: boolean;
-
   // Centering force
   /** Centering force strength */
   centerStrength: number;
@@ -59,6 +56,12 @@ export interface FullForceConfig extends ForceConfig {
   timeStep: number;
   /** Index of pinned node (kept at center, no movement). 0xFFFFFFFF = none */
   pinnedNode: number;
+
+  // Simulation parameters
+  /** Density field grid resolution (power of 2, 32-512, default: 128) */
+  densityGridSize: number;
+  /** Depth settling spread: parents settle before children (0-10, default: 2.5) */
+  depthSettlingSpread: number;
 
   // Relativity Atlas specific parameters
   /** Base mass for all nodes (default: 1.0) */
@@ -109,7 +112,7 @@ export interface FullForceConfig extends ForceConfig {
   linlogEdgeWeightInfluence: number;
   /** LinLog strong gravity mode — scales gravity with distance (default: false) */
   linlogStrongGravity: boolean;
-  /** LinLog repulsion scaling factor kr (default: 10.0) */
+  /** LinLog repulsion scaling factor kr (default: 0.1) */
   linlogScaling: number;
   /** LinLog gravity strength kg (default: 1.0) */
   linlogGravity: number;
@@ -190,8 +193,6 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   // Extended attraction settings
   springStrength: 0.1,
   springLength: 30,
-  springLengthByDegree: false,
-
   // Centering
   centerStrength: 0.01,
 
@@ -206,6 +207,10 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   maxVelocity: 50,
   timeStep: 1.0,
   pinnedNode: 0xFFFFFFFF, // No pinned node by default
+
+  // Simulation defaults
+  densityGridSize: 128,
+  depthSettlingSpread: 2.5,
 
   // Relativity Atlas defaults
   relativityBaseMass: 1.0,
@@ -234,7 +239,7 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   // LinLog defaults
   linlogEdgeWeightInfluence: 1.0,
   linlogStrongGravity: false,
-  linlogScaling: 10.0,
+  linlogScaling: 0.1,
   linlogGravity: 1.0,
 
   // t-FDP defaults (Zhong et al. recommended: alpha=0.1, beta=8, gamma=2)
@@ -418,8 +423,8 @@ export function validateForceConfig(
   // Clamp theta to valid range
   result.theta = Math.max(0.1, Math.min(2.0, result.theta));
 
-  // Ensure positive distances
-  result.repulsionDistanceMax = Math.max(1, result.repulsionDistanceMax);
+  // Ensure non-negative distances (0 = no limit for max_distance shader check)
+  result.repulsionDistanceMax = Math.max(0, result.repulsionDistanceMax);
   result.repulsionDistanceMin = Math.max(0.1, result.repulsionDistanceMin);
 
   // Ensure valid spring parameters
@@ -431,6 +436,13 @@ export function validateForceConfig(
 
   // Ensure positive max velocity
   result.maxVelocity = Math.max(1, result.maxVelocity);
+
+  // Validate simulation parameters
+  // densityGridSize must be power of 2 between 32 and 512
+  result.densityGridSize = Math.max(32, Math.min(512, result.densityGridSize));
+  // Snap to nearest power of 2
+  result.densityGridSize = Math.pow(2, Math.round(Math.log2(result.densityGridSize)));
+  result.depthSettlingSpread = Math.max(0, Math.min(10, result.depthSettlingSpread));
 
   // Clamp collision parameters
   result.collisionStrength = Math.max(0, Math.min(1, result.collisionStrength));
@@ -459,7 +471,7 @@ export function validateForceConfig(
 
   // Validate LinLog parameters
   result.linlogEdgeWeightInfluence = Math.max(0, Math.min(2, result.linlogEdgeWeightInfluence));
-  result.linlogScaling = Math.max(0.1, Math.min(100, result.linlogScaling));
+  result.linlogScaling = Math.max(0.001, Math.min(100, result.linlogScaling));
   result.linlogGravity = Math.max(0, Math.min(10, result.linlogGravity));
 
   // Validate t-FDP parameters

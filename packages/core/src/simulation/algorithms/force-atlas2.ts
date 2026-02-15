@@ -84,18 +84,18 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
 }
 
 /**
- * ForceAtlas2 algorithm implementation with proper linear attraction.
+ * ForceAtlas2 algorithm implementation.
  *
- * handlesSprings = true: FA2 uses its own attraction shader (F = d, no rest length)
- * instead of the default Hooke's law springs which create grid/lattice patterns.
+ * handlesSprings = false: FA2 now delegates to standard Hooke's law springs
+ * for attraction. The original FA2 linear attraction (F = d, no rest length)
+ * created spoke/wheel patterns and had no equilibrium distance. Standard
+ * springs produce better layouts and are consistent with other algorithms.
+ * The FA2 attraction shader is preserved but not dispatched.
  */
 export class ForceAtlas2Algorithm implements ForceAlgorithm {
   readonly info = FORCE_ATLAS2_ALGORITHM_INFO;
   readonly handlesGravity = true;
-  readonly handlesSprings = true;
-
-  /** Cached edge count from last updateUniforms, used by recordRepulsionPass */
-  private currentEdgeCount = 0;
+  readonly handlesSprings = false;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -253,11 +253,13 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       );
     }
 
-    // Cache edge count for recordRepulsionPass workgroup calculation
-    this.currentEdgeCount = context.edgeCount;
 
-    // ForceAtlas2 uses different scaling than standard force-directed
-    // The repulsion strength maps to FA2's "scaling" parameter (kr)
+    // FA2 force model calibration:
+    // FA2 uses 1/d repulsion (not 1/d² like Coulomb) with degree-weighted mass,
+    // producing inherently stronger forces. The 0.1 factor calibrates FA2's kr
+    // so that user-facing repulsionStrength produces similar magnitudes to N².
+    // FA2's constant-magnitude gravity (F = kg * mass, no distance scaling) needs
+    // a 10x boost to counterbalance the degree-amplified repulsion.
     const scaling = Math.abs(context.forceConfig.repulsionStrength) * 0.1;
     const gravity = context.forceConfig.centerStrength * 10;
 
@@ -346,15 +348,9 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       pass.end();
     }
 
-    // Pass 2: Linear Attraction (per-edge, F = d, no rest length)
-    if (this.currentEdgeCount > 0) {
-      const edgeWorkgroups = calculateWorkgroups(this.currentEdgeCount, 256);
-      const pass = encoder.beginComputePass({ label: "ForceAtlas2 Attraction" });
-      pass.setPipeline(fa2Pipelines.attraction);
-      pass.setBindGroup(0, fa2BindGroups.attraction);
-      pass.dispatchWorkgroups(edgeWorkgroups);
-      pass.end();
-    }
+    // FA2 attraction pass disabled — handlesSprings=false delegates to standard
+    // Hooke's law springs for consistent behavior across algorithms.
+    // The attraction shader and pipeline are preserved for potential future use.
   }
 
   destroy(): void {

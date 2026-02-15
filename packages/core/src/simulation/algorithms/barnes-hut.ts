@@ -528,7 +528,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // Traverse uniforms (32 bytes)
     // struct ForceUniforms { particle_count: u32, repulsion_strength: f32, theta: f32, min_distance: f32,
-    //                        leaf_size: f32, _pad1: f32, _pad2: f32, _pad3: f32 }
+    //                        leaf_size: f32, max_distance: f32, _pad2: f32, _pad3: f32 }
     const leafSize = rootSize / 256.0; // Approximate leaf size
     const traverseData = new ArrayBuffer(32);
     const traverseView = new DataView(traverseData);
@@ -537,7 +537,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     traverseView.setFloat32(8, context.forceConfig.theta, true);
     traverseView.setFloat32(12, context.forceConfig.repulsionDistanceMin, true);
     traverseView.setFloat32(16, leafSize, true);
-    traverseView.setFloat32(20, 0.0, true);
+    traverseView.setFloat32(20, context.forceConfig.repulsionDistanceMax, true);
     traverseView.setFloat32(24, 0.0, true);
     traverseView.setFloat32(28, 0.0, true);
     device.queue.writeBuffer(b.traverseUniforms, 0, traverseData);

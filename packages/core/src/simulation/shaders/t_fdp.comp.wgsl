@@ -61,10 +61,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // t-distribution repulsive force:
         // F = kr × d / (1 + d²)^γ
         //
-        // This is bounded at d→0 (force approaches 0, not infinity)
+        // Original formula is bounded at d→0 (force approaches 0, not infinity)
         // and decays like 1/d^(2γ-1) at large distances.
+        // We add a minimum force floor (30% of kr) to prevent node collapse
+        // when d is very small — without this, overlapping nodes cannot separate.
         let denominator = pow(1.0 + dist_sq, uniforms.gamma);
-        let force_magnitude = uniforms.repulsion_scale * dist / denominator;
+        let raw_force = uniforms.repulsion_scale * dist / denominator;
+        let min_force = uniforms.repulsion_scale * 0.3;
+        let force_magnitude = max(raw_force, min_force);
 
         total_force += dir * force_magnitude;
     }

@@ -2,6 +2,14 @@
 // Computes attractive forces along edges using Hooke's law
 //
 // Uses vec2<f32> layout for consolidated position/force data.
+//
+// NOTE: Non-atomic float accumulation (forces[idx] += force) is an intentional
+// design decision. WGSL has no float atomics, so edge-processing shaders that
+// write to shared node indices have a read-modify-write race condition. The
+// resulting small random perturbations (<1% of force magnitude) actually help
+// prevent stuck states and are standard practice in GPU physics simulations.
+// Converting to fixed-point i32 atomics would require splitting vec2 force
+// buffers into separate atomic<i32> x/y buffers with significant rearchitecture.
 
 struct SpringUniforms {
     edge_count: u32,

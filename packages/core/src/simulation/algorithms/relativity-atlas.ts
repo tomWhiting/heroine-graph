@@ -65,8 +65,8 @@ const DEFAULT_SPLAT_RADIUS = 3.0; // In grid cells
  *    requires a buffer map operation with synchronization, adding significant
  *    latency (often more than the cost of extra iterations).
  *
- * 2. Fixed iteration approach: We use 10 iterations as the default.
- *    For hierarchies deeper than 10 levels, increase MAX_MASS_ITERATIONS
+ * 2. Fixed iteration approach: We use 20 iterations as the default.
+ *    For hierarchies deeper than 20 levels, increase MAX_MASS_ITERATIONS
  *    to match the maximum tree depth.
  *
  * 3. Per-frame overhead is negligible: Mass initialization only runs when the
@@ -80,7 +80,7 @@ const DEFAULT_SPLAT_RADIUS = 3.0; // In grid cells
  * The shader still writes to a convergence flag buffer (for potential future use
  * or debugging), but it is not read back on the CPU side.
  */
-const MAX_MASS_ITERATIONS = 10;
+const MAX_MASS_ITERATIONS = 20;
 
 /**
  * Threshold below which mass changes are considered converged.

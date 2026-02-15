@@ -41,9 +41,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Decode own community centroid from fixed-point
-    let cx = f32(centroid_sum_x[comm]) / (100.0 * f32(count));
-    let cy = f32(centroid_sum_y[comm]) / (100.0 * f32(count));
+    // Decode own community centroid from fixed-point (scale factor 10)
+    let cx = f32(centroid_sum_x[comm]) / (10.0 * f32(count));
+    let cy = f32(centroid_sum_y[comm]) / (10.0 * f32(count));
 
     let pos = positions[idx];
 

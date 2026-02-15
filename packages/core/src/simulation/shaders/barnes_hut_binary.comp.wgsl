@@ -19,7 +19,7 @@ struct ForceUniforms {
     theta: f32,                // Opening angle (0.5-1.5 typical)
     min_distance: f32,         // Minimum distance to prevent singularities
     leaf_size: f32,            // Approximate size of leaf nodes
-    _pad1: f32,
+    max_distance: f32,         // Maximum repulsion distance (0 = no limit)
     _pad2: f32,
     _pad3: f32,
 }
@@ -147,6 +147,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // Check if this is a leaf node (stored at index >= N-1)
         let is_leaf = node_idx >= num_internal;
+
+        // Skip nodes beyond max_distance (0 = no limit)
+        if (uniforms.max_distance > 0.0 && dist_sq > uniforms.max_distance * uniforms.max_distance) {
+            continue;
+        }
 
         // Barnes-Hut criterion: size/distance < theta
         // Equivalent to: size^2 < theta^2 * dist^2

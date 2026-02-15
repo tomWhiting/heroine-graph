@@ -91,7 +91,7 @@ export const DEFAULT_SIMULATION_CONFIG: Required<SimulationControllerConfig> = {
   alpha: 1.0,
   alphaTarget: 0.0, // Cool to rest; bumpSimulationAlpha() reheats on interaction
   alphaMin: 0.001,
-  alphaDecay: 0.012, // ~575 iterations to cool down (gentler tail)
+  alphaDecay: 0.0002, // ~34,500 iterations to cool down (long settle for quality layouts)
   velocityDecay: 0.4,
   maxIterationsPerTick: 1,
   warmUpTicks: 0,
@@ -105,6 +105,8 @@ export interface SimulationController {
   readonly state: SimulationState;
   /** Whether simulation is currently running */
   readonly isRunning: boolean;
+  /** Whether GPU force computation is needed (running + alpha > 0) */
+  readonly needsCompute: boolean;
   /** Event emitter for simulation events */
   readonly events: SimulationEventEmitter;
 
@@ -322,6 +324,9 @@ export function createSimulationController(
     },
     get isRunning() {
       return state.status === "running";
+    },
+    get needsCompute() {
+      return state.status === "running" && state.alpha > 0;
     },
     events,
     start,

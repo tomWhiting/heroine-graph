@@ -118,11 +118,11 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
     const data = new ArrayBuffer(16);
     const view = new DataView(data);
 
-    // RepulsionUniforms: { node_count, repulsion_strength, min_distance, _padding }
+    // RepulsionUniforms: { node_count, repulsion_strength, min_distance, max_distance }
     view.setUint32(0, context.nodeCount, true);
     view.setFloat32(4, Math.abs(context.forceConfig.repulsionStrength), true);
     view.setFloat32(8, context.forceConfig.repulsionDistanceMin, true);
-    view.setUint32(12, 0, true); // padding
+    view.setFloat32(12, context.forceConfig.repulsionDistanceMax, true);
 
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }

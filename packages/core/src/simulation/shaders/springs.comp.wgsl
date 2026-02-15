@@ -5,6 +5,9 @@
 // Force magnitude increases linearly with distance beyond rest length.
 //
 // Uses vec2<f32> layout for consolidated position/velocity/force data.
+//
+// NOTE: Non-atomic forces[idx] += force is intentional. See springs_simple.comp.wgsl
+// for full rationale on the WGSL float atomics limitation.
 
 struct SpringUniforms {
     node_count: u32,

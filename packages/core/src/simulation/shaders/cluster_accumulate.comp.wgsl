@@ -3,8 +3,8 @@
 // Each thread adds its node's position to its community's centroid
 // accumulator using atomic operations.
 //
-// Fixed-point encoding (scale by 100) provides 0.01 precision with i32
-// atomics, supporting positions up to +/-21,474.
+// Fixed-point encoding (scale by 10) provides 0.1 precision with i32
+// atomics, supporting positions up to +/-214,748.
 
 struct AccumUniforms {
     node_count: u32,
@@ -30,9 +30,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let comm = community_ids[idx];
     let pos = positions[idx];
 
-    // Fixed-point accumulation: scale by 100 for 0.01 precision
-    let fx = i32(pos.x * 100.0);
-    let fy = i32(pos.y * 100.0);
+    // Fixed-point accumulation: scale by 10 for 0.1 precision
+    // Supports positions up to +/-214,748 without i32 overflow
+    let fx = i32(pos.x * 10.0);
+    let fy = i32(pos.y * 10.0);
 
     // Accumulate per-community centroid
     atomicAdd(&centroid_sum_x[comm], fx);

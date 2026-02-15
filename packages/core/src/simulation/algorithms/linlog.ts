@@ -79,15 +79,17 @@ class LinLogBuffers implements AlgorithmBuffers {
 }
 
 /**
- * LinLog force algorithm implementation
+ * LinLog force algorithm implementation.
+ *
+ * handlesSprings = false: LinLog now delegates to standard Hooke's law springs
+ * for attraction. The original LinLog logarithmic attraction created patterns
+ * inconsistent with other algorithms. Standard springs produce better layouts.
+ * The LinLog attraction shader is preserved but not dispatched.
  */
 export class LinLogAlgorithm implements ForceAlgorithm {
   readonly info = LINLOG_ALGORITHM_INFO;
   readonly handlesGravity = true;
-  readonly handlesSprings = true;
-
-  /** Cached edge count from last updateUniforms, used by recordRepulsionPass */
-  private currentEdgeCount = 0;
+  readonly handlesSprings = false;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -241,13 +243,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       );
     }
 
-    // Cache edge count for recordRepulsionPass workgroup calculation
-    this.currentEdgeCount = context.edgeCount;
-
     const fc = context.forceConfig;
 
-    // Map config to shader uniforms
-    const kr = fc.linlogScaling * Math.abs(fc.repulsionStrength) * 0.01;
+    // LinLog force model calibration:
+    // linlogScaling (default 0.1) maps user-facing repulsionStrength to LinLog's
+    // logarithmic repulsion model. The 10x gravity boost matches FA2's calibration —
+    // LinLog's constant-magnitude gravity needs amplification to counterbalance
+    // the degree-weighted repulsion.
+    const kr = fc.linlogScaling * Math.abs(fc.repulsionStrength);
     const kg = fc.linlogGravity * fc.centerStrength * 10;
     const edgeWeightInfluence = fc.linlogEdgeWeightInfluence;
     const flags = fc.linlogStrongGravity ? 1 : 0;
@@ -319,18 +322,9 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       pass.end();
     }
 
-    // Pass 2: Attraction (per-edge logarithmic springs)
-    // Use actual edge count cached from updateUniforms for precise workgroup dispatch.
-    // The shader early-returns for threads beyond edge_count, so slight over-dispatch
-    // from rounding up to workgroup size is safe.
-    if (this.currentEdgeCount > 0) {
-      const edgeWorkgroups = calculateWorkgroups(this.currentEdgeCount, 256);
-      const pass = encoder.beginComputePass({ label: "LinLog Attraction" });
-      pass.setPipeline(llPipelines.attraction);
-      pass.setBindGroup(0, llBindGroups.attraction);
-      pass.dispatchWorkgroups(edgeWorkgroups);
-      pass.end();
-    }
+    // LinLog attraction pass disabled — handlesSprings=false delegates to standard
+    // Hooke's law springs for consistent behavior across algorithms.
+    // The attraction shader and pipeline are preserved for potential future use.
   }
 }
 

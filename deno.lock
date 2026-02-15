@@ -5,8 +5,6 @@
     "jsr:@std/path@*": "1.1.4",
     "npm:@sveltejs/package@^2.3.0": "2.5.7_svelte@5.46.1__acorn@8.15.0_typescript@5.9.3",
     "npm:@sveltejs/vite-plugin-svelte@4": "4.0.4_svelte@5.46.1__acorn@8.15.0_vite@5.4.21",
-    "npm:@types/react-dom@^18.3.0": "18.3.7_@types+react@18.3.27",
-    "npm:@types/react@^18.3.0": "18.3.27",
     "npm:@vue/tsconfig@0.7": "0.7.0_typescript@5.9.3_vue@3.5.26__typescript@5.9.3",
     "npm:react-dom@19": "19.2.3_react@19.2.3",
     "npm:react@19": "19.2.3",
@@ -1183,8 +1181,8 @@
       "packages/react": {
         "packageJson": {
           "dependencies": [
-            "npm:@types/react-dom@^18.3.0",
-            "npm:@types/react@^18.3.0",
+            "npm:@types/react-dom@19",
+            "npm:@types/react@19",
             "npm:react-dom@19",
             "npm:react@19",
             "npm:tsup@^8.3.0",

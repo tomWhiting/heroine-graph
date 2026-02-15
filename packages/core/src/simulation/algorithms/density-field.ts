@@ -39,8 +39,9 @@ const DENSITY_FIELD_ALGORITHM_INFO: ForceAlgorithmInfo = {
   complexity: "O(n)",
 };
 
-// Grid configuration
-const GRID_SIZE = 128; // 128x128 grid
+// Grid configuration — densityGridSize from ForceConfig overrides at runtime
+const MAX_GRID_SIZE = 512; // Maximum supported grid size (buffer allocated at this size)
+const DEFAULT_GRID_SIZE = 128; // Default used when ForceConfig not available
 const DEFAULT_SPLAT_RADIUS = 3.0; // In grid cells
 const WORKGROUP_SIZE = 256;
 
@@ -79,6 +80,9 @@ class DensityFieldBuffers implements AlgorithmBuffers {
 export class DensityFieldAlgorithm implements ForceAlgorithm {
   readonly info = DENSITY_FIELD_ALGORITHM_INFO;
   readonly handlesGravity = false;
+
+  /** Current grid size from ForceConfig, updated each frame in updateUniforms */
+  private currentGridSize = DEFAULT_GRID_SIZE;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -139,8 +143,9 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Density grid: GRID_SIZE x GRID_SIZE cells, each u32
-    const gridCells = GRID_SIZE * GRID_SIZE;
+    // Density grid: allocate for max grid size (512x512 = 1MB)
+    // Runtime grid size from ForceConfig uses a subset of this buffer.
+    const gridCells = MAX_GRID_SIZE * MAX_GRID_SIZE;
     const densityGrid = device.createBuffer({
       label: "Density Grid",
       size: gridCells * 4,
@@ -207,9 +212,11 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     // Uniforms (48 bytes = 12 x f32)
     const data = new ArrayBuffer(48);
     const view = new DataView(data);
+    const gridSize = context.forceConfig.densityGridSize || DEFAULT_GRID_SIZE;
+    this.currentGridSize = gridSize;
     view.setUint32(0, context.nodeCount, true);           // node_count
-    view.setUint32(4, GRID_SIZE, true);                   // grid_width
-    view.setUint32(8, GRID_SIZE, true);                   // grid_height
+    view.setUint32(4, gridSize, true);                    // grid_width
+    view.setUint32(8, gridSize, true);                    // grid_height
     view.setFloat32(12, Math.abs(context.forceConfig.repulsionStrength), true); // repulsion_strength
     view.setFloat32(16, boundsMinX, true);                // bounds_min_x
     view.setFloat32(20, boundsMinY, true);                // bounds_min_y
@@ -231,7 +238,7 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     const p = pipelines as DensityFieldPipelines;
 
     const nodeWorkgroups = calculateWorkgroups(nodeCount, WORKGROUP_SIZE);
-    const gridCells = GRID_SIZE * GRID_SIZE;
+    const gridCells = this.currentGridSize * this.currentGridSize;
     const gridWorkgroups = calculateWorkgroups(gridCells, WORKGROUP_SIZE);
 
     // Phase 1: Clear density grid

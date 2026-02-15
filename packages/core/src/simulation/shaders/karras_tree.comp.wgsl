@@ -197,9 +197,9 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     node_com[node_idx] = pos;
     node_mass[node_idx] = 1.0;  // Each particle has mass 1
 
-    // Leaf bounding box size derived from tree depth (root_size / 256.0).
-    // This provides the cell size used in the Barnes-Hut theta criterion.
-    node_size[node_idx] = uniforms.root_size / 256.0;
+    // Leaf size: minimum floor to prevent zero-size leaves breaking the
+    // theta criterion (size/distance < theta would always pass with size=0).
+    node_size[node_idx] = max(1.0, uniforms.root_size / 256.0);
 }
 
 // Phase 3: Bottom-up aggregation of centers of mass
@@ -258,10 +258,13 @@ fn aggregate_bottom_up(@builtin(global_invocation_id) global_id: vec3<u32>) {
             node_com[parent_idx] = com;
             node_mass[parent_idx] = total_mass;
 
-            // Node size is max of child sizes (approximate bounding box)
+            // Node size = distance between children's centers + max child extent.
+            // This gives a proper geometric measure of the subtree's spatial span
+            // without requiring extra AABB buffers (WebGPU limits: 10 storage buffers).
+            let child_dist = length(left_com - right_com);
             let left_size = node_size[left_idx];
             let right_size = node_size[right_idx];
-            node_size[parent_idx] = max(left_size, right_size) * 2.0;
+            node_size[parent_idx] = child_dist + max(left_size, right_size);
         }
 
         // Move to next parent

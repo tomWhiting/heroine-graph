@@ -7,7 +7,7 @@ struct RepulsionUniforms {
     node_count: u32,
     repulsion_strength: f32,
     min_distance: f32,
-    _padding: u32,
+    max_distance: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: RepulsionUniforms;
@@ -39,6 +39,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let delta = node_pos - other_pos;
 
         let dist_sq = dot(delta, delta);
+
+        // Skip nodes beyond max_distance (0 = no limit)
+        if (uniforms.max_distance > 0.0 && dist_sq > uniforms.max_distance * uniforms.max_distance) {
+            continue;
+        }
+
         let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
         let safe_dist_sq = max(dist_sq, min_dist_sq);
         let dist = sqrt(safe_dist_sq);
