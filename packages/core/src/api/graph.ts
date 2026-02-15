@@ -26,7 +26,7 @@ import type {
 import type { GPUContext } from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
-import { createEventEmitter, type EventEmitter } from "../events/emitter.ts";
+import { createEventEmitter, Events, type EventEmitter } from "../events/emitter.ts";
 import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
 import { type ParsedGraph, parseGraphInput } from "../graph/parser.ts";
@@ -409,6 +409,7 @@ export class HeroineGraph {
   private hoveredEdge: EdgeId | null = null;
   private draggedNode: NodeId | null = null;
   private lastDragPosition: Vec2 | null = null;
+  private dragStartScreenPosition: Vec2 | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
 
   // Viewport panning state
@@ -5684,6 +5685,7 @@ export class HeroineGraph {
         // Start drag on node
         this.draggedNode = nodeId;
         this.lastDragPosition = { ...e.graphPosition };
+        this.dragStartScreenPosition = { ...e.screenPosition };
         this.pinnedNodes.add(nodeId);
 
         // Select if not already selected (or add to selection with shift)
@@ -5760,18 +5762,40 @@ export class HeroineGraph {
     this.pointerManager.on("pointerup", (e) => {
       if (this.draggedNode !== null) {
         const nodeId = this.draggedNode;
+        const dragStart = this.dragStartScreenPosition;
         this.draggedNode = null;
         this.lastDragPosition = null;
+        this.dragStartScreenPosition = null;
 
-        // Optionally unpin after drag (could be configurable)
-        // this.pinnedNodes.delete(nodeId);
+        // Distinguish click from drag: if pointer moved less than 5px
+        // in screen space, treat as a click rather than a drag end.
+        const CLICK_THRESHOLD = 5;
+        let isClick = false;
+        if (dragStart) {
+          const dx = e.screenPosition.x - dragStart.x;
+          const dy = e.screenPosition.y - dragStart.y;
+          isClick = Math.sqrt(dx * dx + dy * dy) < CLICK_THRESHOLD;
+        }
 
-        this.events.emit({
-          type: "node:dragend",
-          timestamp: Date.now(),
-          nodeId,
-          position: e.graphPosition,
-        });
+        if (isClick) {
+          // Unpin node — it wasn't actually dragged, just clicked
+          this.pinnedNodes.delete(nodeId);
+
+          // pointerup always has a PointerEvent (not WheelEvent)
+          this.events.emit(
+            Events.nodeClick(nodeId, e.graphPosition, e.originalEvent as PointerEvent),
+          );
+        } else {
+          // Optionally unpin after drag (could be configurable)
+          // this.pinnedNodes.delete(nodeId);
+
+          this.events.emit({
+            type: "node:dragend",
+            timestamp: Date.now(),
+            nodeId,
+            position: e.graphPosition,
+          });
+        }
       }
 
       // End panning
