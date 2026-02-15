@@ -90,6 +90,17 @@ export class LayerManager {
   }
 
   /**
+   * Get all layers of a specific type
+   */
+  getLayersByType<T extends Layer = Layer>(type: string): T[] {
+    const result: T[] = [];
+    for (const layer of this.layers.values()) {
+      if (layer.type === type) result.push(layer as T);
+    }
+    return result;
+  }
+
+  /**
    * Check if a layer exists
    */
   hasLayer(id: string): boolean {

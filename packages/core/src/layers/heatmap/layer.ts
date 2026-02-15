@@ -116,12 +116,14 @@ export class HeatmapLayer implements Layer {
     this.config.enabled = value;
   }
 
+  private _order = 0;
+
   get order(): number {
-    return 0; // Heatmap renders below nodes
+    return this._order;
   }
 
-  set order(_value: number) {
-    // Heatmap always at order 0
+  set order(value: number) {
+    this._order = value;
   }
 
   /**

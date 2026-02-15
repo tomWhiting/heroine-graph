@@ -124,7 +124,6 @@ import {
   createMetaballLayer,
   type HeatmapConfig,
   type HeatmapLayer,
-  type HeatmapRenderContext,
   type LabelConfig,
   type LabelData,
   // Labels layer
@@ -448,8 +447,8 @@ export class HeroineGraph {
   // Type-based styling system
   private typeStyleManager: TypeStyleManager;
 
-  // Heatmap stream intensity buffer (per-node values from stream)
-  private heatmapIntensityBuffer: GPUBuffer | null = null;
+  // Heatmap stream intensity buffers (per-node values from stream), keyed by layer ID
+  private heatmapIntensityBuffers = new Map<string, GPUBuffer>();
 
   // Metaball stream intensity buffer (per-node values from stream)
   private metaballIntensityBuffer: GPUBuffer | null = null;
@@ -3654,11 +3653,13 @@ export class HeroineGraph {
    * Enable the heatmap layer.
    * Creates the layer if it doesn't exist.
    */
-  enableHeatmap(config?: HeatmapConfig): void {
-    const layerId = "heatmap";
+  // ---- Layer-ID-aware heatmap methods ----
 
+  /**
+   * Enable a heatmap layer by ID. Creates if it doesn't exist.
+   */
+  enableHeatmapLayer(layerId: string, config?: HeatmapConfig): void {
     if (!this.layerManager.hasLayer(layerId)) {
-      // Create heatmap layer
       const cssWidth = this.canvas.clientWidth || this.canvas.width;
       const cssHeight = this.canvas.clientHeight || this.canvas.height;
 
@@ -3671,11 +3672,8 @@ export class HeroineGraph {
       );
 
       this.layerManager.addLayer(heatmapLayer);
-
-      // Set render context if graph is loaded
       this.updateLayerRenderContext();
     } else {
-      // Enable existing layer
       const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
       if (layer) {
         layer.enabled = true;
@@ -3688,98 +3686,95 @@ export class HeroineGraph {
   }
 
   /**
-   * Disable the heatmap layer.
+   * Disable a heatmap layer by ID.
    */
-  disableHeatmap(): void {
-    this.layerManager.disableLayer("heatmap");
+  disableHeatmapLayer(layerId: string): void {
+    this.layerManager.disableLayer(layerId);
     this.markRenderDirty();
   }
 
   /**
-   * Check if heatmap is enabled.
+   * Configure a heatmap layer by ID.
    */
-  isHeatmapEnabled(): boolean {
-    return this.layerManager.isLayerVisible("heatmap");
-  }
-
-  /**
-   * Configure the heatmap layer.
-   */
-  setHeatmapConfig(config: Partial<HeatmapConfig>): void {
-    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
+  configureHeatmapLayer(layerId: string, config: Partial<HeatmapConfig>): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
     if (layer) {
       layer.setConfig(config);
+      this.markRenderDirty();
     }
   }
 
   /**
-   * Get heatmap configuration.
+   * Set color scale on a heatmap layer by ID.
    */
+  setHeatmapLayerColorScale(layerId: string, name: ColorScaleName): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
+    if (layer) {
+      layer.setColorScale(name);
+      this.markRenderDirty();
+    }
+  }
+
+  /**
+   * Set custom color scale on a heatmap layer by ID.
+   */
+  setCustomHeatmapLayerColorScale(
+    layerId: string,
+    stops: Array<{ position: number; color: [number, number, number, number] }>,
+  ): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
+    if (layer) {
+      layer.setCustomColorScale(stops);
+      this.markRenderDirty();
+    }
+  }
+
+  /**
+   * Set data source on a heatmap layer by ID.
+   */
+  setHeatmapLayerDataSource(layerId: string, source: string): void {
+    const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
+    if (layer) {
+      layer.setDataSource(source);
+      this.updateLayerRenderContext();
+    }
+  }
+
+  // ---- Legacy single-layer heatmap aliases (delegate to "heatmap" layer) ----
+
+  enableHeatmap(config?: HeatmapConfig): void {
+    this.enableHeatmapLayer("heatmap", config);
+  }
+
+  disableHeatmap(): void {
+    this.disableHeatmapLayer("heatmap");
+  }
+
+  isHeatmapEnabled(): boolean {
+    return this.layerManager.isLayerVisible("heatmap");
+  }
+
+  setHeatmapConfig(config: Partial<HeatmapConfig>): void {
+    this.configureHeatmapLayer("heatmap", config);
+  }
+
   getHeatmapConfig(): HeatmapConfig | null {
     const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
     return layer?.getConfig() ?? null;
   }
 
-  /**
-   * Set heatmap color scale.
-   */
   setHeatmapColorScale(name: ColorScaleName): void {
-    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
-    if (layer) {
-      layer.setColorScale(name);
-    }
+    this.setHeatmapLayerColorScale("heatmap", name);
   }
 
-  /**
-   * Set a custom heatmap color scale from color stops.
-   *
-   * @param stops - Array of color stops, each with position (0-1) and color (RGBA 0-1)
-   *
-   * @example
-   * ```typescript
-   * graph.setCustomHeatmapColorScale([
-   *   { position: 0, color: [0, 0, 0, 1] },      // Black at low density
-   *   { position: 0.5, color: [1, 0.4, 0, 1] },  // Orange at mid density
-   *   { position: 1, color: [1, 1, 0, 1] },      // Yellow at high density
-   * ]);
-   * ```
-   */
   setCustomHeatmapColorScale(stops: Array<{ position: number; color: [number, number, number, number] }>): void {
-    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
-    if (layer) {
-      layer.setCustomColorScale(stops);
-    }
+    this.setCustomHeatmapLayerColorScale("heatmap", stops);
   }
 
-  /**
-   * Set heatmap data source.
-   *
-   * @param source - 'density' for uniform intensity (all nodes contribute equally),
-   *                 or a stream ID to use stream values as per-node intensity
-   *
-   * @example
-   * ```typescript
-   * // Use uniform density (default)
-   * graph.setHeatmapDataSource('density');
-   *
-   * // Use error stream values - nodes with more errors contribute more to heatmap
-   * graph.setHeatmapDataSource('errors');
-   * ```
-   */
   setHeatmapDataSource(source: string): void {
-    const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
-    if (layer) {
-      layer.setDataSource(source);
-      // Rebuild intensity buffer on next render
-      this.updateLayerRenderContext();
-    }
+    this.setHeatmapLayerDataSource("heatmap", source);
   }
 
-  /**
-   * Get heatmap data source.
-   *
-   * @returns Current data source ('density' or stream ID)
-   */
   getHeatmapDataSource(): string | null {
     const layer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
     return layer?.getDataSource() ?? null;
@@ -3799,6 +3794,14 @@ export class HeroineGraph {
     const result = this.layerManager.toggleLayer(layerId);
     this.markRenderDirty();
     return result;
+  }
+
+  /**
+   * Set a layer's render order. Higher values render on top.
+   */
+  setLayerOrder(layerId: string, order: number): void {
+    this.layerManager.setLayerOrder(layerId, order);
+    this.markRenderDirty();
   }
 
   /**
@@ -3839,74 +3842,66 @@ export class HeroineGraph {
   private updateLayerRenderContext(): void {
     if (!this.simBuffers || !this.state.loaded) return;
 
-    // Update heatmap layer if it exists
-    const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
-    if (heatmapLayer) {
-      // Check if heatmap is using a stream for per-node intensity
+    // Update all heatmap layers (skip disabled to avoid wasted GPU allocation)
+    const heatmapLayers = this.layerManager.getLayersByType<HeatmapLayer>("heatmap");
+    for (const heatmapLayer of heatmapLayers) {
+      if (!heatmapLayer.enabled) continue;
+
       const dataSource = heatmapLayer.getDataSource();
       let nodeIntensities: GPUBuffer | null = null;
 
       if (dataSource !== "density" && this.streamManager.hasStream(dataSource)) {
-        // Get stream values and create intensity buffer
         const stream = this.streamManager.getStream(dataSource);
         if (stream) {
-          // Get normalized values from stream (domain mapped to 0-1)
           const intensities = new Float32Array(this.state.nodeCount);
 
-          // Get domain for normalization
           const colorScale = stream.getColorScale();
           const domain = colorScale.domain;
           const domainMin = domain[0];
           const domainRange = domain[1] - domainMin;
 
-          // Fill intensity array from stream data
           for (let i = 0; i < this.state.nodeCount; i++) {
             const value = stream.getValue(i);
             if (value !== undefined && domainRange > 0) {
-              // Normalize to 0-1 range based on domain
               intensities[i] = Math.max(0, Math.min(1, (value - domainMin) / domainRange));
             } else {
-              // Nodes without values don't contribute (intensity = 0)
               intensities[i] = 0;
             }
           }
 
-          // Create or update GPU buffer
           const { device } = this.gpuContext;
-          const requiredSize = this.state.nodeCount * 4; // 1 f32 per node
+          const requiredSize = this.state.nodeCount * 4;
 
-          // Recreate buffer if size changed
-          if (!this.heatmapIntensityBuffer || this.heatmapIntensityBuffer.size < requiredSize) {
-            this.heatmapIntensityBuffer?.destroy();
-            this.heatmapIntensityBuffer = device.createBuffer({
-              label: "Heatmap Stream Intensity Buffer",
+          let buffer = this.heatmapIntensityBuffers.get(heatmapLayer.id);
+          if (!buffer || buffer.size < requiredSize) {
+            buffer?.destroy();
+            buffer = device.createBuffer({
+              label: `Heatmap Intensity [${heatmapLayer.id}]`,
               size: requiredSize,
               usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             });
+            this.heatmapIntensityBuffers.set(heatmapLayer.id, buffer);
           }
 
-          // Write intensity data
-          device.queue.writeBuffer(this.heatmapIntensityBuffer, 0, intensities);
-          nodeIntensities = this.heatmapIntensityBuffer;
+          device.queue.writeBuffer(buffer, 0, intensities);
+          nodeIntensities = buffer;
         }
       }
 
-      const heatmapContext: HeatmapRenderContext = {
+      heatmapLayer.setRenderContext({
         viewportUniformBuffer: this.viewportUniformBuffer.buffer,
         positions: this.simBuffers.positions,
         nodeCount: this.state.nodeCount,
         nodeIntensities,
-      };
-
-      heatmapLayer.setRenderContext(heatmapContext);
+      });
     }
 
-    // Update contour layer if it exists
-    // Contour layer uses the density texture from heatmap
+    // Update contour layer — uses density texture from first enabled heatmap
     const contourLayer = this.layerManager.getLayer<ContourLayer>("contour");
-    if (contourLayer && heatmapLayer) {
-      const densityTexture = heatmapLayer.getDensityTexture();
-      const heatmapConfig = heatmapLayer.getConfig();
+    const primaryHeatmap = heatmapLayers.find((l) => l.enabled);
+    if (contourLayer && primaryHeatmap) {
+      const densityTexture = primaryHeatmap.getDensityTexture();
+      const heatmapConfig = primaryHeatmap.getConfig();
       const contourContext: ContourRenderContext = {
         densityTextureView: densityTexture.sampleView,
         maxDensity: heatmapConfig.maxDensity,
@@ -5407,9 +5402,11 @@ export class HeroineGraph {
    * Called internally when stream data changes to ensure heatmap reflects updates.
    */
   private updateHeatmapIfUsingStream(streamId: string): void {
-    const heatmapLayer = this.layerManager.getLayer<HeatmapLayer>("heatmap");
-    if (heatmapLayer && heatmapLayer.getDataSource() === streamId) {
-      this.updateLayerRenderContext();
+    for (const layer of this.layerManager.getLayersByType<HeatmapLayer>("heatmap")) {
+      if (layer.getDataSource() === streamId) {
+        this.updateLayerRenderContext();
+        return;
+      }
     }
   }
 
@@ -6079,9 +6076,11 @@ export class HeroineGraph {
     // Destroy stream manager
     this.streamManager.destroy();
 
-    // Destroy heatmap intensity buffer
-    this.heatmapIntensityBuffer?.destroy();
-    this.heatmapIntensityBuffer = null;
+    // Destroy heatmap intensity buffers
+    for (const buffer of this.heatmapIntensityBuffers.values()) {
+      buffer.destroy();
+    }
+    this.heatmapIntensityBuffers.clear();
 
     // Destroy metaball intensity buffer
     this.metaballIntensityBuffer?.destroy();
