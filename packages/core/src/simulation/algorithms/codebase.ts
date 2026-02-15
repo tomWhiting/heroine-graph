@@ -28,6 +28,24 @@ import CLUSTER_CLEAR_WGSL from "../shaders/cluster_clear.comp.wgsl";
 import CLUSTER_ACCUMULATE_WGSL from "../shaders/cluster_accumulate.comp.wgsl";
 import CLUSTER_ATTRACT_WGSL from "../shaders/cluster_attract.comp.wgsl";
 
+/**
+ * Extended pipelines for Codebase Layout (community-modulated repulsion + cluster attraction)
+ */
+interface CodebaseLayoutPipelines extends AlgorithmPipelines {
+  clearCentroids: GPUComputePipeline;
+  accumulate: GPUComputePipeline;
+  attract: GPUComputePipeline;
+}
+
+/**
+ * Extended bind groups for Codebase Layout
+ */
+interface CodebaseLayoutBindGroups extends AlgorithmBindGroups {
+  clearCentroids: GPUBindGroup;
+  accumulate: GPUBindGroup;
+  attract: GPUBindGroup;
+}
+
 const CODEBASE_LAYOUT_INFO: ForceAlgorithmInfo = {
   id: "codebase" as "codebase",
   name: "Codebase Layout",
@@ -138,7 +156,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
       code: CLUSTER_ATTRACT_WGSL,
     });
 
-    return {
+    const pipelines: CodebaseLayoutPipelines = {
       repulsion: device.createComputePipeline({
         label: "Codebase: Modulated Repulsion Pipeline",
         layout: "auto",
@@ -160,6 +178,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
         compute: { module: attractModule, entryPoint: "main" },
       }),
     };
+    return pipelines;
   }
 
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
@@ -234,6 +253,8 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
     _algorithmBuffers: AlgorithmBuffers,
   ): AlgorithmBindGroups {
+    const p = pipelines as CodebaseLayoutPipelines;
+
     if (
       !this.repulsionUniforms ||
       !this.clearUniforms ||
@@ -251,7 +272,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees
     const repulsion = device.createBindGroup({
       label: "Codebase: Repulsion Bind Group",
-      layout: pipelines.repulsion.getBindGroupLayout(0),
+      layout: p.repulsion.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.repulsionUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -263,7 +284,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
 
     const clearCentroids = device.createBindGroup({
       label: "Codebase: Clear Centroids Bind Group",
-      layout: pipelines.clearCentroids.getBindGroupLayout(0),
+      layout: p.clearCentroids.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.clearUniforms } },
         { binding: 1, resource: { buffer: this.centroidSumXBuffer } },
@@ -274,7 +295,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
 
     const accumulate = device.createBindGroup({
       label: "Codebase: Accumulate Bind Group",
-      layout: pipelines.accumulate.getBindGroupLayout(0),
+      layout: p.accumulate.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.accumUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -287,7 +308,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
 
     const attract = device.createBindGroup({
       label: "Codebase: Attract Bind Group",
-      layout: pipelines.attract.getBindGroupLayout(0),
+      layout: p.attract.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.attractUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -300,7 +321,8 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
       ],
     });
 
-    return { repulsion, clearCentroids, accumulate, attract };
+    const bindGroups: CodebaseLayoutBindGroups = { repulsion, clearCentroids, accumulate, attract };
+    return bindGroups;
   }
 
   updateUniforms(
@@ -388,14 +410,16 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     bindGroups: AlgorithmBindGroups,
     nodeCount: number,
   ): void {
+    const p = pipelines as CodebaseLayoutPipelines;
+    const bg = bindGroups as CodebaseLayoutBindGroups;
     const nodeWorkgroups = calculateWorkgroups(nodeCount, 256);
     const commWorkgroups = calculateWorkgroups(this.communityCount, 256);
 
     // Phase 1: Clear centroid accumulators
     {
       const pass = encoder.beginComputePass({ label: "Codebase: Clear Centroids" });
-      pass.setPipeline(pipelines.clearCentroids);
-      pass.setBindGroup(0, bindGroups.clearCentroids);
+      pass.setPipeline(p.clearCentroids);
+      pass.setBindGroup(0, bg.clearCentroids);
       pass.dispatchWorkgroups(commWorkgroups);
       pass.end();
     }
@@ -403,8 +427,8 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     // Phase 2: Community-modulated N² repulsion
     {
       const pass = encoder.beginComputePass({ label: "Codebase: Modulated Repulsion" });
-      pass.setPipeline(pipelines.repulsion);
-      pass.setBindGroup(0, bindGroups.repulsion);
+      pass.setPipeline(p.repulsion);
+      pass.setBindGroup(0, bg.repulsion);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }
@@ -412,8 +436,8 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     // Phase 3: Accumulate community centroids
     {
       const pass = encoder.beginComputePass({ label: "Codebase: Accumulate Centroids" });
-      pass.setPipeline(pipelines.accumulate);
-      pass.setBindGroup(0, bindGroups.accumulate);
+      pass.setPipeline(p.accumulate);
+      pass.setBindGroup(0, bg.accumulate);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }
@@ -421,8 +445,8 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
     // Phase 4: Apply cluster attraction
     {
       const pass = encoder.beginComputePass({ label: "Codebase: Cluster Attraction" });
-      pass.setPipeline(pipelines.attract);
-      pass.setBindGroup(0, bindGroups.attract);
+      pass.setPipeline(p.attract);
+      pass.setBindGroup(0, bg.attract);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }

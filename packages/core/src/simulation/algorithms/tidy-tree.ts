@@ -22,6 +22,7 @@ import type {
   ForceAlgorithm,
   ForceAlgorithmInfo,
 } from "./types.ts";
+import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 // Import shader source
 import TIDY_TREE_WGSL from "../shaders/tidy_tree.comp.wgsl";
@@ -104,8 +105,8 @@ export class TidyTreeAlgorithm implements ForceAlgorithm {
     device.queue.writeBuffer(
       this.targetPositionsBuffer,
       0,
-      positions.buffer,
-      positions.byteOffset,
+      toArrayBuffer(positions),
+      0, // toArrayBuffer already accounts for byteOffset via slice
       uploadBytes,
     );
   }

@@ -441,6 +441,10 @@ export class HeroineGraph {
   // Value stream system
   private streamManager: StreamManager;
 
+  // Original colors backed up before stream overrides, keyed by node index.
+  // Used to restore base colors when streams are cleared, disabled, or removed.
+  private streamColorBackups = new Map<number, [number, number, number]>();
+
   // Type-based styling system
   private typeStyleManager: TypeStyleManager;
 
@@ -1163,7 +1167,7 @@ export class HeroineGraph {
     const posY = pg.positionsY;
 
     // First sync — just store positions, can't compare yet
-    if (!this.prevSyncPositionsX || this.prevSyncPositionsX.length < nodeCount) {
+    if (!this.prevSyncPositionsX || !this.prevSyncPositionsY || this.prevSyncPositionsX.length < nodeCount) {
       this.prevSyncPositionsX = new Float32Array(posX.subarray(0, nodeCount));
       this.prevSyncPositionsY = new Float32Array(posY.subarray(0, nodeCount));
       this.convergenceCheckCount = 0;
@@ -1596,7 +1600,7 @@ export class HeroineGraph {
 
       // Upload depths to both algorithm and integration buffers
       device.queue.writeBuffer(b.nodeDepth, 0, depths);
-      device.queue.writeBuffer(this.simBuffers.nodeDepth, 0, depths);
+      device.queue.writeBuffer(this.simBuffers!.nodeDepth, 0, depths);
 
       // Upload well radii (bubble mode uses WASM if available, otherwise defaults)
       // deno-lint-ignore no-explicit-any
@@ -1610,7 +1614,7 @@ export class HeroineGraph {
         );
         if (bubbleData.length >= nodeCount * 2) {
           const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
-          device.queue.writeBuffer(b.wellRadius, 0, wellRadii);
+          device.queue.writeBuffer(b.wellRadius, 0, toArrayBuffer(wellRadii));
         }
       } else {
         const defaultWellRadii = new Float32Array(nodeCount);
@@ -4416,6 +4420,15 @@ export class HeroineGraph {
       if (!Number.isNaN(r)) nodeAttrs[attrBase + 1] = r;
       if (!Number.isNaN(g)) nodeAttrs[attrBase + 2] = g;
       if (!Number.isNaN(b)) nodeAttrs[attrBase + 3] = b;
+
+      // If this node has a stream color backup, update it so the new
+      // base color is restored when the stream clears.
+      const backup = this.streamColorBackups.get(i);
+      if (backup) {
+        if (typeof r === "number" && !Number.isNaN(r)) backup[0] = r;
+        if (typeof g === "number" && !Number.isNaN(g)) backup[1] = g;
+        if (typeof b === "number" && !Number.isNaN(b)) backup[2] = b;
+      }
     }
 
     // Upload entire buffer to GPU
@@ -5246,6 +5259,19 @@ export class HeroineGraph {
         nodeAttributes[baseOffset + 1] = style.color[0];
         nodeAttributes[baseOffset + 2] = style.color[1];
         nodeAttributes[baseOffset + 3] = style.color[2];
+
+        // Sync type-styled colors to CPU shadow so stream color backups
+        // capture the correct base color (not stale parse-time values).
+        parsed.nodeAttributes[baseOffset + 1] = style.color[0];
+        parsed.nodeAttributes[baseOffset + 2] = style.color[1];
+        parsed.nodeAttributes[baseOffset + 3] = style.color[2];
+
+        // If this node has a stream color backup, update it to reflect
+        // the new type-styled base color.
+        if (this.streamColorBackups.has(i)) {
+          this.streamColorBackups.set(i, [style.color[0], style.color[1], style.color[2]]);
+        }
+
         // Preserve selected/hovered state
         nodeAttributes[baseOffset + 4] = parsed.nodeAttributes[baseOffset + 4];
         nodeAttributes[baseOffset + 5] = parsed.nodeAttributes[baseOffset + 5];
@@ -5292,24 +5318,87 @@ export class HeroineGraph {
   /**
    * Apply computed stream colors to nodes.
    * Called internally after stream data changes.
+   *
+   * Only updates nodes that have actual stream color data (alpha > 0).
+   * Nodes without stream values are left untouched — their existing
+   * colors are preserved. This prevents streams with sparse coverage
+   * from blanking unaffected nodes to black.
    */
   private applyStreamColors(): void {
     if (!this.state.loaded || this.state.nodeCount === 0) return;
+    if (!this.state.parsedGraph || !this.buffers) return;
 
-    // Get blended colors from all active streams
     const colors = this.streamManager.computeBlendedColors(this.state.nodeCount);
+    const nodeAttrs = this.state.parsedGraph.nodeAttributes;
+    let changed = false;
+    let minChanged = this.state.nodeCount;
+    let maxChanged = -1;
+    const currentlyColored = new Set<number>();
 
-    // Only apply if there are actual colors (any non-zero alpha)
-    let hasColors = false;
-    for (let i = 3; i < colors.length; i += 4) {
-      if (colors[i] > 0) {
-        hasColors = true;
-        break;
+    // Apply stream colors to nodes with data (alpha > 0).
+    // Back up original colors before the first override so they can
+    // be restored when the stream is cleared, disabled, or removed.
+    for (let i = 0; i < this.state.nodeCount; i++) {
+      const colorBase = i * 4;
+      const alpha = colors[colorBase + 3] ?? 0;
+
+      if (alpha > 0) {
+        const attrBase = i * 6;
+
+        // Save base color before first stream override
+        if (!this.streamColorBackups.has(i)) {
+          this.streamColorBackups.set(i, [
+            nodeAttrs[attrBase + 1] ?? 0,
+            nodeAttrs[attrBase + 2] ?? 0,
+            nodeAttrs[attrBase + 3] ?? 0,
+          ]);
+        }
+
+        // Node attrs layout: [radius, r, g, b, selected, hovered]
+        nodeAttrs[attrBase + 1] = colors[colorBase] ?? 0;     // R
+        nodeAttrs[attrBase + 2] = colors[colorBase + 1] ?? 0; // G
+        nodeAttrs[attrBase + 3] = colors[colorBase + 2] ?? 0; // B
+        currentlyColored.add(i);
+        changed = true;
+        if (i < minChanged) minChanged = i;
+        if (i > maxChanged) maxChanged = i;
       }
     }
 
-    if (hasColors) {
-      this.setNodeColors(colors);
+    // Restore base colors for nodes that were stream-colored but no longer are.
+    // This handles stream clear, disable, and removal without leaving stale colors.
+    const toRemove: number[] = [];
+    for (const [nodeIdx, backup] of this.streamColorBackups) {
+      if (!currentlyColored.has(nodeIdx)) {
+        if (nodeIdx < this.state.nodeCount) {
+          const attrBase = nodeIdx * 6;
+          nodeAttrs[attrBase + 1] = backup[0];
+          nodeAttrs[attrBase + 2] = backup[1];
+          nodeAttrs[attrBase + 3] = backup[2];
+          changed = true;
+          if (nodeIdx < minChanged) minChanged = nodeIdx;
+          if (nodeIdx > maxChanged) maxChanged = nodeIdx;
+        }
+        toRemove.push(nodeIdx);
+      }
+    }
+    for (const nodeIdx of toRemove) {
+      this.streamColorBackups.delete(nodeIdx);
+    }
+
+    if (changed && maxChanged >= 0) {
+      const { device } = this.gpuContext;
+      // Upload only the affected subrange of the node attributes buffer
+      const byteOffset = minChanged * 6 * 4;
+      const byteLength = (maxChanged - minChanged + 1) * 6 * 4;
+      device.queue.writeBuffer(
+        this.buffers.nodeAttributes,
+        byteOffset,
+        toArrayBuffer(nodeAttrs),
+        byteOffset,
+        byteLength,
+      );
+      this.markRenderDirty();
     }
   }
 

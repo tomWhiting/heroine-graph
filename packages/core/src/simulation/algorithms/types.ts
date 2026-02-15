@@ -55,8 +55,6 @@ export class EmptyAlgorithmBuffers implements AlgorithmBuffers {
 export interface AlgorithmBindGroups {
   /** Repulsion pass bind group */
   repulsion: GPUBindGroup;
-  /** Additional named bind groups for multi-phase algorithms */
-  [key: string]: GPUBindGroup;
 }
 
 /**
@@ -65,8 +63,6 @@ export interface AlgorithmBindGroups {
 export interface AlgorithmPipelines {
   /** Repulsion compute pipeline */
   repulsion: GPUComputePipeline;
-  /** Additional named pipelines for multi-phase algorithms */
-  [key: string]: GPUComputePipeline;
 }
 
 /**

@@ -36,6 +36,24 @@ import CLUSTER_CLEAR_WGSL from "../shaders/cluster_clear.comp.wgsl";
 import CLUSTER_ACCUMULATE_WGSL from "../shaders/cluster_accumulate.comp.wgsl";
 import CLUSTER_ATTRACT_WGSL from "../shaders/cluster_attract.comp.wgsl";
 
+/**
+ * Extended pipelines for Community Layout (community-modulated repulsion + cluster attraction)
+ */
+interface CommunityLayoutPipelines extends AlgorithmPipelines {
+  clearCentroids: GPUComputePipeline;
+  accumulate: GPUComputePipeline;
+  attract: GPUComputePipeline;
+}
+
+/**
+ * Extended bind groups for Community Layout
+ */
+interface CommunityLayoutBindGroups extends AlgorithmBindGroups {
+  clearCentroids: GPUBindGroup;
+  accumulate: GPUBindGroup;
+  attract: GPUBindGroup;
+}
+
 const COMMUNITY_LAYOUT_INFO: ForceAlgorithmInfo = {
   id: "community" as "community",
   name: "Community Layout",
@@ -148,7 +166,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       code: CLUSTER_ATTRACT_WGSL,
     });
 
-    return {
+    const pipelines: CommunityLayoutPipelines = {
       repulsion: device.createComputePipeline({
         label: "Community: Modulated Repulsion Pipeline",
         layout: "auto",
@@ -170,6 +188,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
         compute: { module: attractModule, entryPoint: "main" },
       }),
     };
+    return pipelines;
   }
 
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
@@ -247,6 +266,8 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
     _algorithmBuffers: AlgorithmBuffers,
   ): AlgorithmBindGroups {
+    const p = pipelines as CommunityLayoutPipelines;
+
     if (
       !this.repulsionUniforms ||
       !this.clearUniforms ||
@@ -264,7 +285,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees
     const repulsion = device.createBindGroup({
       label: "Community: Repulsion Bind Group",
-      layout: pipelines.repulsion.getBindGroupLayout(0),
+      layout: p.repulsion.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.repulsionUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -277,7 +298,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Clear centroids: uniforms, centroidSumX, centroidSumY, centroidCount
     const clearCentroids = device.createBindGroup({
       label: "Community: Clear Centroids Bind Group",
-      layout: pipelines.clearCentroids.getBindGroupLayout(0),
+      layout: p.clearCentroids.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.clearUniforms } },
         { binding: 1, resource: { buffer: this.centroidSumXBuffer } },
@@ -289,7 +310,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Accumulate centroids: uniforms, positions, communityIds, centroidSumX/Y, centroidCount
     const accumulate = device.createBindGroup({
       label: "Community: Accumulate Bind Group",
-      layout: pipelines.accumulate.getBindGroupLayout(0),
+      layout: p.accumulate.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.accumUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -303,7 +324,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Cluster attraction: uniforms, positions, forces, communityIds, centroidSumX/Y, centroidCount, degrees
     const attract = device.createBindGroup({
       label: "Community: Attract Bind Group",
-      layout: pipelines.attract.getBindGroupLayout(0),
+      layout: p.attract.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.attractUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
@@ -316,7 +337,8 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       ],
     });
 
-    return { repulsion, clearCentroids, accumulate, attract };
+    const bindGroups: CommunityLayoutBindGroups = { repulsion, clearCentroids, accumulate, attract };
+    return bindGroups;
   }
 
   updateUniforms(
@@ -404,14 +426,16 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     bindGroups: AlgorithmBindGroups,
     nodeCount: number,
   ): void {
+    const p = pipelines as CommunityLayoutPipelines;
+    const bg = bindGroups as CommunityLayoutBindGroups;
     const nodeWorkgroups = calculateWorkgroups(nodeCount, 256);
     const commWorkgroups = calculateWorkgroups(this.communityCount, 256);
 
     // Phase 1: Clear centroid accumulators
     {
       const pass = encoder.beginComputePass({ label: "Community: Clear Centroids" });
-      pass.setPipeline(pipelines.clearCentroids);
-      pass.setBindGroup(0, bindGroups.clearCentroids);
+      pass.setPipeline(p.clearCentroids);
+      pass.setBindGroup(0, bg.clearCentroids);
       pass.dispatchWorkgroups(commWorkgroups);
       pass.end();
     }
@@ -419,8 +443,8 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Phase 2: Community-modulated N² repulsion
     {
       const pass = encoder.beginComputePass({ label: "Community: Modulated Repulsion" });
-      pass.setPipeline(pipelines.repulsion);
-      pass.setBindGroup(0, bindGroups.repulsion);
+      pass.setPipeline(p.repulsion);
+      pass.setBindGroup(0, bg.repulsion);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }
@@ -428,8 +452,8 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Phase 3: Accumulate community centroids
     {
       const pass = encoder.beginComputePass({ label: "Community: Accumulate Centroids" });
-      pass.setPipeline(pipelines.accumulate);
-      pass.setBindGroup(0, bindGroups.accumulate);
+      pass.setPipeline(p.accumulate);
+      pass.setBindGroup(0, bg.accumulate);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }
@@ -437,8 +461,8 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
     // Phase 4: Apply cluster attraction toward centroids
     {
       const pass = encoder.beginComputePass({ label: "Community: Cluster Attraction" });
-      pass.setPipeline(pipelines.attract);
-      pass.setBindGroup(0, bindGroups.attract);
+      pass.setPipeline(p.attract);
+      pass.setBindGroup(0, bg.attract);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }
