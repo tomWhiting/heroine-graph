@@ -1039,8 +1039,8 @@ async function main(): Promise<void> {
         toRemove.push(copy[idx].id);
         copy.splice(idx, 1);
       }
-      const removed = await state.graph.removeNodes(toRemove);
-      state.nodeCount -= removed;
+      const { removedCount } = await state.graph.removeNodes(toRemove);
+      state.nodeCount -= removedCount;
       const removedSet = new Set(toRemove);
       state.graphData = {
         nodes: state.graphData.nodes.filter((n) => !removedSet.has(n.id)),

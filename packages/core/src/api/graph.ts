@@ -2220,16 +2220,20 @@ export class HeroineGraph {
    * @param ids - Node IDs to remove
    * @returns Number of nodes actually removed
    */
-  async removeNodes(ids: (NodeId | string)[]): Promise<number> {
-    if (ids.length === 0) return 0;
+  async removeNodes(
+    ids: (NodeId | string)[],
+  ): Promise<{ removedCount: number; nodeSlotRemap: Map<number, number> }> {
+    const emptyResult = { removedCount: 0, nodeSlotRemap: new Map<number, number>() };
+    if (ids.length === 0) return emptyResult;
     if (ids.length === 1) {
       const ok = await this.removeNode(ids[0]);
-      return ok ? 1 : 0;
+      // Single-node removal uses freeNodeSlot (hole-based, no compaction),
+      // so no surviving node changes slot — remap is empty.
+      return ok ? { removedCount: 1, nodeSlotRemap: new Map() } : emptyResult;
     }
 
     // Delegate to batch for O(N+E) instead of O(N^2)
-    const result = await this.removeNodesBatch(ids);
-    return result.removedCount;
+    return this.removeNodesBatch(ids);
   }
 
   /**
