@@ -110,7 +110,7 @@ export function createNodeRenderPipeline(
     entries: [
       {
         binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
     ],

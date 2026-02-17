@@ -167,7 +167,7 @@ import {
   type TypeStyleManager,
 } from "../styling/mod.ts";
 import { initialCapacity, growCapacity } from "./buffer_capacity.ts";
-import { MutableGraphState } from "./graph_state.ts";
+import { MutableGraphState, NODE_ATTR_FLOATS, NODE_ATTR_BYTES } from "./graph_state.ts";
 
 // Default well radius for non-bubble mode (matches density field default splat in grid cells)
 const DEFAULT_WELL_RADIUS = 0.0;
@@ -374,6 +374,11 @@ export class HeroineGraph {
 
   // Node border configuration
   private nodeBorderConfig: _NodeBorderConfig = { ..._DEFAULT_NODE_BORDER_CONFIG };
+
+  // Birth pulse animation configuration
+  private birthPulseConfig = { enabled: true, duration: 0.5, intensity: 0.5 };
+  /** Animation time of the most recent birth pulse (for render loop dirty tracking) */
+  private lastBirthTime = 0;
 
   // Background color (RGBA 0-1)
   private backgroundColor: { r: number; g: number; b: number; a: number } = { r: 0.04, g: 0.04, b: 0.06, a: 1.0 };
@@ -612,10 +617,11 @@ export class HeroineGraph {
     // - selection_color: vec3<f32> (12 bytes) + selection_ring_width: f32 (4 bytes) = 16 bytes
     // - hover_brightness: f32 (4 bytes) + border_enabled: u32 (4 bytes) + border_width: f32 (4 bytes) + pad: f32 (4 bytes) = 16 bytes
     // - border_color: vec3<f32> (12 bytes) + pad: f32 (4 bytes) = 16 bytes
-    // Total: 48 bytes
+    // - time: f32 (4 bytes) + birth_pulse_duration: f32 (4 bytes) + birth_pulse_intensity: f32 (4 bytes) + pad: f32 (4 bytes) = 16 bytes
+    // Total: 64 bytes
     this.renderConfigBuffer = device.createBuffer({
       label: "Render Config Uniform Buffer",
-      size: 48,
+      size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -673,7 +679,7 @@ export class HeroineGraph {
     if (!this.renderConfigBuffer) return;
 
     const { device } = this.gpuContext;
-    const data = new ArrayBuffer(48);
+    const data = new ArrayBuffer(64);
     const floatView = new Float32Array(data);
     const uintView = new Uint32Array(data);
 
@@ -698,6 +704,14 @@ export class HeroineGraph {
     floatView[9] = borderColor[1]; // border_color.g
     floatView[10] = borderColor[2]; // border_color.b
     floatView[11] = 0.0; // _pad2
+
+    // Birth pulse animation (12-15)
+    floatView[12] = 0.0; // time (updated per-frame in renderFrame)
+    floatView[13] = this.birthPulseConfig.duration; // birth_pulse_duration
+    floatView[14] = this.birthPulseConfig.enabled
+      ? this.birthPulseConfig.intensity
+      : 0.0; // birth_pulse_intensity (0 when disabled)
+    floatView[15] = 0.0; // _pad3
 
     device.queue.writeBuffer(this.renderConfigBuffer, 0, data);
   }
@@ -981,6 +995,16 @@ export class HeroineGraph {
       this.renderDirty = true;
     }
 
+    // Birth pulse animation requires rendering while decaying
+    if (this.lastBirthTime > 0 && this.birthPulseConfig.enabled) {
+      const elapsed = this.getAnimationTime() - this.lastBirthTime;
+      if (elapsed < this.birthPulseConfig.duration * 3.0) {
+        this.renderDirty = true;
+      } else {
+        this.lastBirthTime = 0;
+      }
+    }
+
     // Simulation compute marks render dirty (positions change each frame)
     if (needsCompute) {
       this.renderDirty = true;
@@ -1070,6 +1094,16 @@ export class HeroineGraph {
     // occupied slots are drawn. Dead slots (from removals) have radius=0
     // and are invisible; using nodeCount would skip live nodes in high slots.
     const nodeInstanceCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
+
+    // Update animation time in RenderConfig for birth pulse (targeted 4-byte write at byte 48)
+    if (this.renderConfigBuffer && this.lastBirthTime > 0) {
+      const animTime = this.getAnimationTime();
+      device.queue.writeBuffer(
+        this.renderConfigBuffer, 48,
+        new Float32Array([animTime]),
+      );
+    }
+
     if (
       this.nodePipeline &&
       this.viewportBindGroup &&
@@ -1455,12 +1489,11 @@ export class HeroineGraph {
     this.collisionBuffers = createCollisionBuffers(device, nodeCount);
 
     // Extract node sizes from attributes and compute max radius
-    // Node attributes layout: [radius, r, g, b, selected, hovered] per node (6 floats)
-    const ATTRIBUTES_PER_NODE = 6;
+    // Node attributes layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] per node
     const nodeSizes = new Float32Array(nodeCount);
     let maxRadius = 0;
     for (let i = 0; i < nodeCount; i++) {
-      const radius = nodeAttributes[i * ATTRIBUTES_PER_NODE];
+      const radius = nodeAttributes[i * NODE_ATTR_FLOATS];
       const r = radius > 0 ? radius : 5.0; // Default radius if not set
       nodeSizes[i] = r;
       if (r > maxRadius) maxRadius = r;
@@ -1660,10 +1693,10 @@ export class HeroineGraph {
     });
     device.queue.writeBuffer(positions, 0, toArrayBuffer(positionsVec2));
 
-    // Create node attributes buffer (6 floats per node) — sized to capacity
+    // Create node attributes buffer (8 floats per node) — sized to capacity
     const nodeAttributes = device.createBuffer({
       label: "Node Attributes",
-      size: nodeCapacity * 6 * 4,
+      size: nodeCapacity * NODE_ATTR_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(nodeAttributes, 0, toArrayBuffer(parsed.nodeAttributes));
@@ -1782,17 +1815,20 @@ export class HeroineGraph {
     // Parse attributes
     const radius = node.radius ?? 5;
     const [r, g, b] = node.color ? parseColorToRGB(node.color) : [0.4, 0.6, 0.9];
+    const birthTime = node.birthTime ?? 0;
 
     // Write to CPU shadow
     gs.positionsX[slot] = x;
     gs.positionsY[slot] = y;
-    const attrBase = slot * 6;
+    const attrBase = slot * NODE_ATTR_FLOATS;
     gs.nodeAttributes[attrBase] = radius;
     gs.nodeAttributes[attrBase + 1] = r;
     gs.nodeAttributes[attrBase + 2] = g;
     gs.nodeAttributes[attrBase + 3] = b;
     gs.nodeAttributes[attrBase + 4] = 0; // selected
     gs.nodeAttributes[attrBase + 5] = 0; // hovered
+    gs.nodeAttributes[attrBase + 6] = birthTime; // birth_time
+    gs.nodeAttributes[attrBase + 7] = 0; // tex_index (reserved for Stage 2)
 
     // Record node type for type-based styling
     const nodeType = node["type"] as string | undefined;
@@ -1800,15 +1836,18 @@ export class HeroineGraph {
       gs.nodeTypes[slot] = nodeType;
     }
 
+    // Track birth pulse for render loop dirty detection
+    if (birthTime > 0) this.lastBirthTime = birthTime;
+
     // Write to GPU buffers (targeted writes)
     const { device } = this.gpuContext;
     const posVec2 = new Float32Array([x, y]);
-    const attrData = new Float32Array([radius, r, g, b, 0, 0]);
+    const attrData = new Float32Array([radius, r, g, b, 0, 0, birthTime, 0]);
     const zeroVec2 = new Float32Array([0, 0]);
 
     device.queue.writeBuffer(this.simBuffers.positions, slot * 8, posVec2);
     device.queue.writeBuffer(this.simBuffers.positionsOut, slot * 8, posVec2);
-    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * 24, attrData);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * NODE_ATTR_BYTES, attrData);
     device.queue.writeBuffer(this.simBuffers.velocities, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
@@ -1870,11 +1909,11 @@ export class HeroineGraph {
     // Write zeros to GPU buffers
     const { device } = this.gpuContext;
     const zeroVec2 = new Float32Array([0, 0]);
-    const zeroAttrs = new Float32Array(6);
+    const zeroAttrs = new Float32Array(NODE_ATTR_FLOATS);
 
     device.queue.writeBuffer(this.simBuffers.positions, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.positionsOut, slot * 8, zeroVec2);
-    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * 24, zeroAttrs);
+    device.queue.writeBuffer(this.buffers.nodeAttributes, slot * NODE_ATTR_BYTES, zeroAttrs);
     device.queue.writeBuffer(this.simBuffers.velocities, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
@@ -2099,16 +2138,22 @@ export class HeroineGraph {
       const y = node.y ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
       const radius = node.radius ?? 5;
       const [r, g, b] = node.color ? parseColorToRGB(node.color) : [0.4, 0.6, 0.9];
+      const birthTime = node.birthTime ?? 0;
 
       gs.positionsX[slot] = x;
       gs.positionsY[slot] = y;
-      const attrBase = slot * 6;
+      const attrBase = slot * NODE_ATTR_FLOATS;
       gs.nodeAttributes[attrBase] = radius;
       gs.nodeAttributes[attrBase + 1] = r;
       gs.nodeAttributes[attrBase + 2] = g;
       gs.nodeAttributes[attrBase + 3] = b;
       gs.nodeAttributes[attrBase + 4] = 0;
       gs.nodeAttributes[attrBase + 5] = 0;
+      gs.nodeAttributes[attrBase + 6] = birthTime;
+      gs.nodeAttributes[attrBase + 7] = 0; // tex_index
+
+      // Track birth pulse for render loop dirty detection
+      if (birthTime > 0) this.lastBirthTime = birthTime;
 
       // Record node type for type-based styling
       const nodeType = node["type"] as string | undefined;
@@ -2302,9 +2347,9 @@ export class HeroineGraph {
       if (readIdx !== nodeWriteIdx) {
         gs.positionsX[nodeWriteIdx] = gs.positionsX[readIdx]!;
         gs.positionsY[nodeWriteIdx] = gs.positionsY[readIdx]!;
-        const srcAttr = readIdx * 6;
-        const dstAttr = nodeWriteIdx * 6;
-        for (let k = 0; k < 6; k++) {
+        const srcAttr = readIdx * NODE_ATTR_FLOATS;
+        const dstAttr = nodeWriteIdx * NODE_ATTR_FLOATS;
+        for (let k = 0; k < NODE_ATTR_FLOATS; k++) {
           gs.nodeAttributes[dstAttr + k] = gs.nodeAttributes[srcAttr + k]!;
         }
       }
@@ -2315,8 +2360,8 @@ export class HeroineGraph {
     for (let i = nodeWriteIdx; i < gs.nodeHighWater; i++) {
       gs.positionsX[i] = 0;
       gs.positionsY[i] = 0;
-      const attrBase = i * 6;
-      for (let k = 0; k < 6; k++) gs.nodeAttributes[attrBase + k] = 0;
+      const attrBase = i * NODE_ATTR_FLOATS;
+      for (let k = 0; k < NODE_ATTR_FLOATS; k++) gs.nodeAttributes[attrBase + k] = 0;
     }
 
     // Update node tracking — compact, no holes
@@ -2721,7 +2766,7 @@ export class HeroineGraph {
     device.queue.writeBuffer(
       this.buffers.nodeAttributes,
       0,
-      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * 6)),
+      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * NODE_ATTR_FLOATS)),
     );
 
     // Zero velocities/forces for all slots
@@ -2882,7 +2927,7 @@ export class HeroineGraph {
     });
     this.buffers.nodeAttributes = device.createBuffer({
       label: "Node Attributes",
-      size: newCapacity * 6 * 4,
+      size: newCapacity * NODE_ATTR_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.buffers.nodeCapacity = newCapacity;
@@ -2898,7 +2943,7 @@ export class HeroineGraph {
     device.queue.writeBuffer(
       this.buffers.nodeAttributes,
       0,
-      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * 6)),
+      toArrayBuffer(gs.nodeAttributes.subarray(0, hw * NODE_ATTR_FLOATS)),
     );
 
     // === Simulation buffers ===
@@ -4359,6 +4404,53 @@ export class HeroineGraph {
   }
 
   // ==========================================================================
+  // Public API - Birth Pulse Animation
+  // ==========================================================================
+
+  /**
+   * Get the current animation time (seconds since graph start).
+   * Use this to stamp `birthTime` on nodes for birth pulse animation.
+   */
+  getAnimationTime(): number {
+    return (performance.now() - this.flowStartTime) / 1000.0;
+  }
+
+  /**
+   * Configure the birth pulse animation parameters.
+   * @param config - Partial config: `enabled`, `duration` (seconds), `intensity` (0-1)
+   */
+  setBirthPulseConfig(config: { enabled?: boolean; duration?: number; intensity?: number }): void {
+    if (config.enabled !== undefined) this.birthPulseConfig.enabled = config.enabled;
+    if (config.duration !== undefined) this.birthPulseConfig.duration = config.duration;
+    if (config.intensity !== undefined) this.birthPulseConfig.intensity = config.intensity;
+    this.updateRenderConfigBuffer();
+    this.markRenderDirty();
+  }
+
+  /**
+   * Set the birth time for a specific node (triggers birth pulse animation).
+   * @param nodeId - The node slot index
+   * @param time - Animation time from `getAnimationTime()`. 0 = no animation.
+   */
+  setNodeBirthTime(nodeId: NodeId, time: number): void {
+    if (!this.buffers || !this.state.parsedGraph) return;
+    const idx = nodeId;
+    if (idx < 0 || idx >= (this.graphState?.nodeHighWater ?? 0)) return;
+
+    this.state.parsedGraph.nodeAttributes[idx * NODE_ATTR_FLOATS + 6] = time;
+    if (this.graphState) {
+      this.graphState.nodeAttributes[idx * NODE_ATTR_FLOATS + 6] = time;
+    }
+
+    const byteOffset = idx * NODE_ATTR_BYTES + 6 * 4;
+    this.gpuContext.device.queue.writeBuffer(
+      this.buffers.nodeAttributes, byteOffset, new Float32Array([time]),
+    );
+    this.lastBirthTime = time;
+    this.markRenderDirty();
+  }
+
+  // ==========================================================================
   // Public API - Per-Item Styling
   // ==========================================================================
 
@@ -4402,10 +4494,10 @@ export class HeroineGraph {
     const nodeAttrs = this.state.parsedGraph.nodeAttributes;
 
     // Update CPU-side array and GPU buffer
-    // Node attrs layout: [radius, r, g, b, selected, hovered] per node
+    // Node attrs layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] per node
     for (let i = 0; i < this.state.nodeCount; i++) {
       const colorBase = i * 4;
-      const attrBase = i * 6;
+      const attrBase = i * NODE_ATTR_FLOATS;
 
       // Skip NaN values (keep existing color)
       const r = colors[colorBase];
@@ -4473,11 +4565,11 @@ export class HeroineGraph {
     const nodeAttrs = this.state.parsedGraph.nodeAttributes;
 
     // Update CPU-side array
-    // Node attrs layout: [radius, r, g, b, selected, hovered] per node
+    // Node attrs layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] per node
     for (let i = 0; i < this.state.nodeCount; i++) {
       const size = sizes[i];
       if (!Number.isNaN(size) && size > 0) {
-        nodeAttrs[i * 6] = size; // radius is at offset 0
+        nodeAttrs[i * NODE_ATTR_FLOATS] = size; // radius is at offset 0
       }
     }
 
@@ -5149,14 +5241,14 @@ export class HeroineGraph {
     const parsed = this.state.parsedGraph;
     const { device } = this.gpuContext;
 
-    // Prepare a scratch buffer for per-node writes (6 floats = 24 bytes)
-    const scratch = new Float32Array(6);
+    // Prepare a scratch buffer for per-node writes (8 floats = 32 bytes)
+    const scratch = new Float32Array(NODE_ATTR_FLOATS);
 
     for (const id of ids) {
       const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
       if (slot === undefined) continue;
 
-      const baseOffset = slot * 6;
+      const baseOffset = slot * NODE_ATTR_FLOATS;
 
       if (!visible) {
         // Hide: save original radius, zero the slot
@@ -5168,20 +5260,22 @@ export class HeroineGraph {
         gs.nodeHiddenRadii.set(slot, currentRadius);
         gs.nodeHiddenSlots.add(slot);
 
-        // Zero all visual attributes (radius, r, g, b) — preserve selected/hovered
+        // Zero all visual attributes (radius, r, g, b) — preserve selected/hovered and slots 6-7
         scratch[0] = 0; // radius
         scratch[1] = 0; // r
         scratch[2] = 0; // g
         scratch[3] = 0; // b
         scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
         scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
+        scratch[6] = parsed.nodeAttributes[baseOffset + 6]; // birth_time
+        scratch[7] = parsed.nodeAttributes[baseOffset + 7]; // tex_index
 
         device.queue.writeBuffer(
           this.buffers.nodeAttributes,
           baseOffset * 4,
           scratch.buffer,
           0,
-          24,
+          NODE_ATTR_BYTES,
         );
       } else {
         // Show: restore original radius and re-apply type style
@@ -5201,13 +5295,15 @@ export class HeroineGraph {
         scratch[3] = style.color[2]; // b
         scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
         scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
+        scratch[6] = parsed.nodeAttributes[baseOffset + 6]; // birth_time
+        scratch[7] = parsed.nodeAttributes[baseOffset + 7]; // tex_index
 
         device.queue.writeBuffer(
           this.buffers.nodeAttributes,
           baseOffset * 4,
           scratch.buffer,
           0,
-          24,
+          NODE_ATTR_BYTES,
         );
       }
     }
@@ -5230,11 +5326,11 @@ export class HeroineGraph {
     if (this.buffers && this.typeStyleManager.hasNodeStyles()) {
       // Use parsed.nodeCount (= nodeHighWater) to cover all slots including gaps from removals
       const nodeCount = parsed.nodeCount;
-      // Node attribute layout: [radius, r, g, b, selected, hovered] — 6 floats per node
-      const nodeAttributes = new Float32Array(nodeCount * 6);
+      // Node attribute layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] — 8 floats per node
+      const nodeAttributes = new Float32Array(nodeCount * NODE_ATTR_FLOATS);
 
       for (let i = 0; i < nodeCount; i++) {
-        const baseOffset = i * 6;
+        const baseOffset = i * NODE_ATTR_FLOATS;
         const originalRadius = parsed.nodeAttributes[baseOffset];
 
         // Skip freed slots (radius 0)
@@ -5248,6 +5344,17 @@ export class HeroineGraph {
         }
 
         const nodeType = parsed.nodeTypes?.[i];
+
+        // If the node type has no registered style, preserve per-node attributes
+        // from the CPU shadow. This prevents applyTypeStyles from clobbering
+        // colors for types not yet in the style map.
+        if (nodeType && !this.typeStyleManager.getNodeTypeStyle(nodeType)) {
+          for (let k = 0; k < NODE_ATTR_FLOATS; k++) {
+            nodeAttributes[baseOffset + k] = parsed.nodeAttributes[baseOffset + k] ?? 0;
+          }
+          continue;
+        }
+
         const style = this.typeStyleManager.resolveNodeStyle(nodeType);
 
         nodeAttributes[baseOffset + 0] = originalRadius * style.size;
@@ -5271,6 +5378,9 @@ export class HeroineGraph {
         // Preserve selected/hovered state
         nodeAttributes[baseOffset + 4] = parsed.nodeAttributes[baseOffset + 4];
         nodeAttributes[baseOffset + 5] = parsed.nodeAttributes[baseOffset + 5];
+        // Preserve birth_time and tex_index
+        nodeAttributes[baseOffset + 6] = parsed.nodeAttributes[baseOffset + 6];
+        nodeAttributes[baseOffset + 7] = parsed.nodeAttributes[baseOffset + 7];
       }
 
       device.queue.writeBuffer(
@@ -5278,7 +5388,7 @@ export class HeroineGraph {
         0,
         nodeAttributes.buffer,
         0,
-        nodeCount * 6 * 4,
+        nodeCount * NODE_ATTR_BYTES,
       );
     }
 
@@ -5289,9 +5399,21 @@ export class HeroineGraph {
 
       for (let i = 0; i < edgeCount; i++) {
         const edgeType = parsed.edgeTypes?.[i];
+        const baseOffset = i * 8;
+
+        // If the edge type has no registered style, preserve per-edge attributes
+        // from the CPU shadow. This prevents addNodes→applyTypeStyles from
+        // clobbering edge colors for types not yet in the style map (e.g.
+        // followed_by::session_* sub-types discovered after last setEdgeTypeStyles).
+        if (edgeType && !this.typeStyleManager.getEdgeTypeStyle(edgeType)) {
+          for (let k = 0; k < 8; k++) {
+            edgeAttributes[baseOffset + k] = parsed.edgeAttributes[baseOffset + k] ?? 0;
+          }
+          continue;
+        }
+
         const style = this.typeStyleManager.resolveEdgeStyle(edgeType);
 
-        const baseOffset = i * 8;
         // Layout: [width, r, g, b, selected, hovered, curvature, opacity]
         edgeAttributes[baseOffset + 0] = style.width;
         edgeAttributes[baseOffset + 1] = style.color[0]; // r
@@ -5339,7 +5461,7 @@ export class HeroineGraph {
       const alpha = colors[colorBase + 3] ?? 0;
 
       if (alpha > 0) {
-        const attrBase = i * 6;
+        const attrBase = i * NODE_ATTR_FLOATS;
 
         // Save base color before first stream override
         if (!this.streamColorBackups.has(i)) {
@@ -5350,7 +5472,7 @@ export class HeroineGraph {
           ]);
         }
 
-        // Node attrs layout: [radius, r, g, b, selected, hovered]
+        // Node attrs layout: [radius, r, g, b, selected, hovered, birth_time, tex_index]
         nodeAttrs[attrBase + 1] = colors[colorBase] ?? 0;     // R
         nodeAttrs[attrBase + 2] = colors[colorBase + 1] ?? 0; // G
         nodeAttrs[attrBase + 3] = colors[colorBase + 2] ?? 0; // B
@@ -5367,7 +5489,7 @@ export class HeroineGraph {
     for (const [nodeIdx, backup] of this.streamColorBackups) {
       if (!currentlyColored.has(nodeIdx)) {
         if (nodeIdx < this.state.nodeCount) {
-          const attrBase = nodeIdx * 6;
+          const attrBase = nodeIdx * NODE_ATTR_FLOATS;
           nodeAttrs[attrBase + 1] = backup[0];
           nodeAttrs[attrBase + 2] = backup[1];
           nodeAttrs[attrBase + 3] = backup[2];
@@ -5385,8 +5507,8 @@ export class HeroineGraph {
     if (changed && maxChanged >= 0) {
       const { device } = this.gpuContext;
       // Upload only the affected subrange of the node attributes buffer
-      const byteOffset = minChanged * 6 * 4;
-      const byteLength = (maxChanged - minChanged + 1) * 6 * 4;
+      const byteOffset = minChanged * NODE_ATTR_BYTES;
+      const byteLength = (maxChanged - minChanged + 1) * NODE_ATTR_BYTES;
       device.queue.writeBuffer(
         this.buffers.nodeAttributes,
         byteOffset,
@@ -5947,7 +6069,7 @@ export class HeroineGraph {
 
   /**
    * Update node selection state in GPU buffer
-   * Node attributes: [radius, r, g, b, selected, hovered] (6 floats per node)
+   * Node attributes: [radius, r, g, b, selected, hovered, birth_time, tex_index] (8 floats per node)
    */
   private syncNodeSelectionToGPU(nodeId: NodeId, selected: boolean): void {
     if (!this.buffers || !this.state.parsedGraph) return;
@@ -5957,18 +6079,18 @@ export class HeroineGraph {
     if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
 
     const { device } = this.gpuContext;
-    // Node attributes are 6 floats per node, selection is at offset 4
-    const attrOffset = idx * 6 * 4 + 4 * 4; // 6 floats * 4 bytes, offset 4
+    // Node attributes are 8 floats per node, selection is at offset 4
+    const attrOffset = idx * NODE_ATTR_BYTES + 4 * 4; // 8 floats * 4 bytes, offset 4
     const selectionValue = new Float32Array([selected ? 1.0 : 0.0]);
     device.queue.writeBuffer(this.buffers.nodeAttributes, attrOffset, selectionValue);
 
     // Also update local parsed graph data
-    this.state.parsedGraph.nodeAttributes[idx * 6 + 4] = selected ? 1.0 : 0.0;
+    this.state.parsedGraph.nodeAttributes[idx * NODE_ATTR_FLOATS + 4] = selected ? 1.0 : 0.0;
   }
 
   /**
    * Update node hover state in GPU buffer
-   * Node attributes: [radius, r, g, b, selected, hovered] (6 floats per node)
+   * Node attributes: [radius, r, g, b, selected, hovered, birth_time, tex_index] (8 floats per node)
    */
   private syncNodeHoverToGPU(nodeId: NodeId, hovered: boolean): void {
     if (!this.buffers || !this.state.parsedGraph) return;
@@ -5978,13 +6100,13 @@ export class HeroineGraph {
     if (idx < 0 || idx >= this.state.parsedGraph.nodeCount) return;
 
     const { device } = this.gpuContext;
-    // Node attributes are 6 floats per node, hover is at offset 5
-    const attrOffset = idx * 6 * 4 + 5 * 4; // 6 floats * 4 bytes, offset 5
+    // Node attributes are 8 floats per node, hover is at offset 5
+    const attrOffset = idx * NODE_ATTR_BYTES + 5 * 4; // 8 floats * 4 bytes, offset 5
     const hoverValue = new Float32Array([hovered ? 1.0 : 0.0]);
     device.queue.writeBuffer(this.buffers.nodeAttributes, attrOffset, hoverValue);
 
     // Also update local parsed graph data
-    this.state.parsedGraph.nodeAttributes[idx * 6 + 5] = hovered ? 1.0 : 0.0;
+    this.state.parsedGraph.nodeAttributes[idx * NODE_ATTR_FLOATS + 5] = hovered ? 1.0 : 0.0;
   }
 
   /**
@@ -6007,9 +6129,9 @@ export class HeroineGraph {
       },
       getNodeRadius: (nodeId: NodeId): number | undefined => {
         // nodeId is the array index in our system
-        // nodeAttributes layout: [radius, r, g, b, selected, hovered] per node
+        // nodeAttributes layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] per node
         if (nodeId < 0 || nodeId >= parsedGraph.nodeCount) return undefined;
-        return parsedGraph.nodeAttributes[nodeId * 6]; // radius is at offset 0
+        return parsedGraph.nodeAttributes[nodeId * NODE_ATTR_FLOATS]; // radius is at offset 0
       },
       getNodeIds: function* () {
         for (let i = 0; i < parsedGraph.nodeCount; i++) {

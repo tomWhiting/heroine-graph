@@ -13,15 +13,16 @@ struct ViewportUniforms {
     _padding: f32,
 }
 
-// Per-node attributes for rendering
+// Per-node attributes (8 floats per node, matches NODE_ATTR_FLOATS)
 struct NodeAttributes {
-    // Packed: radius (f32), color RGB (3 x u8), flags (u8)
     radius: f32,
     color_r: f32,
     color_g: f32,
     color_b: f32,
-    selected: f32,  // 0.0 or 1.0
-    hovered: f32,   // 0.0 or 1.0
+    selected: f32,   // 0.0 or 1.0
+    hovered: f32,    // 0.0 or 1.0
+    birth_time: f32, // Animation clock time at birth (0 = no animation)
+    tex_index: f32,  // Reserved for Stage 2 SVG avatars
 }
 
 @group(0) @binding(0) var<uniform> viewport: ViewportUniforms;
@@ -40,6 +41,7 @@ struct VertexOutput {
     @location(2) radius_px: f32,           // Radius in pixels for AA
     @location(3) state: vec2<f32>,         // (selected, hovered)
     @location(4) dpr: f32,                 // Device pixel ratio for AA
+    @location(5) pulse_factor: f32,        // Birth pulse animation factor
 }
 
 // Quad vertices for instanced rendering
@@ -78,14 +80,15 @@ fn vs_main(
     // Get node position from vec2 buffer
     let node_pos = positions[instance_idx];
 
-    // Read node attributes (6 floats per node)
-    let attr_base = instance_idx * 6u;
+    // Read node attributes (8 floats per node)
+    let attr_base = instance_idx * 8u;
     let radius = node_attrs[attr_base];
     let color_r = node_attrs[attr_base + 1u];
     let color_g = node_attrs[attr_base + 2u];
     let color_b = node_attrs[attr_base + 3u];
     let selected = node_attrs[attr_base + 4u];
     let hovered = node_attrs[attr_base + 5u];
+    let birth_time = node_attrs[attr_base + 6u];
 
     // Clip removed nodes (radius <= 0) by placing behind near plane
     if (radius <= 0.0) {
@@ -93,11 +96,30 @@ fn vs_main(
         return output;
     }
 
-    // Use default radius if not specified
-    let actual_radius = radius;
+    // Birth pulse animation: size pop with exponential decay
+    var pulse_factor = 0.0;
+    if (birth_time > 0.0 && config.birth_pulse_intensity > 0.0) {
+        let elapsed = config.time - birth_time;
+        if (elapsed >= 0.0 && elapsed < config.birth_pulse_duration * 3.0) {
+            pulse_factor = config.birth_pulse_intensity * exp(-elapsed * 3.0 / config.birth_pulse_duration);
+        }
+    }
+
+    // Size pop: node grows then shrinks back
+    let actual_radius = radius * (1.0 + pulse_factor * 1.0);
 
     // Calculate radius in screen pixels
     let radius_px = max(actual_radius * viewport.scale, MIN_RADIUS_PX);
+
+    // Expand quad to accommodate the splash ring extending beyond the node.
+    // ring_progress goes 0→1 as pulse_factor decays from intensity→0.
+    // Ring expands to UV 1.0 + rp*10.0 with half-width up to 0.6 (outer ≈ 1.6 + rp*9.4).
+    // Quad must always exceed ring's outer edge: 1.7 + rp*10.5 provides margin.
+    var ring_scale = 1.0;
+    if (pulse_factor > 0.001 && config.birth_pulse_intensity > 0.0) {
+        let ring_progress = 1.0 - pulse_factor / config.birth_pulse_intensity;
+        ring_scale = 1.7 + ring_progress * 10.5;
+    }
 
     // Get quad vertex offset
     let quad_vertex = QUAD_VERTICES[vertex_idx % 6u];
@@ -106,20 +128,18 @@ fn vs_main(
     let center_clip = transform_point(node_pos);
 
     // Calculate vertex offset in clip space
-    // Need to convert radius from pixels to clip space units
     let offset_clip = quad_vertex * (radius_px * 2.0 / viewport.screen_size);
 
-    // Final vertex position (with slight expansion for AA)
-    // DPR-aware: aa_padding is in physical pixels, not CSS pixels
+    // Final vertex position (with AA padding and ring expansion)
     let aa_padding = 1.5 / (viewport.dpr * radius_px);
     output.position = vec4<f32>(
-        center_clip + offset_clip * (1.0 + aa_padding),
+        center_clip + offset_clip * (1.0 + aa_padding) * ring_scale,
         0.0,
         1.0
     );
 
-    // Pass UV for SDF circle rendering
-    output.uv = quad_vertex * (1.0 + aa_padding);
+    // UV scaled to match quad expansion (SDF circle stays at radius 1.0)
+    output.uv = quad_vertex * (1.0 + aa_padding) * ring_scale;
 
     // Pass color
     output.color = vec3<f32>(color_r, color_g, color_b);
@@ -132,6 +152,9 @@ fn vs_main(
 
     // Pass DPR for fragment shader AA
     output.dpr = viewport.dpr;
+
+    // Pass birth pulse factor for brightness flash in fragment shader
+    output.pulse_factor = pulse_factor;
 
     return output;
 }

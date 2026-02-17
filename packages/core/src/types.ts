@@ -357,6 +357,8 @@ export interface NodeInput {
   readonly group?: string;
   /** Label importance (0-1) */
   readonly importance?: number;
+  /** Birth time for animation (from getAnimationTime()). 0 = no animation. */
+  readonly birthTime?: number;
   /** Additional metadata */
   readonly [key: string]: unknown;
 }

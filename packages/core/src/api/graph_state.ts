@@ -20,6 +20,11 @@ import { createIdMap } from "../graph/id_map.ts";
 import type { ParsedGraph } from "../graph/parser.ts";
 import { initialCapacity } from "./buffer_capacity.ts";
 
+/** Number of f32 values per node in the attribute buffer */
+export const NODE_ATTR_FLOATS = 8;
+/** Byte stride per node in the attribute buffer (NODE_ATTR_FLOATS * 4) */
+export const NODE_ATTR_BYTES = 32;
+
 /**
  * Mutable graph state for incremental mutations
  */
@@ -43,7 +48,7 @@ export class MutableGraphState {
   // CPU shadow arrays (kept in sync with GPU buffers)
   positionsX: Float32Array;
   positionsY: Float32Array;
-  /** 6 floats per slot: radius, r, g, b, selected, hovered */
+  /** 8 floats per slot: radius, r, g, b, selected, hovered, birth_time, tex_index */
   nodeAttributes: Float32Array;
   /** Dense edge source indices */
   edgeSources: Uint32Array;
@@ -114,7 +119,7 @@ export class MutableGraphState {
     // Create CPU shadow arrays at capacity size
     state.positionsX = new Float32Array(state.nodeCapacity);
     state.positionsY = new Float32Array(state.nodeCapacity);
-    state.nodeAttributes = new Float32Array(state.nodeCapacity * 6);
+    state.nodeAttributes = new Float32Array(state.nodeCapacity * NODE_ATTR_FLOATS);
     state.edgeSources = new Uint32Array(state.edgeCapacity);
     state.edgeTargets = new Uint32Array(state.edgeCapacity);
     state.edgeAttributes = new Float32Array(state.edgeCapacity * 8);
@@ -176,8 +181,8 @@ export class MutableGraphState {
     // Zero the slot
     this.positionsX[index] = 0;
     this.positionsY[index] = 0;
-    const attrBase = index * 6;
-    for (let i = 0; i < 6; i++) {
+    const attrBase = index * NODE_ATTR_FLOATS;
+    for (let i = 0; i < NODE_ATTR_FLOATS; i++) {
       this.nodeAttributes[attrBase + i] = 0;
     }
 
@@ -230,7 +235,7 @@ export class MutableGraphState {
 
     this.positionsX = new Float32Array(newCapacity);
     this.positionsY = new Float32Array(newCapacity);
-    this.nodeAttributes = new Float32Array(newCapacity * 6);
+    this.nodeAttributes = new Float32Array(newCapacity * NODE_ATTR_FLOATS);
 
     this.positionsX.set(oldPosX);
     this.positionsY.set(oldPosY);

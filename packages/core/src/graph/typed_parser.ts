@@ -11,6 +11,7 @@ import type { GraphTypedInput } from "../types.ts";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
 import { createIdMap, type IdLike } from "./id_map.ts";
 import type { ParsedGraph } from "./parser.ts";
+import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
 
 /**
  * Typed parser configuration
@@ -112,24 +113,24 @@ export function parseGraphTypedInput(
   }
 
   // Node attributes
-  const nodeAttributes = new Float32Array(nodeCount * 6);
+  const nodeAttributes = new Float32Array(nodeCount * NODE_ATTR_FLOATS);
   const [defR, defG, defB] = finalConfig.defaultNodeColor;
 
   if (input.nodeRadii) {
     for (let i = 0; i < nodeCount; i++) {
-      const base = i * 6;
+      const base = i * NODE_ATTR_FLOATS;
       nodeAttributes[base] = input.nodeRadii[i];
     }
   } else {
     for (let i = 0; i < nodeCount; i++) {
-      nodeAttributes[i * 6] = finalConfig.defaultNodeRadius;
+      nodeAttributes[i * NODE_ATTR_FLOATS] = finalConfig.defaultNodeRadius;
     }
   }
 
   if (input.nodeColors) {
     // Colors as [r0, g0, b0, r1, g1, b1, ...]
     for (let i = 0; i < nodeCount; i++) {
-      const base = i * 6;
+      const base = i * NODE_ATTR_FLOATS;
       const colorBase = i * 3;
       nodeAttributes[base + 1] = input.nodeColors[colorBase];
       nodeAttributes[base + 2] = input.nodeColors[colorBase + 1];
@@ -137,7 +138,7 @@ export function parseGraphTypedInput(
     }
   } else {
     for (let i = 0; i < nodeCount; i++) {
-      const base = i * 6;
+      const base = i * NODE_ATTR_FLOATS;
       nodeAttributes[base + 1] = defR;
       nodeAttributes[base + 2] = defG;
       nodeAttributes[base + 3] = defB;

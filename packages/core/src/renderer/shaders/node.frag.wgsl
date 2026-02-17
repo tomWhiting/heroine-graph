@@ -14,6 +14,11 @@ struct RenderConfig {
     _pad1: f32,
     border_color: vec3<f32>,
     _pad2: f32,
+    // Birth pulse animation
+    time: f32,
+    birth_pulse_duration: f32,
+    birth_pulse_intensity: f32,
+    _pad3: f32,
 }
 
 // Render config uniform buffer (group 2, binding 0)
@@ -26,6 +31,7 @@ struct FragmentInput {
     @location(2) radius_px: f32,
     @location(3) state: vec2<f32>,  // (selected, hovered)
     @location(4) dpr: f32,          // Device pixel ratio for AA
+    @location(5) pulse_factor: f32, // Birth pulse animation factor (0 = none)
 }
 
 // SDF circle: distance from edge (negative inside)
@@ -55,8 +61,24 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     // Base circle alpha with AA
     let circle_alpha = aa_step(d, aa_width);
 
-    // Discard if outside circle
-    if (circle_alpha < 0.01) {
+    // === Splash ring (expanding ripple on birth) ===
+    var ring_alpha = 0.0;
+    if (input.pulse_factor > 0.001 && config.birth_pulse_intensity > 0.0) {
+        let dist = length(uv);
+        // ring_progress: 0 at birth, 1 when pulse expires
+        let ring_progress = 1.0 - input.pulse_factor / config.birth_pulse_intensity;
+        // Ring center expands from node edge (1.0) outward to 11.0
+        let ring_center = 1.0 + ring_progress * 10.0;
+        // Ring starts thick and thins as it expands
+        let ring_half_width = 0.15 + (1.0 - ring_progress) * 0.45;
+        let d_ring = abs(dist - ring_center) - ring_half_width;
+        // Ring fades as it expands (full brightness at start)
+        ring_alpha = aa_step(d_ring, aa_width * 3.0) * (1.0 - ring_progress);
+    }
+
+    // Combined visibility: node circle OR splash ring
+    let visible_alpha = max(circle_alpha, ring_alpha);
+    if (visible_alpha < 0.01) {
         discard;
     }
 
@@ -66,6 +88,11 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     // Apply hover effect (brighten)
     if (hovered > 0.5) {
         final_color = min(final_color * config.hover_brightness, vec3<f32>(1.0));
+    }
+
+    // Birth pulse brightness flash (inside circle only)
+    if (input.pulse_factor > 0.001) {
+        final_color = mix(final_color, vec3<f32>(1.0, 1.0, 1.0), min(input.pulse_factor * 0.6, 1.0));
     }
 
     // Draw border (only if enabled and width > 0)
@@ -84,12 +111,20 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
         let d_inner = sdf_circle(uv, ring_inner);
 
         // Ring is where d_outer < 0 AND d_inner > 0
-        let ring_alpha = aa_step(d_outer, aa_width) * (1.0 - aa_step(d_inner, aa_width));
-        final_color = mix(final_color, config.selection_color, ring_alpha);
+        let sel_ring_alpha = aa_step(d_outer, aa_width) * (1.0 - aa_step(d_inner, aa_width));
+        final_color = mix(final_color, config.selection_color, sel_ring_alpha);
 
-        // Extend overall alpha for the ring
+        // Extend overall alpha for the selection ring and splash ring
         let extended_alpha = aa_step(d_outer, aa_width);
-        return vec4<f32>(final_color, max(circle_alpha, extended_alpha * ring_alpha));
+        return vec4<f32>(final_color, max(max(circle_alpha, extended_alpha * sel_ring_alpha), ring_alpha));
+    }
+
+    // === Composite node body + splash ring ===
+    if (ring_alpha > 0.001) {
+        // Blend: inside circle = node color, outside circle = white ring
+        let mix_t = clamp(circle_alpha, 0.0, 1.0);
+        let pixel_color = mix(vec3<f32>(1.0, 1.0, 1.0), final_color, mix_t);
+        return vec4<f32>(pixel_color, max(circle_alpha, ring_alpha));
     }
 
     return vec4<f32>(final_color, circle_alpha);

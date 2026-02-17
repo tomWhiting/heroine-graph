@@ -11,6 +11,7 @@ import type { GraphInput } from "../types.ts";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
 import { createIdMap, type IdLike, type IdMap } from "./id_map.ts";
 import { parseColorToRGB, type RgbaColor } from "../utils/color.ts";
+import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
 
 // Re-export RgbaColor for backwards compatibility
 export type { RgbaColor } from "../utils/color.ts";
@@ -34,7 +35,7 @@ export interface ParsedGraph {
   /** Node positions Y (Float32Array) */
   positionsY: Float32Array;
 
-  /** Node attributes (6 floats per node: radius, r, g, b, selected, hovered) */
+  /** Node attributes (8 floats per node: radius, r, g, b, selected, hovered, birth_time, tex_index) */
   nodeAttributes: Float32Array;
 
   /** Edge source indices (Uint32Array) */
@@ -127,7 +128,7 @@ export function parseGraphInput(
   // Allocate arrays
   const positionsX = new Float32Array(nodeCount);
   const positionsY = new Float32Array(nodeCount);
-  const nodeAttributes = new Float32Array(nodeCount * 6);
+  const nodeAttributes = new Float32Array(nodeCount * NODE_ATTR_FLOATS);
   const edgeSources = new Uint32Array(edgeCount);
   const edgeTargets = new Uint32Array(edgeCount);
   // 8 floats per edge: width, r, g, b, selected, hovered, curvature, opacity
@@ -159,7 +160,7 @@ export function parseGraphInput(
     positionsY[idx] = node.y ?? 0;
 
     // Attributes
-    const attrBase = idx * 6;
+    const attrBase = idx * NODE_ATTR_FLOATS;
     nodeAttributes[attrBase] = node.radius ?? finalConfig.defaultNodeRadius;
     const [r, g, b] = parseColor(node.color, finalConfig.defaultNodeColor);
     nodeAttributes[attrBase + 1] = r;
