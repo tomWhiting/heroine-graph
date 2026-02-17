@@ -88,20 +88,29 @@ fn vs_main(
     let color_b = node_attrs[attr_base + 3u];
     let selected = node_attrs[attr_base + 4u];
     let hovered = node_attrs[attr_base + 5u];
-    let birth_time = node_attrs[attr_base + 6u];
-
     // Clip removed nodes (radius <= 0) by placing behind near plane
     if (radius <= 0.0) {
         output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
         return output;
     }
 
-    // Birth pulse animation: size pop with exponential decay
+    // Birth pulse animation: one-shot (positive birth_time) or looping (negative)
     var pulse_factor = 0.0;
-    if (birth_time > 0.0 && config.birth_pulse_intensity > 0.0) {
-        let elapsed = config.time - birth_time;
-        if (elapsed >= 0.0 && elapsed < config.birth_pulse_duration * 3.0) {
-            pulse_factor = config.birth_pulse_intensity * exp(-elapsed * 3.0 / config.birth_pulse_duration);
+    var pulse_looping = false;
+    let raw_birth = node_attrs[attr_base + 6u];
+    let birth_time_abs = abs(raw_birth);
+    if (birth_time_abs > 0.0 && config.birth_pulse_intensity > 0.0) {
+        let elapsed = config.time - birth_time_abs;
+        if (elapsed >= 0.0) {
+            let period = config.birth_pulse_duration * 3.0;
+            if (raw_birth < 0.0) {
+                // Looping: wrap elapsed into [0, period)
+                pulse_factor = config.birth_pulse_intensity * exp(-(elapsed % period) * 3.0 / config.birth_pulse_duration);
+                pulse_looping = true;
+            } else if (elapsed < period) {
+                // One-shot: decay and expire
+                pulse_factor = config.birth_pulse_intensity * exp(-elapsed * 3.0 / config.birth_pulse_duration);
+            }
         }
     }
 
@@ -153,8 +162,13 @@ fn vs_main(
     // Pass DPR for fragment shader AA
     output.dpr = viewport.dpr;
 
-    // Pass birth pulse factor for brightness flash in fragment shader
-    output.pulse_factor = pulse_factor;
+    // Pass birth pulse factor for brightness flash in fragment shader.
+    // Sign encodes loop mode: negative = looping (use session color in fragment).
+    if (pulse_looping) {
+        output.pulse_factor = -pulse_factor;
+    } else {
+        output.pulse_factor = pulse_factor;
+    }
 
     return output;
 }

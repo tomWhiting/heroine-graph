@@ -19,6 +19,9 @@ struct RenderConfig {
     birth_pulse_duration: f32,
     birth_pulse_intensity: f32,
     _pad3: f32,
+    // Pulse color for looping pulses (session color); one-shot pulses use white
+    pulse_color: vec3<f32>,
+    _pad4: f32,
 }
 
 // Render config uniform buffer (group 2, binding 0)
@@ -62,11 +65,13 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     let circle_alpha = aa_step(d, aa_width);
 
     // === Splash ring (expanding ripple on birth) ===
+    // pulse_factor sign encodes mode: positive = one-shot, negative = looping
     var ring_alpha = 0.0;
-    if (input.pulse_factor > 0.001 && config.birth_pulse_intensity > 0.0) {
+    let pulse_abs_ring = abs(input.pulse_factor);
+    if (pulse_abs_ring > 0.001 && config.birth_pulse_intensity > 0.0) {
         let dist = length(uv);
         // ring_progress: 0 at birth, 1 when pulse expires
-        let ring_progress = 1.0 - input.pulse_factor / config.birth_pulse_intensity;
+        let ring_progress = 1.0 - pulse_abs_ring / config.birth_pulse_intensity;
         // Ring center expands from node edge (1.0) outward to 11.0
         let ring_center = 1.0 + ring_progress * 10.0;
         // Ring starts thick and thins as it expands
@@ -91,8 +96,15 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     }
 
     // Birth pulse brightness flash (inside circle only)
-    if (input.pulse_factor > 0.001) {
-        final_color = mix(final_color, vec3<f32>(1.0, 1.0, 1.0), min(input.pulse_factor * 0.6, 1.0));
+    // Positive pulse_factor = one-shot → mix toward white
+    // Negative pulse_factor = looping → mix toward session color (config.pulse_color)
+    let pulse_abs = abs(input.pulse_factor);
+    if (pulse_abs > 0.001) {
+        var pulse_target = vec3<f32>(1.0, 1.0, 1.0);
+        if (input.pulse_factor < 0.0) {
+            pulse_target = config.pulse_color;
+        }
+        final_color = mix(final_color, pulse_target, min(pulse_abs * 0.6, 1.0));
     }
 
     // Draw border (only if enabled and width > 0)
@@ -121,9 +133,14 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
 
     // === Composite node body + splash ring ===
     if (ring_alpha > 0.001) {
-        // Blend: inside circle = node color, outside circle = white ring
+        // Ring color: white for one-shot, session color for looping
+        var ring_color = vec3<f32>(1.0, 1.0, 1.0);
+        if (input.pulse_factor < 0.0) {
+            ring_color = config.pulse_color;
+        }
+        // Blend: inside circle = node color, outside circle = ring color
         let mix_t = clamp(circle_alpha, 0.0, 1.0);
-        let pixel_color = mix(vec3<f32>(1.0, 1.0, 1.0), final_color, mix_t);
+        let pixel_color = mix(ring_color, final_color, mix_t);
         return vec4<f32>(pixel_color, max(circle_alpha, ring_alpha));
     }
 

@@ -376,7 +376,10 @@ export class HeroineGraph {
   private nodeBorderConfig: _NodeBorderConfig = { ..._DEFAULT_NODE_BORDER_CONFIG };
 
   // Birth pulse animation configuration
-  private birthPulseConfig = { enabled: true, duration: 0.5, intensity: 0.5 };
+  private birthPulseConfig = {
+    enabled: true, duration: 0.5, intensity: 0.5,
+    pulseColor: [1, 1, 1] as [number, number, number],
+  };
   /** Animation time of the most recent birth pulse (for render loop dirty tracking) */
   private lastBirthTime = 0;
 
@@ -618,10 +621,11 @@ export class HeroineGraph {
     // - hover_brightness: f32 (4 bytes) + border_enabled: u32 (4 bytes) + border_width: f32 (4 bytes) + pad: f32 (4 bytes) = 16 bytes
     // - border_color: vec3<f32> (12 bytes) + pad: f32 (4 bytes) = 16 bytes
     // - time: f32 (4 bytes) + birth_pulse_duration: f32 (4 bytes) + birth_pulse_intensity: f32 (4 bytes) + pad: f32 (4 bytes) = 16 bytes
-    // Total: 64 bytes
+    // - pulse_color: vec3<f32> (12 bytes) + pad: f32 (4 bytes) = 16 bytes
+    // Total: 80 bytes
     this.renderConfigBuffer = device.createBuffer({
       label: "Render Config Uniform Buffer",
-      size: 64,
+      size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -679,7 +683,7 @@ export class HeroineGraph {
     if (!this.renderConfigBuffer) return;
 
     const { device } = this.gpuContext;
-    const data = new ArrayBuffer(64);
+    const data = new ArrayBuffer(80);
     const floatView = new Float32Array(data);
     const uintView = new Uint32Array(data);
 
@@ -712,6 +716,13 @@ export class HeroineGraph {
       ? this.birthPulseConfig.intensity
       : 0.0; // birth_pulse_intensity (0 when disabled)
     floatView[15] = 0.0; // _pad3
+
+    // Pulse color for looping pulses (16-18), _pad4 (19)
+    const pc = this.birthPulseConfig.pulseColor;
+    floatView[16] = pc[0];
+    floatView[17] = pc[1];
+    floatView[18] = pc[2];
+    floatView[19] = 0.0; // _pad4
 
     device.queue.writeBuffer(this.renderConfigBuffer, 0, data);
   }
@@ -995,10 +1006,11 @@ export class HeroineGraph {
       this.renderDirty = true;
     }
 
-    // Birth pulse animation requires rendering while decaying
-    if (this.lastBirthTime > 0 && this.birthPulseConfig.enabled) {
-      const elapsed = this.getAnimationTime() - this.lastBirthTime;
-      if (elapsed < this.birthPulseConfig.duration * 3.0) {
+    // Birth pulse animation requires rendering while decaying (or looping)
+    if (this.lastBirthTime !== 0 && this.birthPulseConfig.enabled) {
+      const elapsed = this.getAnimationTime() - Math.abs(this.lastBirthTime);
+      const isLooping = this.lastBirthTime < 0;
+      if (isLooping || elapsed < this.birthPulseConfig.duration * 3.0) {
         this.renderDirty = true;
       } else {
         this.lastBirthTime = 0;
@@ -1096,7 +1108,7 @@ export class HeroineGraph {
     const nodeInstanceCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
 
     // Update animation time in RenderConfig for birth pulse (targeted 4-byte write at byte 48)
-    if (this.renderConfigBuffer && this.lastBirthTime > 0) {
+    if (this.renderConfigBuffer && this.lastBirthTime !== 0) {
       const animTime = this.getAnimationTime();
       device.queue.writeBuffer(
         this.renderConfigBuffer, 48,
@@ -1836,8 +1848,8 @@ export class HeroineGraph {
       gs.nodeTypes[slot] = nodeType;
     }
 
-    // Track birth pulse for render loop dirty detection
-    if (birthTime > 0) this.lastBirthTime = birthTime;
+    // Track birth pulse for render loop dirty detection (negative = looping)
+    if (birthTime !== 0) this.lastBirthTime = birthTime;
 
     // Write to GPU buffers (targeted writes)
     const { device } = this.gpuContext;
@@ -2152,8 +2164,8 @@ export class HeroineGraph {
       gs.nodeAttributes[attrBase + 6] = birthTime;
       gs.nodeAttributes[attrBase + 7] = 0; // tex_index
 
-      // Track birth pulse for render loop dirty detection
-      if (birthTime > 0) this.lastBirthTime = birthTime;
+      // Track birth pulse for render loop dirty detection (negative = looping)
+      if (birthTime !== 0) this.lastBirthTime = birthTime;
 
       // Record node type for type-based styling
       const nodeType = node["type"] as string | undefined;
@@ -4417,12 +4429,21 @@ export class HeroineGraph {
 
   /**
    * Configure the birth pulse animation parameters.
-   * @param config - Partial config: `enabled`, `duration` (seconds), `intensity` (0-1)
+   * @param config - Partial config: `enabled`, `duration` (seconds), `intensity` (0-1),
+   *   `pulseColor` (hex string for looping pulse color, e.g. "#a78bfa")
    */
-  setBirthPulseConfig(config: { enabled?: boolean; duration?: number; intensity?: number }): void {
+  setBirthPulseConfig(config: {
+    enabled?: boolean;
+    duration?: number;
+    intensity?: number;
+    pulseColor?: string;
+  }): void {
     if (config.enabled !== undefined) this.birthPulseConfig.enabled = config.enabled;
     if (config.duration !== undefined) this.birthPulseConfig.duration = config.duration;
     if (config.intensity !== undefined) this.birthPulseConfig.intensity = config.intensity;
+    if (config.pulseColor !== undefined) {
+      this.birthPulseConfig.pulseColor = parseColorToRGB(config.pulseColor);
+    }
     this.updateRenderConfigBuffer();
     this.markRenderDirty();
   }
@@ -4431,6 +4452,7 @@ export class HeroineGraph {
    * Set the birth time for a specific node (triggers birth pulse animation).
    * @param nodeId - The node slot index
    * @param time - Animation time from `getAnimationTime()`. 0 = no animation.
+   *   Negative values enable continuous looping (abs value = cycle start time).
    */
   setNodeBirthTime(nodeId: NodeId, time: number): void {
     if (!this.buffers || !this.state.parsedGraph) return;
@@ -4446,7 +4468,11 @@ export class HeroineGraph {
     this.gpuContext.device.queue.writeBuffer(
       this.buffers.nodeAttributes, byteOffset, new Float32Array([time]),
     );
-    this.lastBirthTime = time;
+    // Only update dirty tracking when starting/continuing a pulse, not when clearing one.
+    // Clearing a single node (time=0) must not kill dirty tracking for other active pulses.
+    if (time !== 0) {
+      this.lastBirthTime = time;
+    }
     this.markRenderDirty();
   }
 
