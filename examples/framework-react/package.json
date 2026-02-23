@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/example-react",
+  "name": "@graphmother/example-react",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@heroine-graph/core": "workspace:*",
-    "@heroine-graph/react": "workspace:*",
+    "@graphmother/core": "workspace:*",
+    "@graphmother/react": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

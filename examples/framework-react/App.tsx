@@ -1,15 +1,15 @@
 /**
  * Heroine Graph React Example
  *
- * Demonstrates the @heroine-graph/react wrapper with:
+ * Demonstrates the @graphmother/react wrapper with:
  * - Basic graph rendering
  * - Event handling
  * - Simulation controls
  */
 
 import { useRef, useState, useCallback } from "react";
-import { HeroineGraph, useGraph, useSimulation } from "@heroine-graph/react";
-import type { HeroineGraphRef, NodeClickEvent, GraphInput } from "@heroine-graph/react";
+import { HeroineGraph, useGraph, useSimulation } from "@graphmother/react";
+import type { HeroineGraphRef, NodeClickEvent, GraphInput } from "@graphmother/react";
 
 // Generate sample graph data
 function generateGraph(nodeCount: number): GraphInput {

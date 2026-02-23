@@ -16,20 +16,20 @@ Get a graph visualization running in under 5 minutes.
 ### npm / pnpm / yarn
 
 ```bash
-npm install @heroine-graph/core
+npm install @graphmother/core
 ```
 
 ### Deno
 
 ```typescript
-import { createHeroineGraph } from "jsr:@heroine-graph/core";
+import { createHeroineGraph } from "jsr:@graphmother/core";
 ```
 
 ### CDN (for quick experiments)
 
 ```html
 <script type="module">
-  import { createHeroineGraph } from "https://esm.sh/@heroine-graph/core";
+  import { createHeroineGraph } from "https://esm.sh/@graphmother/core";
 </script>
 ```
 
@@ -61,7 +61,7 @@ import { createHeroineGraph } from "jsr:@heroine-graph/core";
 
 ```typescript
 // main.ts
-import { createHeroineGraph, checkWebGPU } from "@heroine-graph/core";
+import { createHeroineGraph, checkWebGPU } from "@graphmother/core";
 
 async function main() {
   // Check WebGPU availability
@@ -285,11 +285,11 @@ graph.load({
 ### React
 
 ```bash
-npm install @heroine-graph/react
+npm install @graphmother/react
 ```
 
 ```tsx
-import { HeroineGraph } from "@heroine-graph/react";
+import { HeroineGraph } from "@graphmother/react";
 
 function App() {
   const data = {
@@ -310,7 +310,7 @@ function App() {
 ### Vue
 
 ```bash
-npm install @heroine-graph/vue
+npm install @graphmother/vue
 ```
 
 ```vue
@@ -323,7 +323,7 @@ npm install @heroine-graph/vue
 </template>
 
 <script setup>
-import { HeroineGraph } from "@heroine-graph/vue";
+import { HeroineGraph } from "@graphmother/vue";
 
 const data = {
   nodes: [{ id: "a" }, { id: "b" }],
@@ -339,12 +339,12 @@ function handleNodeClick(event) {
 ### Svelte
 
 ```bash
-npm install @heroine-graph/svelte
+npm install @graphmother/svelte
 ```
 
 ```svelte
 <script>
-  import { HeroineGraph } from "@heroine-graph/svelte";
+  import { HeroineGraph } from "@graphmother/svelte";
 
   const data = {
     nodes: [{ id: "a" }, { id: "b" }],

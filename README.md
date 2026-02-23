@@ -27,16 +27,16 @@ Check support with `getSupportInfo()` before initializing.
 
 ```bash
 # npm
-npm install @heroine-graph/core
+npm install @graphmother/core
 
 # Deno
-import { createHeroineGraph } from "jsr:@heroine-graph/core";
+import { createHeroineGraph } from "jsr:@graphmother/core";
 ```
 
 ## Quick Start
 
 ```typescript
-import { createHeroineGraph, getSupportInfo } from "@heroine-graph/core";
+import { createHeroineGraph, getSupportInfo } from "@graphmother/core";
 
 // Check WebGPU support
 const support = await getSupportInfo();

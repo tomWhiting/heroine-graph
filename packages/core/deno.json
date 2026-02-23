@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/core",
+  "name": "@graphmother/core",
   "version": "0.1.0",
   "exports": "./mod.ts",
   "compilerOptions": {
@@ -13,7 +13,7 @@
     "lib": ["deno.window", "dom", "dom.iterable", "dom.asynciterable", "deno.webgpu"]
   },
   "imports": {
-    "@heroine-graph/wasm": "../wasm/pkg/heroine_graph_wasm.js"
+    "@graphmother/wasm": "../wasm/pkg/heroine_graph_wasm.js"
   },
   "publish": {
     "include": ["mod.ts", "src/**/*.ts", "src/**/*.wgsl", "assets/**/*", "README.md", "LICENSE"]

@@ -57,8 +57,8 @@ import type {
   SimulationTickEvent,
   SimulationEndEvent,
   BackgroundClickEvent,
-} from "@heroine-graph/core";
-import { createHeroineGraph, isSupported } from "@heroine-graph/core";
+} from "@graphmother/core";
+import { createHeroineGraph, isSupported } from "@graphmother/core";
 
 /**
  * Props for the HeroineGraph component

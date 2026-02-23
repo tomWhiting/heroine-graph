@@ -26,12 +26,12 @@ const config = {
         ...config.resolve,
         alias: {
           ...config.resolve?.alias,
-          '@heroine-graph/wasm': resolve(__dirname, '../dist/heroine_graph_wasm.js'),
+          '@graphmother/wasm': resolve(__dirname, '../dist/heroine_graph_wasm.js'),
         },
       },
       optimizeDeps: {
         ...config.optimizeDeps,
-        exclude: [...(config.optimizeDeps?.exclude || []), '@heroine-graph/wasm'],
+        exclude: [...(config.optimizeDeps?.exclude || []), '@graphmother/wasm'],
       },
       assetsInclude: [...(config.assetsInclude || []), '**/*.wasm'],
     };

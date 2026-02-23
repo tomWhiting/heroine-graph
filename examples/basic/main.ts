@@ -9,7 +9,7 @@
  */
 
 // In a real application, you would import from the package:
-// import { createHeroineGraph, type GraphInput } from '@heroine-graph/core';
+// import { createHeroineGraph, type GraphInput } from '@graphmother/core';
 
 // For this example, we import from the local package:
 import { getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";

@@ -5,8 +5,8 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      "@heroine-graph/core": "../../packages/core/mod.ts",
-      "@heroine-graph/vue": "../../packages/vue/src/index.ts",
+      "@graphmother/core": "../../packages/core/mod.ts",
+      "@graphmother/vue": "../../packages/vue/src/index.ts",
     },
   },
 });

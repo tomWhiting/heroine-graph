@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/svelte",
+  "name": "@graphmother/svelte",
   "version": "0.1.0",
   "description": "Svelte wrapper for Heroine Graph - high-performance graph visualization",
   "type": "module",
@@ -19,8 +19,8 @@
     "src"
   ],
   "scripts": {
-    "build": "svelte-package -i src -o dist",
-    "dev": "svelte-package -i src -o dist --watch",
+    "build": "bunx svelte-package -i src -o dist",
+    "dev": "bunx svelte-package -i src -o dist --watch",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src --ext .ts,.svelte"
   },
@@ -28,7 +28,7 @@
     "svelte": ">=5.0.0"
   },
   "dependencies": {
-    "@heroine-graph/core": "workspace:*"
+    "@graphmother/core": "^0.1.0"
   },
   "devDependencies": {
     "@sveltejs/package": "^2.3.0",
@@ -42,13 +42,17 @@
     "graph",
     "visualization",
     "webgpu",
-    "heroine-graph"
+    "graphmother"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/heroine-graph/heroine-graph.git",
+    "url": "https://github.com/tomWhiting/heroine-graph.git",
     "directory": "packages/svelte"
+  },
+  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "bugs": {
+    "url": "https://github.com/tomWhiting/heroine-graph/issues"
   },
   "sideEffects": false
 }

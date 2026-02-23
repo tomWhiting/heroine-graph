@@ -14,8 +14,8 @@ import type {
   NodeId,
   EdgeId,
   Vec2,
-} from "@heroine-graph/core";
-import { createHeroineGraph, isSupported } from "@heroine-graph/core";
+} from "@graphmother/core";
+import { createHeroineGraph, isSupported } from "@graphmother/core";
 
 /**
  * Options for the useGraph composable
@@ -90,7 +90,7 @@ export interface UseGraphReturn {
  * ```vue
  * <script setup lang="ts">
  * import { ref, onMounted } from 'vue';
- * import { useGraph } from '@heroine-graph/vue';
+ * import { useGraph } from '@graphmother/vue';
  *
  * const canvasRef = ref<HTMLCanvasElement | null>(null);
  * const {

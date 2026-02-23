@@ -1,0 +1,56 @@
+{
+  "name": "@graphmother/core",
+  "version": "0.1.0",
+  "description": "High-performance graph visualization using WebGPU",
+  "type": "module",
+  "main": "./dist/heroine-graph.esm.js",
+  "module": "./dist/heroine-graph.esm.js",
+  "types": "./dist/heroine-graph.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/heroine-graph.esm.js",
+      "types": "./dist/heroine-graph.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "mod.ts",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run build:bundle && bun run build:types",
+    "build:bundle": "esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
+    "build:types": "tsc --project tsconfig.npm.json"
+  },
+  "dependencies": {
+    "@graphmother/wasm": "^0.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  },
+  "keywords": [
+    "graph",
+    "visualization",
+    "webgpu",
+    "wasm",
+    "force-directed",
+    "network",
+    "graphmother"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tomWhiting/heroine-graph.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "bugs": {
+    "url": "https://github.com/tomWhiting/heroine-graph/issues"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

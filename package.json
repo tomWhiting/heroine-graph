@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "storybook": "bunx storybook dev -p 6006",
+    "build-storybook": "bunx storybook build"
   },
   "devDependencies": {
     "@chromatic-com/storybook": "^4.1.3",

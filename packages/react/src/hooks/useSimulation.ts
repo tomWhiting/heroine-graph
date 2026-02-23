@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@heroine-graph/core";
+import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
 
 /**
  * Options for the useSimulation hook
@@ -54,7 +54,7 @@ export interface UseSimulationReturn {
  *
  * @example
  * ```tsx
- * import { useGraph, useSimulation } from '@heroine-graph/react';
+ * import { useGraph, useSimulation } from '@graphmother/react';
  *
  * function SimulationControls() {
  *   const { graph, isReady } = useGraph();

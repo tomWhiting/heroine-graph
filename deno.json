@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/monorepo",
+  "name": "@graphmother/monorepo",
   "version": "0.1.0",
   "workspace": [
     "./packages/core",
@@ -12,16 +12,18 @@
     "serve": "deno run --allow-net --allow-read jsr:@std/http/file-server",
     "build": "deno run -A scripts/build.ts",
     "build:wasm": "cd packages/wasm && ./build.sh",
-    "bundle": "npx esbuild packages/core/mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@heroine-graph/wasm && cp packages/wasm/pkg/heroine_graph_wasm.js packages/wasm/pkg/heroine_graph_wasm_bg.wasm dist/",
+    "bundle": "bunx esbuild packages/core/mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm && cp packages/wasm/pkg/heroine_graph_wasm.js packages/wasm/pkg/heroine_graph_wasm_bg.wasm dist/",
     "test": "deno test --allow-read --allow-net --allow-env",
     "test:coverage": "deno test --allow-read --allow-net --allow-env --coverage=coverage",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "check": "deno check packages/core/mod.ts",
     "bench": "deno bench --allow-read --allow-net tests/benchmarks/",
-    "storybook": "npx storybook dev -p 6006 --ci",
-    "storybook:build": "npx storybook build",
+    "storybook": "bunx storybook dev -p 6006 --ci",
+    "storybook:build": "bunx storybook build",
     "storybook:clean": "rm -rf node_modules/.cache",
+    "publish": "deno run -A scripts/publish.ts",
+    "publish:dry": "deno run -A scripts/publish.ts --dry-run",
     "example:mission-control": "cd examples/mission-control && dx vite --port 1573"
   },
   "compilerOptions": {
@@ -60,8 +62,8 @@
     "exclude": ["**/node_modules/", "**/dist/", "**/pkg/", "**/*.wgsl"]
   },
   "imports": {
-    "@heroine-graph/core": "./packages/core/mod.ts",
-    "@heroine-graph/wasm": "./packages/wasm/pkg/heroine_graph_wasm.js"
+    "@graphmother/core": "./packages/core/mod.ts",
+    "@graphmother/wasm": "./packages/wasm/pkg/heroine_graph_wasm.js"
   },
   "exclude": ["**/node_modules/", "**/dist/", "**/pkg/", "**/target/"]
 }

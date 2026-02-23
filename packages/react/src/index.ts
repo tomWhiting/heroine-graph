@@ -1,5 +1,5 @@
 /**
- * @heroine-graph/react
+ * @graphmother/react
  *
  * React wrapper for Heroine Graph - high-performance WebGPU graph visualization.
  *
@@ -43,4 +43,4 @@ export type {
   SimulationTickEvent,
   SimulationEndEvent,
   BackgroundClickEvent,
-} from "@heroine-graph/core";
+} from "@graphmother/core";

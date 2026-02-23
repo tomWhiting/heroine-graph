@@ -12,7 +12,7 @@ This guide shows how to use the advanced visualization features in heroine-graph
 ### Setting Node Colors Directly
 
 ```typescript
-import { HeroineGraph } from '@heroine-graph/core';
+import { HeroineGraph } from '@graphmother/core';
 
 const graph = await HeroineGraph.create(canvas);
 graph.loadGraph({ nodes, edges });
@@ -245,7 +245,7 @@ graph.setContours({
 ## Complete Example
 
 ```typescript
-import { HeroineGraph } from '@heroine-graph/core';
+import { HeroineGraph } from '@graphmother/core';
 
 async function createVisualization() {
     const canvas = document.getElementById('graph') as HTMLCanvasElement;

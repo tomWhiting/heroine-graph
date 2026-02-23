@@ -6,7 +6,7 @@
  * @module
  */
 
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@heroine-graph/core";
+import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
 import type { GraphStore } from "./graph.svelte";
 
 /**
@@ -25,7 +25,7 @@ export interface SimulationStoreOptions {
  * @example
  * ```svelte
  * <script lang="ts">
- *   import { createGraphStore, createSimulationStore } from '@heroine-graph/svelte';
+ *   import { createGraphStore, createSimulationStore } from '@graphmother/svelte';
  *
  *   const graphStore = createGraphStore();
  *   const simStore = createSimulationStore({ graphStore });

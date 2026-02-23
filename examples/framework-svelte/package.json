@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/example-svelte",
+  "name": "@graphmother/example-svelte",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@heroine-graph/core": "workspace:*",
-    "@heroine-graph/svelte": "workspace:*"
+    "@graphmother/core": "workspace:*",
+    "@graphmother/svelte": "workspace:*"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",

@@ -10,7 +10,7 @@
  */
 
 // In a real application, you would import from the package:
-// import { createHeroineGraph, HeatmapLayer, ... } from '@heroine-graph/core';
+// import { createHeroineGraph, HeatmapLayer, ... } from '@graphmother/core';
 
 // For this example, we import from the local package:
 import { getColorScaleNames, getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";

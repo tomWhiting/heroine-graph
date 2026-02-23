@@ -74,31 +74,31 @@ async function typeCheckCore(): Promise<void> {
   await runCommand(
     ["deno", "check", "mod.ts"],
     CORE_DIR,
-    "Type-checking @heroine-graph/core"
+    "Type-checking @graphmother/core"
   );
 }
 
 async function buildReact(): Promise<void> {
   await runCommand(
-    ["npm", "run", "build"],
+    ["bun", "run", "build"],
     REACT_DIR,
-    "Building @heroine-graph/react"
+    "Building @graphmother/react"
   );
 }
 
 async function buildVue(): Promise<void> {
   await runCommand(
-    ["npm", "run", "build"],
+    ["bun", "run", "build"],
     VUE_DIR,
-    "Building @heroine-graph/vue"
+    "Building @graphmother/vue"
   );
 }
 
 async function buildSvelte(): Promise<void> {
   await runCommand(
-    ["npm", "run", "build"],
+    ["bun", "run", "build"],
     SVELTE_DIR,
-    "Building @heroine-graph/svelte"
+    "Building @graphmother/svelte"
   );
 }
 
@@ -116,7 +116,7 @@ async function bundleCore(): Promise<void> {
   // This handles .wgsl imports properly
   await runCommand(
     [
-      "npx",
+      "bunx",
       "esbuild",
       join(CORE_DIR, "mod.ts"),
       "--bundle",
@@ -125,10 +125,10 @@ async function bundleCore(): Promise<void> {
       "--target=es2022",
       `--outfile=${join(distDir, "heroine-graph.esm.js")}`,
       "--loader:.wgsl=text",
-      "--external:@heroine-graph/wasm",
+      "--external:@graphmother/wasm",
     ],
     ROOT_DIR,
-    "Bundling @heroine-graph/core for browser"
+    "Bundling @graphmother/core for browser"
   );
 }
 

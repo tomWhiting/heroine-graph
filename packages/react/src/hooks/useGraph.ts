@@ -14,8 +14,8 @@ import type {
   NodeId,
   EdgeId,
   Vec2,
-} from "@heroine-graph/core";
-import { createHeroineGraph, isSupported } from "@heroine-graph/core";
+} from "@graphmother/core";
+import { createHeroineGraph, isSupported } from "@graphmother/core";
 
 /**
  * Options for the useGraph hook
@@ -88,7 +88,7 @@ export interface UseGraphReturn {
  *
  * @example
  * ```tsx
- * import { useGraph } from '@heroine-graph/react';
+ * import { useGraph } from '@graphmother/react';
  *
  * function GraphComponent() {
  *   const canvasRef = useRef<HTMLCanvasElement>(null);

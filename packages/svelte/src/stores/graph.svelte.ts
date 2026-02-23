@@ -13,8 +13,8 @@ import type {
   NodeId,
   EdgeId,
   Vec2,
-} from "@heroine-graph/core";
-import { createHeroineGraph, isSupported } from "@heroine-graph/core";
+} from "@graphmother/core";
+import { createHeroineGraph, isSupported } from "@graphmother/core";
 
 /**
  * Options for createGraphStore
@@ -34,7 +34,7 @@ export interface GraphStoreOptions {
  * @example
  * ```svelte
  * <script lang="ts">
- *   import { createGraphStore } from '@heroine-graph/svelte';
+ *   import { createGraphStore } from '@graphmother/svelte';
  *
  *   const graphStore = createGraphStore();
  *   const { graph, isReady, initialize, load } = graphStore;

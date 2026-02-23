@@ -5,17 +5,17 @@
  * Provides zero-copy views for GPU buffer uploads.
  */
 
-import type { HeroineGraphWasm } from "@heroine-graph/wasm";
+import type { HeroineGraphWasm } from "@graphmother/wasm";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
 
 /** WASM module state */
 interface WasmState {
   /** The initialized WASM module */
-  module: typeof import("@heroine-graph/wasm") | null;
+  module: typeof import("@graphmother/wasm") | null;
   /** Whether initialization is in progress */
   loading: boolean;
   /** Promise for pending initialization */
-  loadPromise: Promise<typeof import("@heroine-graph/wasm")> | null;
+  loadPromise: Promise<typeof import("@graphmother/wasm")> | null;
 }
 
 const state: WasmState = {
@@ -33,7 +33,7 @@ const state: WasmState = {
  * @returns Promise resolving to the WASM module exports
  * @throws HeroineGraphError if WASM loading fails
  */
-export function loadWasmModule(): Promise<typeof import("@heroine-graph/wasm")> {
+export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
   // Already loaded
   if (state.module) {
     return Promise.resolve(state.module);
@@ -48,7 +48,7 @@ export function loadWasmModule(): Promise<typeof import("@heroine-graph/wasm")> 
   state.loadPromise = (async () => {
     try {
       // Dynamic import of the WASM module
-      const wasmModule = await import("@heroine-graph/wasm");
+      const wasmModule = await import("@graphmother/wasm");
 
       // Initialize the module (calls wasm_bindgen start function)
       await wasmModule.default();
@@ -114,7 +114,7 @@ export function isWasmLoaded(): boolean {
  *
  * @returns The module or null if not loaded
  */
-export function getWasmModule(): typeof import("@heroine-graph/wasm") | null {
+export function getWasmModule(): typeof import("@graphmother/wasm") | null {
   return state.module;
 }
 

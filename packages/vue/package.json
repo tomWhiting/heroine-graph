@@ -1,5 +1,5 @@
 {
-  "name": "@heroine-graph/vue",
+  "name": "@graphmother/vue",
   "version": "0.1.0",
   "description": "Vue wrapper for Heroine Graph - high-performance graph visualization",
   "type": "module",
@@ -17,8 +17,8 @@
     "src"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
-    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "build": "bunx tsup src/index.ts --format esm --dts --clean",
+    "dev": "bunx tsup src/index.ts --format esm --dts --watch",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint src --ext .ts,.vue"
   },
@@ -26,7 +26,7 @@
     "vue": ">=3.5.0"
   },
   "dependencies": {
-    "@heroine-graph/core": "workspace:*"
+    "@graphmother/core": "^0.1.0"
   },
   "devDependencies": {
     "@vue/tsconfig": "^0.7.0",
@@ -40,13 +40,17 @@
     "graph",
     "visualization",
     "webgpu",
-    "heroine-graph"
+    "graphmother"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/heroine-graph/heroine-graph.git",
+    "url": "https://github.com/tomWhiting/heroine-graph.git",
     "directory": "packages/vue"
+  },
+  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "bugs": {
+    "url": "https://github.com/tomWhiting/heroine-graph/issues"
   },
   "sideEffects": false
 }

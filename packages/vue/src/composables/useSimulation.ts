@@ -7,7 +7,7 @@
  */
 
 import { ref, watch, onUnmounted, type Ref, type ShallowRef } from "vue";
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@heroine-graph/core";
+import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
 
 /**
  * Options for the useSimulation composable
@@ -55,7 +55,7 @@ export interface UseSimulationReturn {
  * @example
  * ```vue
  * <script setup lang="ts">
- * import { useGraph, useSimulation } from '@heroine-graph/vue';
+ * import { useGraph, useSimulation } from '@graphmother/vue';
  *
  * const { graph, isReady } = useGraph();
  * const {
