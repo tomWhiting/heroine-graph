@@ -1,5 +1,5 @@
 <!--
-  Heroine Graph Vue Example
+  GraphMother Vue Example
 
   Demonstrates the @graphmother/vue wrapper with:
   - Basic graph rendering
@@ -10,7 +10,7 @@
     <div class="app">
         <!-- Header -->
         <header class="header">
-            <h1>Heroine Graph - Vue</h1>
+            <h1>GraphMother - Vue</h1>
             <span v-if="selectedNode !== null" class="selected">
                 Selected: Node {{ selectedNode }}
             </span>
@@ -20,7 +20,7 @@
         <div class="content">
             <!-- Graph -->
             <main class="graph-container">
-                <HeroineGraph
+                <GraphMother
                     ref="graphRef"
                     :data="graphData"
                     @ready="onReady"
@@ -74,7 +74,7 @@
 
 <script setup lang="ts">
 import { ref, reactive } from "vue";
-import { HeroineGraph } from "@graphmother/vue";
+import { GraphMother } from "@graphmother/vue";
 import type {
     GraphInput,
     NodeClickEvent,
@@ -83,7 +83,7 @@ import type {
 } from "@graphmother/vue";
 
 // Refs
-const graphRef = ref<InstanceType<typeof HeroineGraph> | null>(null);
+const graphRef = ref<InstanceType<typeof GraphMother> | null>(null);
 const selectedNode = ref<number | null>(null);
 const eventLog = reactive<string[]>([]);
 

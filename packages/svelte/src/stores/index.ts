@@ -1,5 +1,5 @@
 /**
- * Svelte Stores for Heroine Graph
+ * Svelte Stores for GraphMother
  *
  * @module
  */

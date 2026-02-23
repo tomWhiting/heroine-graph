@@ -5,7 +5,7 @@
  * Uses ping-pong double buffering for compute shader updates.
  */
 
-import { ErrorCode, HeroineGraphError } from "../../errors.ts";
+import { ErrorCode, GraphMotherError } from "../../errors.ts";
 import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
@@ -135,7 +135,7 @@ export class PositionBufferManager {
    */
   upload(posX: Float32Array, posY: Float32Array): void {
     if (posX.length !== posY.length) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_POSITIONS,
         `Position arrays must have same length: X=${posX.length}, Y=${posY.length}`,
       );

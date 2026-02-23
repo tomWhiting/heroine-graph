@@ -25,10 +25,10 @@ export interface ColorScale {
 // =============================================================================
 
 /** Aggregation mode for hierarchical data */
-export type AggregationType = 'sum' | 'max' | 'avg' | 'min';
+export type AggregationType = "sum" | "max" | "avg" | "min";
 
 /** Blend mode for combining multiple channels */
-export type BlendMode = 'additive' | 'multiply' | 'overlay';
+export type BlendMode = "additive" | "multiply" | "overlay";
 
 /** Configuration for defining a diagnostic channel */
 export interface ChannelConfig {
@@ -59,7 +59,12 @@ export interface ChannelDataPoint {
 // =============================================================================
 
 /** Types of visualizations that can be enabled per layer */
-export type VisualizationType = 'nodes' | 'edges' | 'heatmap' | 'contours' | 'metaballs';
+export type VisualizationType =
+  | "nodes"
+  | "edges"
+  | "heatmap"
+  | "contours"
+  | "metaballs";
 
 /** Node data passed to filter functions */
 export interface NodeData {
@@ -213,12 +218,12 @@ export interface ContourConfig {
 }
 
 // =============================================================================
-// HeroineGraph API Extensions
+// GraphMother API Extensions
 // =============================================================================
 
 /**
- * Extended HeroineGraph API with visualization features.
- * These methods extend the base HeroineGraph class.
+ * Extended GraphMother API with visualization features.
+ * These methods extend the base GraphMother class.
  */
 export interface VisualizationAPI {
   // Per-Item Styling

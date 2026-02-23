@@ -74,7 +74,7 @@ specs/003-graph-algorithms-wasm/
 packages/wasm/
 ├── Cargo.toml                    # Add new dependencies
 ├── src/
-│   ├── lib.rs                    # Extend HeroineGraphWasm with algorithm methods
+│   ├── lib.rs                    # Extend GraphMotherWasm with algorithm methods
 │   ├── graph/
 │   │   ├── mod.rs
 │   │   ├── engine.rs             # Existing - may need accessor methods

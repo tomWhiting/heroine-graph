@@ -1,4 +1,4 @@
-# Heroine Graph: Gap Analysis Report
+# GraphMother: Gap Analysis Report
 
 **Date**: 2026-01-06  
 **Reviewer**: Claude  
@@ -38,7 +38,7 @@ Either wire up the R-tree for hit testing now, or add a task to do it later. The
 
 **Status: Significant divergence**
 
-The `contracts/api.ts` defines a comprehensive API. Here's what's missing from `HeroineGraph`:
+The `contracts/api.ts` defines a comprehensive API. Here's what's missing from `GraphMother`:
 
 ### Node Operations (spec has 11 methods, ~4 implemented)
 

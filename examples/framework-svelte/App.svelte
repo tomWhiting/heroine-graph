@@ -1,5 +1,5 @@
 <!--
-  Heroine Graph Svelte Example
+  GraphMother Svelte Example
 
   Demonstrates the @graphmother/svelte wrapper with:
   - Basic graph rendering
@@ -7,7 +7,7 @@
   - Simulation controls
 -->
 <script lang="ts">
-    import { HeroineGraph } from "@graphmother/svelte";
+    import { GraphMother } from "@graphmother/svelte";
     import type {
         EdgeInput,
         GraphInput,
@@ -15,11 +15,11 @@
         NodeHoverEnterEvent,
         NodeHoverLeaveEvent,
     } from "@graphmother/svelte";
-    import type { HeroineGraph as HeroineGraphCore } from "@graphmother/core";
+    import type { GraphMother as GraphMotherCore } from "@graphmother/core";
 
     // State
     let graphComponent = $state<{
-        getGraph: () => HeroineGraphCore | null;
+        getGraph: () => GraphMotherCore | null;
     } | null>(null);
     let selectedNode = $state<number | null>(null);
     let eventLog = $state<string[]>([]);
@@ -59,7 +59,7 @@
         eventLog = [message, ...eventLog.slice(0, 9)];
     }
 
-    function onReady(_graph: HeroineGraphCore) {
+    function onReady(_graph: GraphMotherCore) {
         addLog("Graph ready!");
     }
 
@@ -98,7 +98,7 @@
 <div class="app">
     <!-- Header -->
     <header class="header">
-        <h1>Heroine Graph - Svelte</h1>
+        <h1>GraphMother - Svelte</h1>
         {#if selectedNode !== null}
             <span class="selected">Selected: Node {selectedNode}</span>
         {/if}
@@ -108,7 +108,7 @@
     <div class="content">
         <!-- Graph -->
         <main class="graph-container">
-            <HeroineGraph
+            <GraphMother
                 bind:this={graphComponent}
                 data={graphData}
                 onready={onReady}

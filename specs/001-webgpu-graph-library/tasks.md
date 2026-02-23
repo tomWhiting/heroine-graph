@@ -1,4 +1,4 @@
-# Tasks: Heroine Graph - WebGPU Graph Visualization Library
+# Tasks: GraphMother - WebGPU Graph Visualization Library
 
 **Input**: Design documents from `/specs/001-webgpu-graph-library/`
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/
@@ -131,8 +131,8 @@ Based on plan.md monorepo structure:
 
 ### Main API for US1
 
-- [x] T056 [US1] Implement createHeroineGraph factory function in packages/core/src/api/factory.ts
-- [x] T057 [US1] Implement HeroineGraph class with load() method in packages/core/src/api/graph.ts
+- [x] T056 [US1] Implement createGraphMother factory function in packages/core/src/api/factory.ts
+- [x] T057 [US1] Implement GraphMother class with load() method in packages/core/src/api/graph.ts
 - [x] T058 [US1] Implement resize() and dispose() methods in packages/core/src/api/graph.ts
 - [x] T059 [US1] Implement simulation control methods in packages/core/src/api/graph.ts
 - [x] T060 [US1] Implement viewport control methods (pan, zoom, fitToView) in packages/core/src/api/graph.ts
@@ -162,14 +162,14 @@ Based on plan.md monorepo structure:
 
 ### Selection for US2
 
-- [x] T068 [US2] Implement selection state management in packages/core/src/api/graph.ts (integrated into HeroineGraph class)
+- [x] T068 [US2] Implement selection state management in packages/core/src/api/graph.ts (integrated into GraphMother class)
 - [x] T069 [US2] Implement visual feedback for selected nodes (shader uniform) in packages/core/src/renderer/shaders/node.frag.wgsl
 - [x] T070 [US2] Implement selectNodes/selectEdges API methods in packages/core/src/api/graph.ts
 - [x] T071 [US2] Emit selection:change events in packages/core/src/api/graph.ts
 
 ### Dragging for US2
 
-- [x] T072 [US2] Implement drag state machine in packages/core/src/api/graph.ts (integrated into HeroineGraph class)
+- [x] T072 [US2] Implement drag state machine in packages/core/src/api/graph.ts (integrated into GraphMother class)
 - [x] T073 [US2] Implement node pinning in packages/core/src/api/graph.ts
 - [x] T074 [US2] Implement real-time position update during drag in packages/core/src/api/graph.ts
 - [x] T075 [US2] Emit node:dragstart, node:dragmove, node:dragend events in packages/core/src/api/graph.ts
@@ -304,20 +304,20 @@ Based on plan.md monorepo structure:
 
 ### React Wrapper for US6
 
-- [x] T122 [P] [US6] Implement HeroineGraph React component in packages/react/src/HeroineGraph.tsx
+- [x] T122 [P] [US6] Implement GraphMother React component in packages/react/src/GraphMother.tsx
 - [x] T123 [P] [US6] Implement useGraph hook in packages/react/src/hooks/useGraph.ts
 - [x] T124 [P] [US6] Implement useSimulation hook in packages/react/src/hooks/useSimulation.ts
 - [x] T125 [US6] Create React package exports in packages/react/src/index.ts
 
 ### Vue Wrapper for US6
 
-- [x] T126 [P] [US6] Implement HeroineGraph Vue component in packages/vue/src/HeroineGraph.vue
+- [x] T126 [P] [US6] Implement GraphMother Vue component in packages/vue/src/GraphMother.vue
 - [x] T127 [P] [US6] Implement composables (useGraph, useSimulation) in packages/vue/src/composables/
 - [x] T128 [US6] Create Vue package exports in packages/vue/src/index.ts
 
 ### Svelte Wrapper for US6
 
-- [x] T129 [P] [US6] Implement HeroineGraph Svelte component in packages/svelte/src/HeroineGraph.svelte
+- [x] T129 [P] [US6] Implement GraphMother Svelte component in packages/svelte/src/GraphMother.svelte
 - [x] T130 [P] [US6] Implement Svelte stores in packages/svelte/src/stores/
 - [x] T131 [US6] Create Svelte package exports in packages/svelte/src/index.ts
 

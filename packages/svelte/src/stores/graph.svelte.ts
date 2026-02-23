@@ -1,7 +1,7 @@
 /**
  * Graph Store for Svelte
  *
- * Provides reactive access to the HeroineGraph instance and common operations.
+ * Provides reactive access to the GraphMother instance and common operations.
  *
  * @module
  */
@@ -10,11 +10,11 @@ import type {
   EdgeId,
   GraphConfig,
   GraphInput,
-  HeroineGraph,
+  GraphMother,
   NodeId,
   Vec2,
 } from "@graphmother/core";
-import { createHeroineGraph, isSupported } from "@graphmother/core";
+import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
  * Options for createGraphStore
@@ -58,7 +58,7 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
   const { config, debug = false, initialData } = options;
 
   // Reactive state using Svelte 5 runes
-  let graph = $state<HeroineGraph | null>(null);
+  let graph = $state<GraphMother | null>(null);
   let isReady = $state(false);
   let isLoading = $state(false);
   let error = $state<Error | null>(null);
@@ -71,7 +71,7 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
     }
 
     try {
-      const graphInstance = await createHeroineGraph({
+      const graphInstance = await createGraphMother({
         canvas,
         config,
         debug,

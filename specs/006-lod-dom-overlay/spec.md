@@ -7,7 +7,7 @@
 
 ## Vision
 
-No existing graph library offers this. DOM-based tools (React Flow et al.) give rich HTML nodes but collapse under ~1K elements; GPU engines (Cosmograph, cosmos.gl, heroine-graph today) scale to 100K+ nodes but render dumb sprites at every zoom level. This feature bridges the two: at 35K nodes (Meridian scale) the GPU renders everything; at reading distance, the handful of visible nodes become real HTML — selectable text, working links, syntax-highlighted previews, screen-reader accessible, ⌘F findable.
+No existing graph library offers this. DOM-based tools (React Flow et al.) give rich HTML nodes but collapse under ~1K elements; GPU engines (Cosmograph, cosmos.gl, graphmother today) scale to 100K+ nodes but render dumb sprites at every zoom level. This feature bridges the two: at 35K nodes (Meridian scale) the GPU renders everything; at reading distance, the handful of visible nodes become real HTML — selectable text, working links, syntax-highlighted previews, screen-reader accessible, ⌘F findable.
 
 The hierarchy that drives semantic LOD is the same containment tree that drives the Nested Bubble layout algorithm (see CLAUDE.md): well radii computed by `computeBubbleDataFromEdges` define both *where* subtrees sit and *when* they expand. One data structure, two consumers.
 

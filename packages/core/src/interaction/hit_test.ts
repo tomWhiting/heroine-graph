@@ -8,7 +8,7 @@
  * positions live on the GPU and are read back periodically. An optional
  * SpatialQueryEngine (WASM R-tree) can be wired via setSpatialEngine(), but
  * the caller is then responsible for keeping the engine's positions in sync
- * with the simulation and rebuilding the index; heroine-graph core does not
+ * with the simulation and rebuilding the index; graphmother core does not
  * wire it because syncing + rebuilding every readback would cost more than
  * the per-pointer-event scan.
  *
@@ -75,7 +75,7 @@ export const DEFAULT_HIT_TESTER_CONFIG: Required<HitTesterConfig> = {
 
 /**
  * Interface for WASM spatial queries.
- * This matches the HeroineGraphWasm API.
+ * This matches the GraphMotherWasm API.
  */
 export interface SpatialQueryEngine {
   /** Find nearest node within distance */

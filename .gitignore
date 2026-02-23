@@ -1,9 +1,10 @@
-# Heroine Graph - Git Ignore
+# GraphMother - Git Ignore
 
 # =============================================================================
 # Rust / WASM
 # =============================================================================
 /packages/wasm/target/
+/target/
 /packages/wasm/pkg/
 *.rs.bk
 *.rlib

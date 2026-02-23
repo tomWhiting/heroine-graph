@@ -1,5 +1,5 @@
 /**
- * Error Handling for Heroine Graph
+ * Error Handling for GraphMother
  *
  * Per Constitution V: No Silent Failures.
  * All errors include context and are actionable.
@@ -68,11 +68,11 @@ export interface ErrorContext {
 }
 
 /**
- * Custom error class for Heroine Graph.
+ * Custom error class for GraphMother.
  *
  * Provides structured error information with context for debugging.
  */
-export class HeroineGraphError extends Error {
+export class GraphMotherError extends Error {
   /** Error code for categorization */
   readonly code: ErrorCode;
   /** Additional context for debugging */
@@ -87,14 +87,14 @@ export class HeroineGraphError extends Error {
     suggestion?: string,
   ) {
     super(message);
-    this.name = "HeroineGraphError";
+    this.name = "GraphMotherError";
     this.code = code;
     this.context = context;
     this.suggestion = suggestion;
 
     // Maintains proper stack trace for where error was thrown
     if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, HeroineGraphError);
+      Error.captureStackTrace(this, GraphMotherError);
     }
   }
 
@@ -103,7 +103,7 @@ export class HeroineGraphError extends Error {
    */
   toDetailedString(): string {
     const parts: string[] = [
-      `[HeroineGraph Error ${this.code}] ${this.message}`,
+      `[GraphMother Error ${this.code}] ${this.message}`,
     ];
 
     if (this.suggestion) {
@@ -142,8 +142,8 @@ export const Errors = {
   /**
    * Create a WebGPU not supported error.
    */
-  webgpuNotSupported(reason: string): HeroineGraphError {
-    return new HeroineGraphError(
+  webgpuNotSupported(reason: string): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.WEBGPU_NOT_SUPPORTED,
       `WebGPU is not supported: ${reason}`,
       {},
@@ -155,8 +155,8 @@ export const Errors = {
   /**
    * Create a WebGPU adapter request failed error.
    */
-  adapterFailed(): HeroineGraphError {
-    return new HeroineGraphError(
+  adapterFailed(): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.WEBGPU_ADAPTER_FAILED,
       "Failed to request WebGPU adapter",
       {},
@@ -168,8 +168,8 @@ export const Errors = {
   /**
    * Create a WebGPU device request failed error.
    */
-  deviceFailed(limits?: string[]): HeroineGraphError {
-    return new HeroineGraphError(
+  deviceFailed(limits?: string[]): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.WEBGPU_DEVICE_FAILED,
       "Failed to request WebGPU device",
       { unsupportedLimits: limits },
@@ -181,8 +181,8 @@ export const Errors = {
   /**
    * Create a canvas not found error.
    */
-  canvasNotFound(selector: string): HeroineGraphError {
-    return new HeroineGraphError(
+  canvasNotFound(selector: string): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.CANVAS_NOT_FOUND,
       `Canvas element not found: "${selector}"`,
       { selector },
@@ -198,8 +198,8 @@ export const Errors = {
     messages: string,
     line?: number,
     snippet?: string,
-  ): HeroineGraphError {
-    return new HeroineGraphError(
+  ): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.SHADER_COMPILATION_FAILED,
       `Shader compilation failed: ${shaderName}`,
       {
@@ -215,8 +215,8 @@ export const Errors = {
   /**
    * Create a node not found error.
    */
-  nodeNotFound(nodeId: number): HeroineGraphError {
-    return new HeroineGraphError(
+  nodeNotFound(nodeId: number): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.NODE_NOT_FOUND,
       `Node not found: ${nodeId}`,
       { nodeId },
@@ -227,8 +227,8 @@ export const Errors = {
   /**
    * Create an edge not found error.
    */
-  edgeNotFound(edgeId: number): HeroineGraphError {
-    return new HeroineGraphError(
+  edgeNotFound(edgeId: number): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.EDGE_NOT_FOUND,
       `Edge not found: ${edgeId}`,
       { edgeId },
@@ -239,8 +239,8 @@ export const Errors = {
   /**
    * Create an invalid graph data error.
    */
-  invalidGraphData(reason: string): HeroineGraphError {
-    return new HeroineGraphError(
+  invalidGraphData(reason: string): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.INVALID_GRAPH_DATA,
       `Invalid graph data: ${reason}`,
       {},
@@ -251,8 +251,8 @@ export const Errors = {
   /**
    * Create a layer not found error.
    */
-  layerNotFound(layerType: string): HeroineGraphError {
-    return new HeroineGraphError(
+  layerNotFound(layerType: string): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.LAYER_NOT_FOUND,
       `Layer not found: ${layerType}`,
       { layerType },
@@ -263,8 +263,8 @@ export const Errors = {
   /**
    * Create a buffer creation failed error.
    */
-  bufferCreationFailed(bufferName: string, reason: string): HeroineGraphError {
-    return new HeroineGraphError(
+  bufferCreationFailed(bufferName: string, reason: string): GraphMotherError {
+    return new GraphMotherError(
       ErrorCode.BUFFER_CREATION_FAILED,
       `Failed to create GPU buffer "${bufferName}": ${reason}`,
       { bufferName },
@@ -281,7 +281,7 @@ export const Errors = {
  */
 export function assert(
   condition: boolean,
-  error: HeroineGraphError,
+  error: GraphMotherError,
 ): asserts condition {
   if (!condition) {
     throw error;
@@ -289,7 +289,7 @@ export function assert(
 }
 
 /**
- * Wrap an async function to convert unknown errors to HeroineGraphError.
+ * Wrap an async function to convert unknown errors to GraphMotherError.
  */
 export async function wrapAsync<T>(
   fn: () => Promise<T>,
@@ -299,9 +299,9 @@ export async function wrapAsync<T>(
   try {
     return await fn();
   } catch (error) {
-    if (error instanceof HeroineGraphError) {
+    if (error instanceof GraphMotherError) {
       throw error;
     }
-    throw new HeroineGraphError(code, message, { originalError: error });
+    throw new GraphMotherError(code, message, { originalError: error });
   }
 }

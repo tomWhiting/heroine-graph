@@ -1,4 +1,4 @@
-# Quickstart: Heroine Graph
+# Quickstart: GraphMother
 
 Get a graph visualization running in under 5 minutes.
 
@@ -22,14 +22,14 @@ npm install @graphmother/core
 ### Deno
 
 ```typescript
-import { createHeroineGraph } from "jsr:@graphmother/core";
+import { createGraphMother } from "jsr:@graphmother/core";
 ```
 
 ### CDN (for quick experiments)
 
 ```html
 <script type="module">
-  import { createHeroineGraph } from "https://esm.sh/@graphmother/core";
+  import { createGraphMother } from "https://esm.sh/@graphmother/core";
 </script>
 ```
 
@@ -61,7 +61,7 @@ import { createHeroineGraph } from "jsr:@graphmother/core";
 
 ```typescript
 // main.ts
-import { createHeroineGraph, checkWebGPU } from "@graphmother/core";
+import { createGraphMother, checkWebGPU } from "@graphmother/core";
 
 async function main() {
   // Check WebGPU availability
@@ -72,7 +72,7 @@ async function main() {
   }
 
   // Create the graph
-  const graph = await createHeroineGraph({
+  const graph = await createGraphMother({
     canvas: "#graph",
   });
 
@@ -289,7 +289,7 @@ npm install @graphmother/react
 ```
 
 ```tsx
-import { HeroineGraph } from "@graphmother/react";
+import { GraphMother } from "@graphmother/react";
 
 function App() {
   const data = {
@@ -298,7 +298,7 @@ function App() {
   };
 
   return (
-    <HeroineGraph
+    <GraphMother
       data={data}
       onNodeClick={(e) => console.log("Clicked", e.nodeId)}
       style={{ width: "100%", height: "600px" }}
@@ -315,7 +315,7 @@ npm install @graphmother/vue
 
 ```vue
 <template>
-  <HeroineGraph
+  <GraphMother
     :data="data"
     @node:click="handleNodeClick"
     style="width: 100%; height: 600px"
@@ -323,7 +323,7 @@ npm install @graphmother/vue
 </template>
 
 <script setup>
-import { HeroineGraph } from "@graphmother/vue";
+import { GraphMother } from "@graphmother/vue";
 
 const data = {
   nodes: [{ id: "a" }, { id: "b" }],
@@ -344,7 +344,7 @@ npm install @graphmother/svelte
 
 ```svelte
 <script>
-  import { HeroineGraph } from "@graphmother/svelte";
+  import { GraphMother } from "@graphmother/svelte";
 
   const data = {
     nodes: [{ id: "a" }, { id: "b" }],
@@ -356,7 +356,7 @@ npm install @graphmother/svelte
   }
 </script>
 
-<HeroineGraph
+<GraphMother
   {data}
   on:node:click={handleNodeClick}
   style="width: 100%; height: 600px"

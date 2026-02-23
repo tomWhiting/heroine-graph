@@ -7,14 +7,14 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
+import type { ForceConfig, GraphMother, SimulationStatus } from "@graphmother/core";
 
 /**
  * Options for the useSimulation hook
  */
 export interface UseSimulationOptions {
-  /** The HeroineGraph instance to control */
-  graph: HeroineGraph | null;
+  /** The GraphMother instance to control */
+  graph: GraphMother | null;
   /** Initial force configuration */
   initialConfig?: Partial<ForceConfig>;
 }

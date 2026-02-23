@@ -17,7 +17,7 @@ Follow-up TODOs: None
 ==================
 -->
 
-# Heroine Graph Constitution
+# GraphMother Constitution
 
 These are our design values. They guide every decision.
 

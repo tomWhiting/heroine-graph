@@ -1,7 +1,7 @@
 /**
- * HeroineGraph React Component
+ * GraphMother React Component
  *
- * A React wrapper for the Heroine Graph visualization library.
+ * A React wrapper for the GraphMother visualization library.
  * Handles WebGPU initialization, lifecycle management, and event forwarding.
  *
  * @module
@@ -15,7 +15,7 @@ import type {
   EdgeHoverLeaveEvent,
   GraphConfig,
   GraphInput,
-  HeroineGraph as HeroineGraphCore,
+  GraphMother as GraphMotherCore,
   NodeClickEvent,
   NodeDoubleClickEvent,
   NodeDragEndEvent,
@@ -28,12 +28,12 @@ import type {
   SimulationTickEvent,
   ViewportChangeEvent,
 } from "@graphmother/core";
-import { createHeroineGraph, isSupported } from "@graphmother/core";
+import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
- * Props for the HeroineGraph component
+ * Props for the GraphMother component
  */
-export interface HeroineGraphProps {
+export interface GraphMotherProps {
   /** Graph data to display */
   data?: GraphInput;
   /** Graph configuration */
@@ -50,7 +50,7 @@ export interface HeroineGraphProps {
   debug?: boolean;
 
   // Event callbacks
-  onReady?: (graph: HeroineGraphCore) => void;
+  onReady?: (graph: GraphMotherCore) => void;
   onError?: (error: Error) => void;
   onNodeClick?: (event: NodeClickEvent) => void;
   onNodeDoubleClick?: (event: NodeDoubleClickEvent) => void;
@@ -70,26 +70,26 @@ export interface HeroineGraphProps {
 }
 
 /**
- * Ref handle for the HeroineGraph component
+ * Ref handle for the GraphMother component
  */
-export interface HeroineGraphRef {
-  /** Get the underlying HeroineGraph instance */
-  getGraph: () => HeroineGraphCore | null;
+export interface GraphMotherRef {
+  /** Get the underlying GraphMother instance */
+  getGraph: () => GraphMotherCore | null;
   /** Get the canvas element */
   getCanvas: () => HTMLCanvasElement | null;
 }
 
 /**
- * HeroineGraph React Component
+ * GraphMother React Component
  *
  * Renders a high-performance graph visualization using WebGPU.
  *
  * @example
  * ```tsx
- * import { HeroineGraph } from '@graphmother/react';
+ * import { GraphMother } from '@graphmother/react';
  *
  * function App() {
- *   const graphRef = useRef<HeroineGraphRef>(null);
+ *   const graphRef = useRef<GraphMotherRef>(null);
  *
  *   const data = {
  *     nodes: [
@@ -102,7 +102,7 @@ export interface HeroineGraphRef {
  *   };
  *
  *   return (
- *     <HeroineGraph
+ *     <GraphMother
  *       ref={graphRef}
  *       data={data}
  *       onNodeClick={(e) => console.log('Clicked:', e.nodeId)}
@@ -112,8 +112,8 @@ export interface HeroineGraphRef {
  * }
  * ```
  */
-export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
-  function HeroineGraph(props, ref) {
+export const GraphMother = forwardRef<GraphMotherRef, GraphMotherProps>(
+  function GraphMother(props, ref) {
     const {
       data,
       config,
@@ -143,7 +143,7 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
 
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const graphRef = useRef<HeroineGraphCore | null>(null);
+    const graphRef = useRef<GraphMotherCore | null>(null);
     const [isInitialized, setIsInitialized] = useState(false);
     const [error, setError] = useState<Error | null>(null);
 
@@ -176,7 +176,7 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
           }
 
           // Create graph instance
-          const graph = await createHeroineGraph({
+          const graph = await createGraphMother({
             canvas,
             config,
             debug,
@@ -412,4 +412,4 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
   },
 );
 
-export default HeroineGraph;
+export default GraphMother;

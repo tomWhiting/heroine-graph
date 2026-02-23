@@ -3,7 +3,7 @@
  *
  * Drives the real simulation pipeline from packages/core/src/simulation
  * against a fixture graph on a headless WebGPU device — no canvas, no
- * renderer, no HeroineGraph instance. This is the rig physics changes are
+ * renderer, no GraphMother instance. This is the rig physics changes are
  * verified (and later tuned) against.
  *
  * Deno cannot load the bare `.wgsl` imports the core package uses (they
@@ -402,7 +402,7 @@ export const HARNESS_ALPHA_DECAY = 0.0228;
 /**
  * Creates a simulation harness on the given device: builds the real
  * compute pipelines, uploads the fixture graph, and steps the simulation
- * exactly the way HeroineGraph does (uniforms -> record -> submit ->
+ * exactly the way GraphMother does (uniforms -> record -> submit ->
  * ping-pong swap -> bind group rebuild).
  */
 export async function createSimHarness(
@@ -459,7 +459,7 @@ export async function createSimHarness(
         mod.recordSimulationStep(encoder, pipeline, bindGroups, nodeCount, edgeCount);
         device.queue.submit([encoder.finish()]);
         // Ping-pong swap invalidates the bind groups' buffer references;
-        // rebuild them exactly as HeroineGraph.tickSimulation does.
+        // rebuild them exactly as GraphMother.tickSimulation does.
         mod.swapSimulationBuffers(buffers);
         bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
         tickCount++;
@@ -559,13 +559,13 @@ export interface HarnessForceAlgorithm {
 
 /**
  * Creates a simulation harness that runs a pluggable force algorithm the
- * way HeroineGraph does: the algorithm's recordRepulsionPass replaces the
+ * way GraphMother does: the algorithm's recordRepulsionPass replaces the
  * default N² repulsion, the shared spring pass is skipped when the
  * algorithm handles its own attraction, integration gravity is suppressed
  * when the algorithm applies its own, and prefersAdaptiveSpeed is
  * forwarded as the adaptive-speed override. Algorithm bind groups are
  * rebuilt after every ping-pong swap, mirroring
- * HeroineGraph.swapAndRebuildBindGroups.
+ * GraphMother.swapAndRebuildBindGroups.
  */
 export async function createAlgorithmSimHarness(
   device: GPUDevice,
@@ -719,7 +719,7 @@ export async function createAlgorithmSimHarness(
         );
         device.queue.submit([encoder.finish()]);
         // Ping-pong swap invalidates the bind groups' buffer references;
-        // rebuild both sim and algorithm bind groups as HeroineGraph does.
+        // rebuild both sim and algorithm bind groups as GraphMother does.
         mod.swapSimulationBuffers(buffers);
         bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
         algoBindGroups = algorithm.createBindGroups(

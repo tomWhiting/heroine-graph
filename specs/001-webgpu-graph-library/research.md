@@ -1,4 +1,4 @@
-# Research: Heroine Graph - WebGPU Graph Visualization Library
+# Research: GraphMother - WebGPU Graph Visualization Library
 
 **Branch**: `001-webgpu-graph-library`
 **Date**: 2026-01-06

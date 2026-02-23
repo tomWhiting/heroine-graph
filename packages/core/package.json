@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "description": "High-performance graph visualization using WebGPU",
   "type": "module",
-  "main": "./dist/heroine-graph.esm.js",
-  "module": "./dist/heroine-graph.esm.js",
+  "main": "./dist/graphmother.esm.js",
+  "module": "./dist/graphmother.esm.js",
   "types": "./dist/mod.d.ts",
   "exports": {
     ".": {
       "types": "./dist/mod.d.ts",
-      "import": "./dist/heroine-graph.esm.js"
+      "import": "./dist/graphmother.esm.js"
     }
   },
   "files": [
@@ -20,8 +20,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "deno run -A ../../scripts/build_core_types.ts && deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
-    "build:bundle": "deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
+    "build": "deno run -A ../../scripts/build_core_types.ts && deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/graphmother.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
+    "build:bundle": "deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/graphmother.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
     "build:types": "deno run -A ../../scripts/build_core_types.ts"
   },
   "dependencies": {
@@ -44,12 +44,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tomWhiting/heroine-graph.git",
+    "url": "https://github.com/tomWhiting/graphmother.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "homepage": "https://github.com/tomWhiting/graphmother",
   "bugs": {
-    "url": "https://github.com/tomWhiting/heroine-graph/issues"
+    "url": "https://github.com/tomWhiting/graphmother/issues"
   },
   "sideEffects": false,
   "engines": {

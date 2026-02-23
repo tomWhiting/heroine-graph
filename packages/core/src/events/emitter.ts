@@ -1,5 +1,5 @@
 /**
- * Event Emitter for Heroine Graph
+ * Event Emitter for GraphMother
  *
  * A type-safe event emitter supporting typed events with
  * subscribe/unsubscribe and one-time listeners.
@@ -11,8 +11,14 @@ import type { EventHandler, EventMap, GraphEvent } from "../types.ts";
  * Type-safe event emitter for graph events.
  */
 export class EventEmitter {
-  private readonly listeners: Map<keyof EventMap, Set<EventHandler<GraphEvent>>>;
-  private readonly onceListeners: Map<keyof EventMap, Set<EventHandler<GraphEvent>>>;
+  private readonly listeners: Map<
+    keyof EventMap,
+    Set<EventHandler<GraphEvent>>
+  >;
+  private readonly onceListeners: Map<
+    keyof EventMap,
+    Set<EventHandler<GraphEvent>>
+  >;
 
   constructor() {
     this.listeners = new Map();
@@ -26,7 +32,10 @@ export class EventEmitter {
    * @param handler Event handler function
    * @returns Unsubscribe function
    */
-  on<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): () => void {
+  on<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): () => void {
     let set = this.listeners.get(type);
     if (!set) {
       set = new Set();
@@ -49,7 +58,10 @@ export class EventEmitter {
    * @param handler Event handler function
    * @returns Unsubscribe function
    */
-  once<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): () => void {
+  once<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): () => void {
     let set = this.onceListeners.get(type);
     if (!set) {
       set = new Set();
@@ -68,7 +80,10 @@ export class EventEmitter {
    * @param type Event type
    * @param handler Event handler function
    */
-  off<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): void {
+  off<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): void {
     const set = this.listeners.get(type);
     if (set) {
       set.delete(handler as EventHandler<GraphEvent>);
@@ -101,7 +116,10 @@ export class EventEmitter {
         try {
           handler(event);
         } catch (error) {
-          console.error(`[HeroineGraph] Error in event handler for "${type}":`, error);
+          console.error(
+            `[GraphMother] Error in event handler for "${type}":`,
+            error,
+          );
         }
       }
     }
@@ -113,7 +131,10 @@ export class EventEmitter {
         try {
           handler(event);
         } catch (error) {
-          console.error(`[HeroineGraph] Error in once handler for "${type}":`, error);
+          console.error(
+            `[GraphMother] Error in once handler for "${type}":`,
+            error,
+          );
         }
       }
       this.onceListeners.delete(type);
@@ -365,7 +386,10 @@ export const Events = {
   /**
    * Create a simulation tick event.
    */
-  simulationTick(alpha: number, iteration: number): EventMap["simulation:tick"] {
+  simulationTick(
+    alpha: number,
+    iteration: number,
+  ): EventMap["simulation:tick"] {
     return {
       type: "simulation:tick",
       timestamp: createTimestamp(),

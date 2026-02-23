@@ -1,12 +1,12 @@
 /**
  * WASM Module Loader
  *
- * Handles loading and initialization of the Heroine Graph WASM module.
+ * Handles loading and initialization of the GraphMother WASM module.
  * Provides zero-copy views for GPU buffer uploads.
  */
 
-import type { HeroineGraphWasm } from "@graphmother/wasm";
-import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import type { GraphMotherWasm } from "@graphmother/wasm";
+import { ErrorCode, GraphMotherError } from "../errors.ts";
 
 /** WASM module state */
 interface WasmState {
@@ -31,7 +31,7 @@ const state: WasmState = {
  * The WASM module is loaded lazily on first use.
  *
  * @returns Promise resolving to the WASM module exports
- * @throws HeroineGraphError if WASM loading fails
+ * @throws GraphMotherError if WASM loading fails
  */
 export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
   // Already loaded
@@ -61,7 +61,7 @@ export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
       state.loadPromise = null;
 
       const message = error instanceof Error ? error.message : String(error);
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.WASM_LOAD_FAILED,
         `Failed to load WASM module: ${message}`,
         { originalError: error },
@@ -73,17 +73,17 @@ export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
 }
 
 /**
- * Create a new HeroineGraphWasm engine instance.
+ * Create a new GraphMotherWasm engine instance.
  *
  * @returns Promise resolving to a new engine instance
  */
-export async function createWasmEngine(): Promise<HeroineGraphWasm> {
+export async function createWasmEngine(): Promise<GraphMotherWasm> {
   const module = await loadWasmModule();
-  return new module.HeroineGraphWasm();
+  return new module.GraphMotherWasm();
 }
 
 /**
- * Create a new HeroineGraphWasm engine with pre-allocated capacity.
+ * Create a new GraphMotherWasm engine with pre-allocated capacity.
  *
  * Use this when you know the approximate graph size upfront
  * to avoid reallocations.
@@ -95,9 +95,9 @@ export async function createWasmEngine(): Promise<HeroineGraphWasm> {
 export async function createWasmEngineWithCapacity(
   nodeCapacity: number,
   edgeCapacity: number,
-): Promise<HeroineGraphWasm> {
+): Promise<GraphMotherWasm> {
   const module = await loadWasmModule();
-  return module.HeroineGraphWasm.withCapacity(nodeCapacity, edgeCapacity);
+  return module.GraphMotherWasm.withCapacity(nodeCapacity, edgeCapacity);
 }
 
 /**
@@ -136,7 +136,11 @@ export const WasmMemory = {
    * @param length Number of f32 elements
    * @returns Float32Array view
    */
-  viewFloat32(wasmMemory: WebAssembly.Memory, ptr: number, length: number): Float32Array {
+  viewFloat32(
+    wasmMemory: WebAssembly.Memory,
+    ptr: number,
+    length: number,
+  ): Float32Array {
     return new Float32Array(wasmMemory.buffer, ptr, length);
   },
 
@@ -148,7 +152,11 @@ export const WasmMemory = {
    * @param length Number of u32 elements
    * @returns Uint32Array view
    */
-  viewUint32(wasmMemory: WebAssembly.Memory, ptr: number, length: number): Uint32Array {
+  viewUint32(
+    wasmMemory: WebAssembly.Memory,
+    ptr: number,
+    length: number,
+  ): Uint32Array {
     return new Uint32Array(wasmMemory.buffer, ptr, length);
   },
 

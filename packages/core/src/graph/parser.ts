@@ -8,7 +8,7 @@
  */
 
 import type { GraphInput } from "../types.ts";
-import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createIdMap, type IdLike, type IdMap } from "./id_map.ts";
 import { parseColorToRGB, type RgbaColor } from "../utils/color.ts";
 import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
@@ -148,7 +148,7 @@ export function parseGraphInput(
   for (let i = 0; i < nodeCount; i++) {
     const node = nodes[i];
     if (nodeIdMap.has(node.id)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Duplicate node ID: "${node.id}" at index ${i}`,
       );
@@ -198,13 +198,13 @@ export function parseGraphInput(
 
     if (finalConfig.validateReferences) {
       if (sourceIdx === undefined) {
-        throw new HeroineGraphError(
+        throw new GraphMotherError(
           ErrorCode.INVALID_GRAPH_DATA,
           `Edge ${edgeId}: source node "${edge.source}" not found`,
         );
       }
       if (targetIdx === undefined) {
-        throw new HeroineGraphError(
+        throw new GraphMotherError(
           ErrorCode.INVALID_GRAPH_DATA,
           `Edge ${edgeId}: target node "${edge.target}" not found`,
         );

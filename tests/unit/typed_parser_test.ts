@@ -10,7 +10,7 @@ import {
   validateGraphTypedInput,
 } from "../../packages/core/src/graph/typed_parser.ts";
 import { NODE_ATTR_FLOATS } from "../../packages/core/src/api/graph_state.ts";
-import { HeroineGraphError } from "../../packages/core/src/errors.ts";
+import { GraphMotherError } from "../../packages/core/src/errors.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
 
 Deno.test("parseGraphTypedInput: deinterleaves positions and edge pairs", () => {
@@ -67,7 +67,7 @@ Deno.test("parseGraphTypedInput: honors provided node ids", () => {
 });
 
 Deno.test("parseGraphTypedInput: zero nodeCount throws", () => {
-  assertThrows(() => parseGraphTypedInput({ nodeCount: 0 }), HeroineGraphError);
+  assertThrows(() => parseGraphTypedInput({ nodeCount: 0 }), GraphMotherError);
 });
 
 Deno.test("parseGraphTypedInput: agrees with object-parser on a seeded fixture", () => {

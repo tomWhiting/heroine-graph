@@ -1,7 +1,7 @@
-//! Heroine Graph - WASM Module
+//! GraphMother - WASM Module
 //!
 //! This module provides the core graph data structures and algorithms
-//! for the Heroine Graph visualization library. It is compiled to WebAssembly
+//! for the GraphMother visualization library. It is compiled to WebAssembly
 //! and exposes a JavaScript-friendly API via wasm-bindgen.
 //!
 //! # Architecture
@@ -33,12 +33,12 @@ pub fn init() {
 /// This struct wraps the internal GraphEngine and provides the public API
 /// exposed to JavaScript.
 #[wasm_bindgen]
-pub struct HeroineGraphWasm {
+pub struct GraphMotherWasm {
     engine: GraphEngine,
 }
 
 #[wasm_bindgen]
-impl HeroineGraphWasm {
+impl GraphMotherWasm {
     /// Create a new empty graph engine.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
@@ -773,7 +773,7 @@ impl HeroineGraphWasm {
     }
 }
 
-impl Default for HeroineGraphWasm {
+impl Default for GraphMotherWasm {
     fn default() -> Self {
         Self::new()
     }

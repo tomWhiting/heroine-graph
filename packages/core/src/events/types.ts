@@ -13,7 +13,7 @@ export type {
   EventHandler,
   EventMap,
   GraphEvent,
-  HeroineGraphEvent,
+  GraphMotherEvent,
   NodeClickEvent,
   NodeDoubleClickEvent,
   NodeDragEndEvent,

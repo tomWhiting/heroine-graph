@@ -1,5 +1,5 @@
 /**
- * HeroineGraph Mission Control
+ * GraphMother Mission Control
  *
  * Compact bottom-drawer UI with tabbed controls for all visualization features.
  *
@@ -7,11 +7,11 @@
  */
 
 import {
-  createHeroineGraph,
+  createGraphMother,
   type EdgeInput,
   getSupportInfo,
   type GraphInput,
-  type HeroineGraph,
+  type GraphMother,
   type NodeInput,
 } from "../../packages/core/mod.ts";
 
@@ -20,7 +20,7 @@ import {
 // ============================================================================
 
 interface AppState {
-  graph: HeroineGraph | null;
+  graph: GraphMother | null;
   graphData: GraphInput | null;
   nodeCount: number;
   edgeCount: number;
@@ -572,7 +572,7 @@ async function main(): Promise<void> {
   canvas.height = rect.height * devicePixelRatio;
 
   try {
-    state.graph = await createHeroineGraph({ canvas, debug: false });
+    state.graph = await createGraphMother({ canvas, debug: false });
   } catch (err) {
     console.error("Init failed:", err);
     $("loading-overlay").classList.add("hidden");

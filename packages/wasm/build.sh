@@ -1,5 +1,5 @@
 #!/bin/bash
-# Heroine Graph - WASM Build Script
+# GraphMother - WASM Build Script
 #
 # Usage: ./build.sh [--release|--dev] [--simd]
 #
@@ -67,7 +67,7 @@ if [ "$SIMD_ENABLED" = true ]; then
 fi
 
 # Build
-echo "Building heroine-graph-wasm (profile: $PROFILE)..."
+echo "Building graphmother-wasm (profile: $PROFILE)..."
 
 if [ "$PROFILE" = "release" ]; then
     RUSTFLAGS="$RUSTFLAGS" wasm-pack build --target web --release --out-dir pkg
@@ -76,7 +76,7 @@ else
 fi
 
 # Post-build verification
-if [ -f pkg/heroine_graph_wasm.js ]; then
+if [ -f pkg/graphmother_wasm.js ]; then
     echo ""
     echo "Build successful!"
 
@@ -89,9 +89,9 @@ if [ -f pkg/heroine_graph_wasm.js ]; then
       Object.assign(pkg, {
         name: "@graphmother/wasm",
         license: "MIT OR Apache-2.0",
-        repository: { type: "git", url: "https://github.com/tomWhiting/heroine-graph.git", directory: "packages/wasm" },
-        homepage: "https://github.com/tomWhiting/heroine-graph",
-        bugs: { url: "https://github.com/tomWhiting/heroine-graph/issues" },
+        repository: { type: "git", url: "https://github.com/tomWhiting/graphmother.git", directory: "packages/wasm" },
+        homepage: "https://github.com/tomWhiting/graphmother",
+        bugs: { url: "https://github.com/tomWhiting/graphmother/issues" },
         keywords: ["graph", "visualization", "wasm", "webgpu", "graphmother"],
       });
       Deno.writeTextFileSync("pkg/package.json", JSON.stringify(pkg, null, 2) + "\n");

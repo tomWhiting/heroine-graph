@@ -1,4 +1,4 @@
-# Feature Specification: Heroine Graph - WebGPU Graph Visualization Library
+# Feature Specification: GraphMother - WebGPU Graph Visualization Library
 
 **Feature Branch**: `001-webgpu-graph-library`
 **Created**: 2026-01-06

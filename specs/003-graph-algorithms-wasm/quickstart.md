@@ -1,6 +1,6 @@
 # Quickstart: Graph Algorithms WASM Module
 
-This guide shows how to use the graph algorithms in heroine-graph.
+This guide shows how to use the graph algorithms in graphmother.
 
 ## Basic Usage
 
@@ -9,10 +9,10 @@ This guide shows how to use the graph algorithms in heroine-graph.
 Identify clusters of related nodes:
 
 ```typescript
-import { HeroineGraphWasm } from 'heroine-graph-wasm';
+import { GraphMotherWasm } from 'graphmother-wasm';
 
 // Create graph and add nodes/edges
-const graph = new HeroineGraphWasm();
+const graph = new GraphMotherWasm();
 // ... populate graph ...
 
 // Detect communities using Louvain algorithm
@@ -126,12 +126,12 @@ const sccs = graph.getStronglyConnectedComponents();
 ## Complete Example: Visualizing Communities
 
 ```typescript
-import { HeroineGraphWasm, HeroineGraph } from 'heroine-graph';
+import { GraphMotherWasm, GraphMother } from 'graphmother';
 
 async function visualizeCommunities() {
   // Initialize
-  const wasm = new HeroineGraphWasm();
-  const renderer = await HeroineGraph.create(canvas);
+  const wasm = new GraphMotherWasm();
+  const renderer = await GraphMother.create(canvas);
 
   // Load your graph data
   loadGraphData(wasm);

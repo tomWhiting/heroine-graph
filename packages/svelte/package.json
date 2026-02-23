@@ -1,7 +1,7 @@
 {
   "name": "@graphmother/svelte",
   "version": "0.1.0",
-  "description": "Svelte wrapper for Heroine Graph - high-performance graph visualization",
+  "description": "Svelte wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "svelte": "./dist/index.js",
   "main": "./dist/index.js",
@@ -47,12 +47,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tomWhiting/heroine-graph.git",
+    "url": "https://github.com/tomWhiting/graphmother.git",
     "directory": "packages/svelte"
   },
-  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "homepage": "https://github.com/tomWhiting/graphmother",
   "bugs": {
-    "url": "https://github.com/tomWhiting/heroine-graph/issues"
+    "url": "https://github.com/tomWhiting/graphmother/issues"
   },
   "sideEffects": false
 }

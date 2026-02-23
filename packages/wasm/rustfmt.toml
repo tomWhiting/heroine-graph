@@ -1,4 +1,4 @@
-# Heroine Graph - Rustfmt Configuration
+# GraphMother - Rustfmt Configuration
 
 edition = "2024"
 max_width = 100

@@ -1,4 +1,4 @@
-# heroine-graph Development Guidelines
+# graphmother Development Guidelines
 
 ## Runtime
 
@@ -65,7 +65,7 @@ tests/          # Test files
 
 ## Primary Use Case
 
-**Code repository graph visualization** — mapping repos, directories, files, and symbols (classes, functions, etc.) as hierarchical trees with cross-cutting dependency edges (imports, tests, configs). Primary target: the Meridian project (~35K nodes). heroine-graph repo itself produces ~7.5K nodes with symbols, ~2.7K without.
+**Code repository graph visualization** — mapping repos, directories, files, and symbols (classes, functions, etc.) as hierarchical trees with cross-cutting dependency edges (imports, tests, configs). Primary target: the Meridian project (~35K nodes). graphmother repo itself produces ~7.5K nodes with symbols, ~2.7K without.
 
 ## Algorithm Design Direction: Gravitational Well / Nested Bubble Model
 
@@ -125,7 +125,7 @@ There is a deterministic test harness under `tests/` (seeded-PRNG fixtures, inva
 ## Active Technologies
 - Rust 1.75+ (edition 2024), TypeScript 5.x for bindings (003-graph-algorithms-wasm)
 - N/A (in-memory graph already in GraphEngine) (003-graph-algorithms-wasm)
-- TypeScript 5.x (Deno 2.x), WGSL shaders (WebGPU) + WebGPU API, d3-scale/d3-color (TS), existing heroine-graph core (002-visualization-layers)
+- TypeScript 5.x (Deno 2.x), WGSL shaders (WebGPU) + WebGPU API, d3-scale/d3-color (TS), existing graphmother core (002-visualization-layers)
 - N/A (in-memory GPU buffers only) (002-visualization-layers)
 
 ## Recent Changes

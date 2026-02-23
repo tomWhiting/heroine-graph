@@ -1,5 +1,5 @@
 /**
- * HeroineGraph - Large Graph Stress Test
+ * GraphMother - Large Graph Stress Test
  *
  * Tests the performance of the library with large graphs (up to 1M nodes).
  * Use this to benchmark and verify the 30fps @ 500K nodes target.
@@ -7,14 +7,24 @@
  * @module
  */
 
-import { createHeroineGraph, type GraphInput, type HeroineGraph } from "../../packages/core/mod.ts";
+import {
+  createGraphMother,
+  type GraphInput,
+  type GraphMother,
+} from "../../packages/core/mod.ts";
 
 // DOM elements
 const canvas = document.getElementById("graph-canvas") as HTMLCanvasElement;
-const nodeCountSelect = document.getElementById("node-count") as HTMLSelectElement;
-const edgeRatioSelect = document.getElementById("edge-ratio") as HTMLSelectElement;
+const nodeCountSelect = document.getElementById(
+  "node-count",
+) as HTMLSelectElement;
+const edgeRatioSelect = document.getElementById(
+  "edge-ratio",
+) as HTMLSelectElement;
 const btnLoad = document.getElementById("btn-load") as HTMLButtonElement;
-const btnSimulation = document.getElementById("btn-simulation") as HTMLButtonElement;
+const btnSimulation = document.getElementById(
+  "btn-simulation",
+) as HTMLButtonElement;
 const btnFit = document.getElementById("btn-fit") as HTMLButtonElement;
 const loadingOverlay = document.getElementById("loading") as HTMLDivElement;
 const loadingText = document.getElementById("loading-text") as HTMLDivElement;
@@ -23,12 +33,16 @@ const loadingText = document.getElementById("loading-text") as HTMLDivElement;
 const statNodes = document.getElementById("stat-nodes") as HTMLSpanElement;
 const statEdges = document.getElementById("stat-edges") as HTMLSpanElement;
 const statFps = document.getElementById("stat-fps") as HTMLSpanElement;
-const statFrametime = document.getElementById("stat-frametime") as HTMLSpanElement;
-const statSimulation = document.getElementById("stat-simulation") as HTMLSpanElement;
+const statFrametime = document.getElementById(
+  "stat-frametime",
+) as HTMLSpanElement;
+const statSimulation = document.getElementById(
+  "stat-simulation",
+) as HTMLSpanElement;
 const statAlpha = document.getElementById("stat-alpha") as HTMLSpanElement;
 
 // State
-let graph: HeroineGraph | null = null;
+let graph: GraphMother | null = null;
 let isSimulationRunning = false;
 
 // FPS tracking
@@ -39,7 +53,10 @@ let lastFrameTime = 0;
  * Generate a scale-free graph (Barabási–Albert model)
  * This creates more realistic network topology
  */
-function generateScaleFreeGraph(nodeCount: number, edgesPerNode: number): GraphInput {
+function generateScaleFreeGraph(
+  nodeCount: number,
+  edgesPerNode: number,
+): GraphInput {
   const nodes: GraphInput["nodes"] = [];
   const edges: GraphInput["edges"] = [];
 
@@ -101,7 +118,10 @@ function generateScaleFreeGraph(nodeCount: number, edgesPerNode: number): GraphI
 /**
  * Generate a random graph (Erdős–Rényi model)
  */
-function generateRandomGraph(nodeCount: number, edgesPerNode: number): GraphInput {
+function generateRandomGraph(
+  nodeCount: number,
+  edgesPerNode: number,
+): GraphInput {
   const nodes: GraphInput["nodes"] = [];
   const edges: GraphInput["edges"] = [];
 
@@ -123,7 +143,8 @@ function generateRandomGraph(nodeCount: number, edgesPerNode: number): GraphInpu
     const target = Math.floor(Math.random() * nodeCount);
 
     if (source !== target) {
-      const key = source < target ? `${source}-${target}` : `${target}-${source}`;
+      const key =
+        source < target ? `${source}-${target}` : `${target}-${source}`;
       if (!edgeSet.has(key)) {
         edgeSet.add(key);
         edges.push({ source, target });
@@ -161,7 +182,8 @@ function updateFps() {
       fpsSamples.shift();
     }
 
-    const avgFrameTime = fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
+    const avgFrameTime =
+      fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
     const fps = 1000 / avgFrameTime;
 
     statFps.textContent = fps.toFixed(1);
@@ -185,7 +207,7 @@ async function initGraph() {
     graph.dispose();
   }
 
-  graph = await createHeroineGraph({
+  graph = await createGraphMother({
     canvas,
     config: {
       renderer: {
@@ -228,9 +250,10 @@ async function loadGraph() {
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   // Generate graph data
-  const data = nodeCount > 100000
-    ? generateRandomGraph(nodeCount, edgesPerNode)
-    : generateScaleFreeGraph(nodeCount, edgesPerNode);
+  const data =
+    nodeCount > 100000
+      ? generateRandomGraph(nodeCount, edgesPerNode)
+      : generateScaleFreeGraph(nodeCount, edgesPerNode);
 
   showLoading(`Loading ${data.nodes.length.toLocaleString()} nodes...`);
   await new Promise((resolve) => setTimeout(resolve, 50));

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run --allow-run --allow-read --allow-write --allow-env
 /**
- * Heroine Graph - Build Script
+ * GraphMother - Build Script
  *
  * Orchestrates the build process for all packages:
  * 1. Install the lockfile-pinned toolchain (deno install)
@@ -122,7 +122,7 @@ async function bundleCore(): Promise<void> {
       "--format=esm",
       "--platform=browser",
       "--target=es2022",
-      `--outfile=${join(distDir, "heroine-graph.esm.js")}`,
+      `--outfile=${join(distDir, "graphmother.esm.js")}`,
       "--loader:.wgsl=text",
       "--external:@graphmother/wasm",
     ],
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const options = parseArgs();
 
   console.log("=".repeat(60));
-  console.log("Heroine Graph - Build");
+  console.log("GraphMother - Build");
   console.log("=".repeat(60));
   console.log(`Release: ${options.release}`);
   console.log(`SIMD: ${options.simd}`);

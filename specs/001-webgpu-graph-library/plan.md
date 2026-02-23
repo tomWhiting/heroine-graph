@@ -1,4 +1,4 @@
-# Implementation Plan: Heroine Graph - WebGPU Graph Visualization Library
+# Implementation Plan: GraphMother - WebGPU Graph Visualization Library
 
 **Branch**: `001-webgpu-graph-library` | **Date**: 2026-01-06 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/001-webgpu-graph-library/spec.md`
@@ -90,20 +90,20 @@ packages/
 │
 ├── react/                   # React wrapper
 │   ├── src/
-│   │   ├── HeroineGraph.tsx # Main component
+│   │   ├── GraphMother.tsx # Main component
 │   │   ├── hooks/           # useGraph, useSimulation, etc.
 │   │   └── index.ts
 │   └── package.json
 │
 ├── vue/                     # Vue wrapper
 │   ├── src/
-│   │   ├── HeroineGraph.vue
+│   │   ├── GraphMother.vue
 │   │   └── index.ts
 │   └── package.json
 │
 └── svelte/                  # Svelte wrapper
     ├── src/
-    │   ├── HeroineGraph.svelte
+    │   ├── GraphMother.svelte
     │   └── index.ts
     └── package.json
 

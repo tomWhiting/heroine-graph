@@ -101,7 +101,7 @@ export class LabelsLayer implements Layer {
     // Start loading font atlas and auto-initialize
     this.atlasLoading = this.loadAtlas();
     this.initialize().catch((err) => {
-      console.error("[HeroineGraph] LabelsLayer initialization failed:", err);
+      console.error("[GraphMother] LabelsLayer initialization failed:", err);
     });
   }
 

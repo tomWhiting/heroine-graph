@@ -5,12 +5,12 @@
 
 ## Summary
 
-Build a comprehensive visualization enhancement system for heroine-graph that adds configurable value streams for data-driven heat visualization (streams feed layers like heatmap/contours/metaballs - no library-side aggregation), a multi-layer rendering system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and overrides, dual-layer PWM edge flow animation matching Cosmograph, curved edges using conic Bezier curves, node border configuration, per-item styling API via Float32Arrays, and layer visibility toggles.
+Build a comprehensive visualization enhancement system for graphmother that adds configurable value streams for data-driven heat visualization (streams feed layers like heatmap/contours/metaballs - no library-side aggregation), a multi-layer rendering system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and overrides, dual-layer PWM edge flow animation matching Cosmograph, curved edges using conic Bezier curves, node border configuration, per-item styling API via Float32Arrays, and layer visibility toggles.
 
 ## Technical Context
 
 **Language/Version**: TypeScript 5.x (Deno 2.x), WGSL shaders (WebGPU)
-**Primary Dependencies**: WebGPU API, d3-scale/d3-color (TS), existing heroine-graph core
+**Primary Dependencies**: WebGPU API, d3-scale/d3-color (TS), existing graphmother core
 **Storage**: N/A (in-memory GPU buffers only)
 **Testing**: Deno test, visual regression tests via Mission Control example
 **Target Platform**: Modern browsers with WebGPU support (Chrome 113+, Firefox 141+, Safari 26+, Edge 113+)
@@ -61,7 +61,7 @@ packages/core/
 ├── mod.ts                          # Public API exports (add new types)
 ├── src/
 │   ├── api/
-│   │   └── graph.ts                # HeroineGraph class (add styling/channel/layer APIs)
+│   │   └── graph.ts                # GraphMother class (add styling/channel/layer APIs)
 │   ├── types.ts                    # Type definitions (add new config types)
 │   ├── renderer/
 │   │   ├── edge_flow.ts            # Edge flow config (enhance dual-layer PWM)
@@ -221,7 +221,7 @@ See [contracts/](./contracts/) directory for TypeScript interfaces.
 
 ### Integration Points
 
-1. **HeroineGraph API** (`api/graph.ts`):
+1. **GraphMother API** (`api/graph.ts`):
    - Add `setNodeColors()`, `setNodeSizes()`, `setEdgeColors()`, `setEdgeWidths()`, `setEdgeCurvatures()`
    - Add `defineValueStream()`, `setStreamValues()`, `removeValueStream()` (no aggregation)
    - Add `defineLayer()`, `setLayerVisible()`, `getLayerVisibility()`, `removeLayer()`

@@ -33,7 +33,7 @@ export default defineConfig({
       "@graphmother/vue": resolve(__dirname, "../../packages/vue/src/index.ts"),
       "@graphmother/wasm": resolve(
         __dirname,
-        "../../dist/heroine_graph_wasm.js",
+        "../../dist/graphmother_wasm.js",
       ),
     },
   },

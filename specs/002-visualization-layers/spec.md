@@ -3,7 +3,7 @@
 **Feature Branch**: `002-visualization-layers`
 **Created**: 2026-01-11
 **Status**: Draft
-**Input**: Advanced Visualization Layer System for heroine-graph: A comprehensive enhancement to the graph visualization library adding configurable diagnostic channels for mapping arbitrary data to visual heat/color, a multi-layer system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and type overrides, topographical contour rendering using marching squares on density fields, dual-layer PWM edge flow animation matching the Cosmograph implementation, curved edges with conic Bezier curves, node border configuration, per-item styling API, and layer visibility toggles.
+**Input**: Advanced Visualization Layer System for graphmother: A comprehensive enhancement to the graph visualization library adding configurable diagnostic channels for mapping arbitrary data to visual heat/color, a multi-layer system where nodes can appear on multiple layers with different visual treatments, per-node-type and per-edge-type styling with global defaults and type overrides, topographical contour rendering using marching squares on density fields, dual-layer PWM edge flow animation matching the Cosmograph implementation, curved edges with conic Bezier curves, node border configuration, per-item styling API, and layer visibility toggles.
 
 ## User Scenarios & Testing *(mandatory)*
 

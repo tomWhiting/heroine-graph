@@ -1,23 +1,31 @@
 /**
- * HeroineGraph Factory Function
+ * GraphMother Factory Function
  *
- * Creates and initializes a HeroineGraph instance with all required
+ * Creates and initializes a GraphMother instance with all required
  * subsystems (WebGPU, WASM, rendering, simulation).
  *
  * @module
  */
 
-import { ErrorCode, HeroineGraphError, wrapAsync } from "../errors.ts";
+import { ErrorCode, GraphMotherError, wrapAsync } from "../errors.ts";
 import { checkWebGPU, hasWebGPU } from "../webgpu/check.ts";
-import { createGPUContext, type GPUContext, type GPUContextOptions } from "../webgpu/context.ts";
-import { createWasmEngine, isWasmLoaded, loadWasmModule } from "../wasm/loader.ts";
-import { HeroineGraph, type HeroineGraphConfig } from "./graph.ts";
+import {
+  createGPUContext,
+  type GPUContext,
+  type GPUContextOptions,
+} from "../webgpu/context.ts";
+import {
+  createWasmEngine,
+  isWasmLoaded,
+  loadWasmModule,
+} from "../wasm/loader.ts";
+import { GraphMother, type GraphMotherConfig } from "./graph.ts";
 import type { GraphConfig } from "../types.ts";
 
 /**
- * Options for creating a HeroineGraph instance
+ * Options for creating a GraphMother instance
  */
-export interface CreateHeroineGraphOptions {
+export interface CreateGraphMotherOptions {
   /** Canvas element or selector to render into */
   canvas: HTMLCanvasElement | string;
 
@@ -38,8 +46,8 @@ export interface CreateHeroineGraphOptions {
  * Result of initialization
  */
 export interface InitResult {
-  /** The created HeroineGraph instance */
-  graph: HeroineGraph;
+  /** The created GraphMother instance */
+  graph: GraphMother;
   /** GPU context */
   gpuContext: GPUContext;
   /** WebGPU capabilities info */
@@ -51,7 +59,7 @@ export interface InitResult {
 }
 
 /**
- * Creates a HeroineGraph instance
+ * Creates a GraphMother instance
  *
  * This is the main entry point for using the library. It handles:
  * - WebGPU availability check and initialization
@@ -60,11 +68,11 @@ export interface InitResult {
  * - Render pipeline setup
  *
  * @param options - Creation options
- * @returns Promise resolving to HeroineGraph instance
+ * @returns Promise resolving to GraphMother instance
  *
  * @example
  * ```typescript
- * const graph = await createHeroineGraph({
+ * const graph = await createGraphMother({
  *   canvas: '#graph-canvas',
  *   config: {
  *     simulation: { alphaDecay: 0.02 }
@@ -77,10 +85,16 @@ export interface InitResult {
  * });
  * ```
  */
-export async function createHeroineGraph(
-  options: CreateHeroineGraphOptions,
-): Promise<HeroineGraph> {
-  const { canvas, wasmUrl: _wasmUrl, gpu = {}, config = {}, debug = false } = options;
+export async function createGraphMother(
+  options: CreateGraphMotherOptions,
+): Promise<GraphMother> {
+  const {
+    canvas,
+    wasmUrl: _wasmUrl,
+    gpu = {},
+    config = {},
+    debug = false,
+  } = options;
 
   // Resolve canvas element
   const canvasElement = resolveCanvas(canvas);
@@ -88,7 +102,7 @@ export async function createHeroineGraph(
   // Check WebGPU availability
   const webgpuStatus = await checkWebGPU();
   if (!webgpuStatus.supported) {
-    throw new HeroineGraphError(
+    throw new GraphMotherError(
       ErrorCode.WEBGPU_NOT_SUPPORTED,
       webgpuStatus.error || "WebGPU is not supported in this browser",
     );
@@ -124,11 +138,11 @@ export async function createHeroineGraph(
   };
 
   if (debug) {
-    console.log("HeroineGraph initialized with capabilities:", capabilities);
+    console.log("GraphMother initialized with capabilities:", capabilities);
   }
 
-  // Create HeroineGraph instance
-  const graphConfig: HeroineGraphConfig = {
+  // Create GraphMother instance
+  const graphConfig: GraphMotherConfig = {
     gpuContext,
     wasmEngine,
     canvas: canvasElement,
@@ -136,7 +150,7 @@ export async function createHeroineGraph(
     debug,
   };
 
-  const graph = new HeroineGraph(graphConfig);
+  const graph = new GraphMother(graphConfig);
 
   return graph;
 }
@@ -151,13 +165,13 @@ function resolveCanvas(canvas: HTMLCanvasElement | string): HTMLCanvasElement {
   if (typeof canvas === "string") {
     const element = document.querySelector(canvas);
     if (!element) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.CANVAS_NOT_FOUND,
         `Canvas element not found: ${canvas}`,
       );
     }
     if (!(element instanceof HTMLCanvasElement)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.CANVAS_NOT_FOUND,
         `Element is not a canvas: ${canvas}`,
       );
@@ -168,7 +182,7 @@ function resolveCanvas(canvas: HTMLCanvasElement | string): HTMLCanvasElement {
 }
 
 /**
- * Quick check if HeroineGraph can be used in this environment
+ * Quick check if GraphMother can be used in this environment
  *
  * @returns Promise resolving to true if supported
  */
@@ -190,7 +204,8 @@ export async function getSupportInfo(): Promise<{
   const webgpuStatus = await checkWebGPU();
 
   // Check WASM support
-  const wasmSupported = typeof WebAssembly !== "undefined" &&
+  const wasmSupported =
+    typeof WebAssembly !== "undefined" &&
     typeof WebAssembly.instantiate === "function";
 
   return {
@@ -204,7 +219,7 @@ export async function getSupportInfo(): Promise<{
 /**
  * Default WASM module URL
  */
-export const DEFAULT_WASM_URL = "/heroine_graph_wasm_bg.wasm";
+export const DEFAULT_WASM_URL = "/graphmother_wasm_bg.wasm";
 
 /**
  * Version information

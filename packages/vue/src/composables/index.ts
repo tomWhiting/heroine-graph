@@ -1,5 +1,5 @@
 /**
- * Vue Composables for Heroine Graph
+ * Vue Composables for GraphMother
  *
  * @module
  */

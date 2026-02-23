@@ -8,7 +8,7 @@
  */
 
 import type { GraphTypedInput } from "../types.ts";
-import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createIdMap, type IdLike } from "./id_map.ts";
 import type { ParsedGraph } from "./parser.ts";
 import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
@@ -59,7 +59,7 @@ export function parseGraphTypedInput(
 
   // Validate required fields
   if (!input.nodeCount || input.nodeCount < 0) {
-    throw new HeroineGraphError(
+    throw new GraphMotherError(
       ErrorCode.INVALID_GRAPH_DATA,
       "nodeCount must be a positive integer",
     );

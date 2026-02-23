@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html';
-import './heroine-graph.css';
+import './graphmother.css';
 import type { GraphData } from './graph-generators.ts';
 import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
@@ -7,7 +7,7 @@ interface ContourStoryArgs {
   preset: string;
 }
 
-interface HeroineGraph {
+interface GraphMother {
   frameStats: { fps?: number; avgFrameTime?: number } | null;
   nodeCount: number;
   resize: (width: number, height: number) => void;
@@ -25,13 +25,13 @@ interface HeroineGraph {
   dispose: () => void;
 }
 
-interface HeroineGraphModule {
-  createHeroineGraph: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<HeroineGraph>;
+interface GraphMotherModule {
+  createGraphMother: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<GraphMother>;
   getSupportInfo: () => Promise<{ supported: boolean; reason?: string }>;
 }
 
 const meta: Meta<ContourStoryArgs> = {
-  title: 'HeroineGraph/Contour Layer',
+  title: 'GraphMother/Contour Layer',
   parameters: {
     layout: 'fullscreen',
   },
@@ -96,18 +96,18 @@ function generateBlobData(blobCount: number, nodesPerBlob: number): GraphData {
  */
 function createContainer(): HTMLDivElement {
   const container = document.createElement('div');
-  container.className = 'heroine-graph-container';
+  container.className = 'graphmother-container';
   container.innerHTML = `
-    <div class="heroine-graph-header">
-      <h3 class="heroine-graph-title">Contour Layer</h3>
-      <div class="heroine-graph-stats">
-        <span class="heroine-graph-stat-label">FPS:</span>
-        <span class="heroine-graph-stat-value" data-stat="fps">--</span>
+    <div class="graphmother-header">
+      <h3 class="graphmother-title">Contour Layer</h3>
+      <div class="graphmother-stats">
+        <span class="graphmother-stat-label">FPS:</span>
+        <span class="graphmother-stat-value" data-stat="fps">--</span>
       </div>
     </div>
     <canvas data-graph-canvas></canvas>
-    <div class="heroine-graph-loading">
-      <div class="heroine-graph-spinner"></div>
+    <div class="graphmother-loading">
+      <div class="graphmother-spinner"></div>
       <div data-loading-text>Initializing...</div>
     </div>
 
@@ -162,9 +162,9 @@ function createContainer(): HTMLDivElement {
       <button data-action="regenerate" style="width:100%; padding:8px; margin-top:10px; cursor:pointer;">Regenerate Data</button>
     </div>
 
-    <div class="heroine-graph-controls" style="display: none;">
-      <button class="heroine-graph-btn secondary" data-action="toggle-sim">Pause</button>
-      <button class="heroine-graph-btn secondary" data-action="fit-view">Fit View</button>
+    <div class="graphmother-controls" style="display: none;">
+      <button class="graphmother-btn secondary" data-action="toggle-sim">Pause</button>
+      <button class="graphmother-btn secondary" data-action="fit-view">Fit View</button>
     </div>
   `;
   return container;
@@ -188,9 +188,9 @@ async function waitForLayout(container: HTMLElement): Promise<void> {
 
 async function initGraph(container: HTMLElement): Promise<void> {
   const canvas = container.querySelector<HTMLCanvasElement>('[data-graph-canvas]')!;
-  const loading = container.querySelector<HTMLElement>('.heroine-graph-loading')!;
+  const loading = container.querySelector<HTMLElement>('.graphmother-loading')!;
   const loadingText = container.querySelector<HTMLElement>('[data-loading-text]')!;
-  const controls = container.querySelector<HTMLElement>('.heroine-graph-controls')!;
+  const controls = container.querySelector<HTMLElement>('.graphmother-controls')!;
   const contourControls = container.querySelector<HTMLElement>('.contour-controls')!;
 
   try {
@@ -204,7 +204,7 @@ async function initGraph(container: HTMLElement): Promise<void> {
     canvas.height = rect.height * window.devicePixelRatio;
 
     loadingText.textContent = 'Loading...';
-    const { createHeroineGraph, getSupportInfo } = await import('../dist/heroine-graph.esm.js') as HeroineGraphModule;
+    const { createGraphMother, getSupportInfo } = await import('../dist/graphmother.esm.js') as GraphMotherModule;
 
     const support = await getSupportInfo();
     if (!support.supported) {
@@ -212,7 +212,7 @@ async function initGraph(container: HTMLElement): Promise<void> {
     }
 
     loadingText.textContent = 'Initializing WebGPU...';
-    const graph = await createHeroineGraph({ canvas, debug: true });
+    const graph = await createGraphMother({ canvas, debug: true });
 
     // Handle resize
     const resizeCanvas = () => {
@@ -365,7 +365,7 @@ async function initGraph(container: HTMLElement): Promise<void> {
     }, { passive: false });
 
   } catch (err) {
-    loading.innerHTML = `<div class="heroine-graph-error"><h3>Error</h3><p>${(err as Error).message}</p></div>`;
+    loading.innerHTML = `<div class="graphmother-error"><h3>Error</h3><p>${(err as Error).message}</p></div>`;
     console.error(err);
   }
 }
@@ -373,7 +373,7 @@ async function initGraph(container: HTMLElement): Promise<void> {
 export const Interactive: Story = {
   render: () => createContainer(),
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (container) await initGraph(container);
   },
 };

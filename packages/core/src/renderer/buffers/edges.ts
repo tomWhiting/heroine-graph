@@ -5,7 +5,7 @@
  * CSR format is efficient for GPU access patterns in force simulation.
  */
 
-import { ErrorCode, HeroineGraphError } from "../../errors.ts";
+import { ErrorCode, GraphMotherError } from "../../errors.ts";
 import { toArrayBuffer } from "../../webgpu/buffer_utils.ts";
 
 /**
@@ -152,7 +152,7 @@ export class EdgeBufferManager {
     const edgeCount = data.targets.length;
 
     if (edgeCount !== (data.weights?.length ?? edgeCount)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Edge targets and weights must have same length: targets=${edgeCount}, weights=${data.weights?.length}`,
       );

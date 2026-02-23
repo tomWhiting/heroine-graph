@@ -1,5 +1,5 @@
 /**
- * HeroineGraph - Heatmap Layer Example
+ * GraphMother - Heatmap Layer Example
  *
  * This example demonstrates how to use the heatmap visualization layer
  * to show node density as a colorful overlay.
@@ -10,10 +10,14 @@
  */
 
 // In a real application, you would import from the package:
-// import { createHeroineGraph, HeatmapLayer, ... } from '@graphmother/core';
+// import { createGraphMother, HeatmapLayer, ... } from '@graphmother/core';
 
 // For this example, we import from the local package:
-import { getColorScaleNames, getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";
+import {
+  getColorScaleNames,
+  getSupportInfo,
+  type GraphInput,
+} from "../../packages/core/mod.ts";
 
 /**
  * Generate a clustered graph with varying density regions
@@ -89,12 +93,15 @@ export function generateClusteredGraph(
   // Add some inter-cluster connections
   for (let i = 0; i < clusterCount * 3; i++) {
     const sourceCluster = Math.floor(Math.random() * clusterCount);
-    const targetCluster = (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) %
+    const targetCluster =
+      (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) %
       clusterCount;
 
-    const sourceNode = sourceCluster * nodesPerCluster +
+    const sourceNode =
+      sourceCluster * nodesPerCluster +
       Math.floor(Math.random() * nodesPerCluster);
-    const targetNode = targetCluster * nodesPerCluster +
+    const targetNode =
+      targetCluster * nodesPerCluster +
       Math.floor(Math.random() * nodesPerCluster);
 
     edges.push({
@@ -121,7 +128,10 @@ function randomGaussian(): number {
 /**
  * Generate a galaxy-like spiral graph
  */
-export function generateSpiralGraph(nodeCount: number, arms: number = 3): GraphInput {
+export function generateSpiralGraph(
+  nodeCount: number,
+  arms: number = 3,
+): GraphInput {
   const nodes = [];
   const edges = [];
 
@@ -168,7 +178,7 @@ export function generateSpiralGraph(nodeCount: number, arms: number = 3): GraphI
  */
 async function main() {
   console.log("==============================================================");
-  console.log("           HeroineGraph - Heatmap Layer Example               ");
+  console.log("           GraphMother - Heatmap Layer Example               ");
   console.log("==============================================================");
   console.log();
 
@@ -183,7 +193,9 @@ async function main() {
     console.error(`Not supported: ${support.reason}`);
     console.log("\nTo run this example in a browser:");
     console.log("  1. Run: deno task bundle");
-    console.log("  2. Open examples/heatmap/index.html in Chrome 113+ or Edge 113+");
+    console.log(
+      "  2. Open examples/heatmap/index.html in Chrome 113+ or Edge 113+",
+    );
     return;
   }
 
@@ -218,7 +230,7 @@ async function main() {
   console.log("Example usage in browser:");
   console.log(`
     // Create graph with heatmap layer
-    const graph = await createHeroineGraph({ canvas: '#graph' });
+    const graph = await createGraphMother({ canvas: '#graph' });
 
     // Add a heatmap layer
     const heatmap = graph.addHeatmapLayer('density', {

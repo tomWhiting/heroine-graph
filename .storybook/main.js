@@ -26,7 +26,7 @@ const config = {
         ...config.resolve,
         alias: {
           ...config.resolve?.alias,
-          '@graphmother/wasm': resolve(__dirname, '../dist/heroine_graph_wasm.js'),
+          '@graphmother/wasm': resolve(__dirname, '../dist/graphmother_wasm.js'),
         },
       },
       optimizeDeps: {

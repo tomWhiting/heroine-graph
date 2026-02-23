@@ -1,7 +1,7 @@
 /**
  * useGraph Hook
  *
- * Provides access to the HeroineGraph instance and common graph operations.
+ * Provides access to the GraphMother instance and common graph operations.
  *
  * @module
  */
@@ -11,11 +11,11 @@ import type {
   EdgeId,
   GraphConfig,
   GraphInput,
-  HeroineGraph,
+  GraphMother,
   NodeId,
   Vec2,
 } from "@graphmother/core";
-import { createHeroineGraph, isSupported } from "@graphmother/core";
+import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
  * Options for the useGraph hook
@@ -33,8 +33,8 @@ export interface UseGraphOptions {
  * Return value of the useGraph hook
  */
 export interface UseGraphReturn {
-  /** The HeroineGraph instance (null until initialized) */
-  graph: HeroineGraph | null;
+  /** The GraphMother instance (null until initialized) */
+  graph: GraphMother | null;
   /** Whether the graph is initialized and ready */
   isReady: boolean;
   /** Whether the graph is currently loading data */
@@ -84,7 +84,7 @@ export interface UseGraphReturn {
 }
 
 /**
- * Hook for managing a HeroineGraph instance
+ * Hook for managing a GraphMother instance
  *
  * @example
  * ```tsx
@@ -123,7 +123,7 @@ export interface UseGraphReturn {
 export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   const { config, debug = false, initialData } = options;
 
-  const graphRef = useRef<HeroineGraph | null>(null);
+  const graphRef = useRef<GraphMother | null>(null);
   // In-flight initialization, if any. Prevents StrictMode's double-invoked
   // effects (or any concurrent callers) from creating two instances.
   const initPromiseRef = useRef<Promise<void> | null>(null);
@@ -148,7 +148,7 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
       const epoch = initEpochRef.current;
       const initPromise = (async () => {
         try {
-          const graph = await createHeroineGraph({
+          const graph = await createGraphMother({
             canvas,
             config,
             debug,

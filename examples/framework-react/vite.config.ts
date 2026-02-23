@@ -36,7 +36,7 @@ export default defineConfig({
       ),
       "@graphmother/wasm": resolve(
         __dirname,
-        "../../dist/heroine_graph_wasm.js",
+        "../../dist/graphmother_wasm.js",
       ),
     },
   },

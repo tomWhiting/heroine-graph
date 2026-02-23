@@ -1,12 +1,12 @@
 [package]
-name = "heroine-graph-wasm"
-version = "0.1.0"
+name = "graphmother-wasm"
+version = "0.1.1"
 edition = "2024"
-authors = ["Heroine Graph Contributors"]
-description = "WASM module for Heroine Graph - graph algorithms and data structures"
+authors = ["GraphMother Contributors"]
+description = "WASM module for GraphMother - graph algorithms and data structures"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/heroine-graph/heroine-graph"
-keywords = ["graph", "visualization", "wasm", "webgpu"]
+repository = "https://github.com/tomWhiting/graphmother"
+keywords = ["graph", "visualization", "wasm", "webgpu", "graphmother"]
 categories = ["visualization", "wasm", "algorithms"]
 
 [lib]

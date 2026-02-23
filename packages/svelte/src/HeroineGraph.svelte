@@ -1,7 +1,7 @@
 <!--
-  HeroineGraph Svelte Component
+  GraphMother Svelte Component
 
-  A Svelte wrapper for the Heroine Graph visualization library.
+  A Svelte wrapper for the GraphMother visualization library.
   Handles WebGPU initialization, lifecycle management, and event forwarding.
 
   @module
@@ -11,7 +11,7 @@
   import type {
     GraphConfig,
     GraphInput,
-    HeroineGraph as HeroineGraphCore,
+    GraphMother as GraphMotherCore,
     NodeClickEvent,
     NodeDoubleClickEvent,
     NodeDragEndEvent,
@@ -28,7 +28,7 @@
     SimulationEndEvent,
     BackgroundClickEvent,
   } from "@graphmother/core";
-  import { createHeroineGraph, isSupported } from "@graphmother/core";
+  import { createGraphMother, isSupported } from "@graphmother/core";
 
   /**
    * Props
@@ -47,7 +47,7 @@
     /** Enable debug mode */
     debug?: boolean;
     // Event callback props
-    onready?: (graph: HeroineGraphCore) => void;
+    onready?: (graph: GraphMotherCore) => void;
     onerror?: (error: Error) => void;
     onnodeClick?: (event: NodeClickEvent) => void;
     onnodeDoubleClick?: (event: NodeDoubleClickEvent) => void;
@@ -95,7 +95,7 @@
   // State
   let containerEl: HTMLDivElement;
   let canvasEl: HTMLCanvasElement;
-  let graph = $state<HeroineGraphCore | null>(null);
+  let graph = $state<GraphMotherCore | null>(null);
   let isInitialized = $state(false);
   let error = $state<Error | null>(null);
 
@@ -107,7 +107,7 @@
   );
 
   // Expose graph instance
-  export function getGraph(): HeroineGraphCore | null {
+  export function getGraph(): GraphMotherCore | null {
     return graph;
   }
 
@@ -116,7 +116,7 @@
   }
 
   // Event handler registration
-  function registerEventHandlers(g: HeroineGraphCore) {
+  function registerEventHandlers(g: GraphMotherCore) {
     g.on("node:click", (e) => onnodeClick?.(e));
     g.on("node:dblclick", (e) => onnodeDoubleClick?.(e));
     g.on("node:hoverenter", (e) => onnodeHoverEnter?.(e));
@@ -149,7 +149,7 @@
       }
 
       // Create graph instance
-      const graphInstance = await createHeroineGraph({
+      const graphInstance = await createGraphMother({
         canvas: canvasEl,
         config,
         debug,

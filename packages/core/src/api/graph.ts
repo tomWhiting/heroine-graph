@@ -1,5 +1,5 @@
 /**
- * HeroineGraph Main Class
+ * GraphMother Main Class
  *
  * The main class for graph visualization. Handles data loading, rendering,
  * simulation control, and user interaction.
@@ -25,7 +25,7 @@ import type {
 } from "../types.ts";
 import type { GPUContext } from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
-import { ErrorCode, HeroineGraphError } from "../errors.ts";
+import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createEventEmitter, type EventEmitter, Events } from "../events/emitter.ts";
 import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
@@ -177,7 +177,7 @@ const DEFAULT_WELL_RADIUS = 0.0;
 
 /**
  * WASM engine interface for spatial queries and graph structure.
- * This matches the HeroineGraphWasm API exposed by the WASM module.
+ * This matches the GraphMotherWasm API exposed by the WASM module.
  */
 interface WasmEngine extends SpatialQueryEngine {
   findNearestNode(x: number, y: number): number | undefined;
@@ -236,9 +236,9 @@ interface WasmEngine extends SpatialQueryEngine {
 }
 
 /**
- * HeroineGraph configuration
+ * GraphMother configuration
  */
-export interface HeroineGraphConfig {
+export interface GraphMotherConfig {
   /** GPU context */
   gpuContext: GPUContext;
   /** WASM engine instance */
@@ -340,9 +340,9 @@ function computeBoundsFromPositions(
 }
 
 /**
- * Main HeroineGraph class
+ * Main GraphMother class
  */
-export class HeroineGraph {
+export class GraphMother {
   // Configuration
   private readonly gpuContext: GPUContext;
   private readonly wasmEngine: WasmEngine | null;
@@ -484,7 +484,7 @@ export class HeroineGraph {
   private visibilityChangeHandler: (() => void) | null = null;
   private wasRunningBeforeHidden: boolean = false;
 
-  constructor(config: HeroineGraphConfig) {
+  constructor(config: GraphMotherConfig) {
     this.gpuContext = config.gpuContext;
     this.wasmEngine = config.wasmEngine as WasmEngine | null;
     this.canvas = config.canvas;
@@ -583,7 +583,7 @@ export class HeroineGraph {
     this.setupVisibilityChangeHandler();
 
     if (this.debug) {
-      console.log("HeroineGraph instance created");
+      console.log("GraphMother instance created");
     }
   }
 
@@ -1299,7 +1299,7 @@ export class HeroineGraph {
    */
   async load(data: GraphInput | GraphTypedInput): Promise<void> {
     if (this.disposed) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.DISPOSED_ACCESS,
         "Cannot load data on disposed graph",
       );
@@ -1908,7 +1908,7 @@ export class HeroineGraph {
    */
   async addNode(node: NodeInput): Promise<NodeId> {
     if (!this.graphState || !this.buffers || !this.simBuffers) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot add node: graph not loaded",
       );
@@ -2254,7 +2254,7 @@ export class HeroineGraph {
    */
   async addNodes(nodes: NodeInput[]): Promise<NodeId[]> {
     if (!this.graphState || !this.buffers || !this.simBuffers) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot add nodes: graph not loaded",
       );
@@ -3706,7 +3706,7 @@ export class HeroineGraph {
     const algorithm = registry.get(type);
 
     if (!algorithm) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Unknown force algorithm: ${type}. Available: ${
           registry.listInfo().map((i) => i.id).join(", ")
@@ -3797,14 +3797,14 @@ export class HeroineGraph {
    */
   computeTreeLayout(rootId?: number): void {
     if (!this.wasmEngine) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.WASM_LOAD_FAILED,
         "WASM engine not available for tree layout computation",
       );
     }
 
     if (!(this.currentAlgorithm instanceof TidyTreeAlgorithm)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Tree layout requires tidy-tree algorithm. Call setForceAlgorithm('tidy-tree') first.",
       );
@@ -3840,14 +3840,14 @@ export class HeroineGraph {
    */
   computeCommunityLayout(): void {
     if (!this.wasmEngine) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.WASM_LOAD_FAILED,
         "WASM engine not available for community layout computation",
       );
     }
 
     if (!(this.currentAlgorithm instanceof CommunityLayoutAlgorithm)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Community layout requires community algorithm. Call setForceAlgorithm('community') first.",
       );
@@ -3903,14 +3903,14 @@ export class HeroineGraph {
     _rootId?: number,
   ): void {
     if (!this.wasmEngine) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.WASM_LOAD_FAILED,
         "WASM engine not available for codebase layout computation",
       );
     }
 
     if (!(this.currentAlgorithm instanceof CodebaseLayoutAlgorithm)) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Codebase layout requires codebase algorithm. Call setForceAlgorithm('codebase') first.",
       );
@@ -4610,7 +4610,7 @@ export class HeroineGraph {
   setEdgeFlowPreset(preset: EdgeFlowPreset): void {
     const config = EDGE_FLOW_PRESETS[preset];
     if (!config) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Unknown flow preset: ${preset}. Available: ${Object.keys(EDGE_FLOW_PRESETS).join(", ")}`,
       );
@@ -4737,7 +4737,7 @@ export class HeroineGraph {
    * @param colors Float32Array with 4 values (RGBA) per node.
    *               Length must equal nodeCount × 4.
    *               Values should be in range 0-1.
-   * @throws HeroineGraphError if array length doesn't match nodeCount × 4
+   * @throws GraphMotherError if array length doesn't match nodeCount × 4
    *
    * @example
    * ```typescript
@@ -4753,7 +4753,7 @@ export class HeroineGraph {
    */
   setNodeColors(colors: Float32Array): void {
     if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot set node colors: graph not loaded",
       );
@@ -4761,7 +4761,7 @@ export class HeroineGraph {
 
     const expected = this.state.nodeCount * 4;
     if (colors.length !== expected) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Expected ${expected} values for ${this.state.nodeCount} nodes (4 per node), got ${colors.length}`,
       );
@@ -4811,7 +4811,7 @@ export class HeroineGraph {
    * @param sizes Float32Array with 1 value per node.
    *              Length must equal nodeCount.
    *              Values are in graph units.
-   * @throws HeroineGraphError if array length doesn't match nodeCount
+   * @throws GraphMotherError if array length doesn't match nodeCount
    *
    * @example
    * ```typescript
@@ -4824,7 +4824,7 @@ export class HeroineGraph {
    */
   setNodeSizes(sizes: Float32Array): void {
     if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot set node sizes: graph not loaded",
       );
@@ -4832,7 +4832,7 @@ export class HeroineGraph {
 
     const expected = this.state.nodeCount;
     if (sizes.length !== expected) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Expected ${expected} values for ${this.state.nodeCount} nodes (1 per node), got ${sizes.length}`,
       );
@@ -4881,7 +4881,7 @@ export class HeroineGraph {
    * @param colors Float32Array with 4 values (RGBA) per edge.
    *               Length must equal edgeCount × 4.
    *               Values should be in range 0-1.
-   * @throws HeroineGraphError if array length doesn't match edgeCount × 4
+   * @throws GraphMotherError if array length doesn't match edgeCount × 4
    *
    * @example
    * ```typescript
@@ -4897,7 +4897,7 @@ export class HeroineGraph {
    */
   setEdgeColors(colors: Float32Array): void {
     if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot set edge colors: graph not loaded",
       );
@@ -4905,7 +4905,7 @@ export class HeroineGraph {
 
     const expected = this.state.edgeCount * 4;
     if (colors.length !== expected) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Expected ${expected} values for ${this.state.edgeCount} edges (4 per edge), got ${colors.length}`,
       );
@@ -4944,7 +4944,7 @@ export class HeroineGraph {
    * @param widths Float32Array with 1 value per edge.
    *               Length must equal edgeCount.
    *               Values are in pixels.
-   * @throws HeroineGraphError if array length doesn't match edgeCount
+   * @throws GraphMotherError if array length doesn't match edgeCount
    *
    * @example
    * ```typescript
@@ -4957,7 +4957,7 @@ export class HeroineGraph {
    */
   setEdgeWidths(widths: Float32Array): void {
     if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot set edge widths: graph not loaded",
       );
@@ -4965,7 +4965,7 @@ export class HeroineGraph {
 
     const expected = this.state.edgeCount;
     if (widths.length !== expected) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Expected ${expected} values for ${this.state.edgeCount} edges (1 per edge), got ${widths.length}`,
       );
@@ -5065,7 +5065,7 @@ export class HeroineGraph {
    *
    * @param curvatures Float32Array with 1 value per edge.
    *                   Length must equal edgeCount.
-   * @throws HeroineGraphError if array length doesn't match edgeCount
+   * @throws GraphMotherError if array length doesn't match edgeCount
    *
    * @example
    * ```typescript
@@ -5080,7 +5080,7 @@ export class HeroineGraph {
    */
   setEdgeCurvatures(curvatures: Float32Array): void {
     if (!this.state.loaded || !this.buffers || !this.state.parsedGraph) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         "Cannot set edge curvatures: graph not loaded",
       );
@@ -5088,7 +5088,7 @@ export class HeroineGraph {
 
     const expected = this.state.edgeCount;
     if (curvatures.length !== expected) {
-      throw new HeroineGraphError(
+      throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
         `Expected ${expected} values for ${this.state.edgeCount} edges (1 per edge), got ${curvatures.length}`,
       );
@@ -6590,7 +6590,7 @@ export class HeroineGraph {
     this.events.clear();
 
     if (this.debug) {
-      console.log("HeroineGraph disposed");
+      console.log("GraphMother disposed");
     }
   }
 

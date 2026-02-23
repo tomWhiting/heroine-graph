@@ -1,7 +1,7 @@
 /**
  * GPU pipeline benchmarks — real measurements of the actual library.
  *
- * Two families of benches, both driving the same code paths HeroineGraph
+ * Two families of benches, both driving the same code paths GraphMother
  * runs per frame, on a headless WebGPU device (no canvas):
  *
  * - "sim tick": one full simulation step through the real compute

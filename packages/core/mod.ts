@@ -1,5 +1,5 @@
 /**
- * Heroine Graph - Core Library
+ * GraphMother - Core Library
  *
  * High-performance graph visualization using WebGPU.
  *
@@ -43,7 +43,7 @@ export type {
   GraphMutateEvent,
   GraphTypedInput,
   HeatmapLayerConfig,
-  HeroineGraphEvent,
+  GraphMotherEvent,
   LabelLayerConfig,
   Layer,
   LayerConfig,
@@ -84,13 +84,23 @@ export type {
 // Errors
 // =============================================================================
 
-export { assert, ErrorCode, Errors, HeroineGraphError, wrapAsync } from "./src/errors.ts";
+export {
+  assert,
+  ErrorCode,
+  Errors,
+  GraphMotherError,
+  wrapAsync,
+} from "./src/errors.ts";
 
 // =============================================================================
 // WebGPU
 // =============================================================================
 
-export { checkWebGPU, describeWebGPUStatus, hasWebGPU } from "./src/webgpu/check.ts";
+export {
+  checkWebGPU,
+  describeWebGPUStatus,
+  hasWebGPU,
+} from "./src/webgpu/check.ts";
 export type { WebGPUStatus } from "./src/webgpu/check.ts";
 
 export {
@@ -120,13 +130,22 @@ export {
 // Events
 // =============================================================================
 
-export { createEventEmitter, createTimestamp, EventEmitter, Events } from "./src/events/emitter.ts";
+export {
+  createEventEmitter,
+  createTimestamp,
+  EventEmitter,
+  Events,
+} from "./src/events/emitter.ts";
 
 // =============================================================================
 // Viewport
 // =============================================================================
 
-export { createViewport, DEFAULT_VIEWPORT_CONFIG, Viewport } from "./src/viewport/viewport.ts";
+export {
+  createViewport,
+  DEFAULT_VIEWPORT_CONFIG,
+  Viewport,
+} from "./src/viewport/viewport.ts";
 export type { ViewportConfig } from "./src/viewport/viewport.ts";
 
 export {
@@ -175,7 +194,10 @@ export {
   createUint32PingPong,
   PingPongBuffer,
 } from "./src/renderer/buffers/pingpong.ts";
-export type { BufferPair, PingPongBufferConfig } from "./src/renderer/buffers/pingpong.ts";
+export type {
+  BufferPair,
+  PingPongBufferConfig,
+} from "./src/renderer/buffers/pingpong.ts";
 
 export {
   createSimulationUniformBuffer,
@@ -186,14 +208,20 @@ export {
   VIEWPORT_UNIFORMS_SIZE,
   viewportStateToUniforms,
 } from "./src/renderer/buffers/uniforms.ts";
-export type { SimulationUniforms, ViewportUniforms } from "./src/renderer/buffers/uniforms.ts";
+export type {
+  SimulationUniforms,
+  ViewportUniforms,
+} from "./src/renderer/buffers/uniforms.ts";
 
 export {
   DEFAULT_EDGE_BUFFER_CONFIG,
   EdgeBufferManager,
   edgePairsToCSR,
 } from "./src/renderer/buffers/edges.ts";
-export type { CSREdgeData, EdgeBufferConfig } from "./src/renderer/buffers/edges.ts";
+export type {
+  CSREdgeData,
+  EdgeBufferConfig,
+} from "./src/renderer/buffers/edges.ts";
 
 // =============================================================================
 // Render Pipelines
@@ -206,7 +234,10 @@ export {
   DEFAULT_NODE_PIPELINE_CONFIG,
   renderNodes,
 } from "./src/renderer/pipelines/nodes.ts";
-export type { NodePipelineConfig, NodeRenderPipeline } from "./src/renderer/pipelines/nodes.ts";
+export type {
+  NodePipelineConfig,
+  NodeRenderPipeline,
+} from "./src/renderer/pipelines/nodes.ts";
 
 export {
   createEdgeBindGroup,
@@ -215,7 +246,10 @@ export {
   DEFAULT_EDGE_PIPELINE_CONFIG,
   renderEdges,
 } from "./src/renderer/pipelines/edges.ts";
-export type { EdgePipelineConfig, EdgeRenderPipeline } from "./src/renderer/pipelines/edges.ts";
+export type {
+  EdgePipelineConfig,
+  EdgeRenderPipeline,
+} from "./src/renderer/pipelines/edges.ts";
 
 export {
   createEdgeFlowConfig,
@@ -342,7 +376,10 @@ export {
   mergeForceConfig,
   validateForceConfig,
 } from "./src/simulation/config.ts";
-export type { ForceConfigBuilder, FullForceConfig } from "./src/simulation/config.ts";
+export type {
+  ForceConfigBuilder,
+  FullForceConfig,
+} from "./src/simulation/config.ts";
 
 // =============================================================================
 // Graph Data
@@ -386,23 +423,29 @@ export {
   initializeSpiral,
   needsInitialization,
 } from "./src/graph/initialize.ts";
-export type { InitializationStrategy, InitializeConfig } from "./src/graph/initialize.ts";
+export type {
+  InitializationStrategy,
+  InitializeConfig,
+} from "./src/graph/initialize.ts";
 
 // =============================================================================
 // Main API
 // =============================================================================
 
 export {
-  createHeroineGraph,
+  createGraphMother,
   DEFAULT_WASM_URL,
   getSupportInfo,
   isSupported,
   VERSION,
 } from "./src/api/factory.ts";
-export type { CreateHeroineGraphOptions, InitResult } from "./src/api/factory.ts";
+export type {
+  CreateGraphMotherOptions,
+  InitResult,
+} from "./src/api/factory.ts";
 
-export { HeroineGraph } from "./src/api/graph.ts";
-export type { HeroineGraphConfig } from "./src/api/graph.ts";
+export { GraphMother } from "./src/api/graph.ts";
+export type { GraphMotherConfig } from "./src/api/graph.ts";
 
 export { MutableGraphState } from "./src/api/graph_state.ts";
 export { growCapacity, initialCapacity } from "./src/api/buffer_capacity.ts";
@@ -412,7 +455,10 @@ export type { BufferCapacity } from "./src/api/buffer_capacity.ts";
 // Interaction
 // =============================================================================
 
-export { createHitTester, DEFAULT_HIT_TESTER_CONFIG } from "./src/interaction/hit_test.ts";
+export {
+  createHitTester,
+  DEFAULT_HIT_TESTER_CONFIG,
+} from "./src/interaction/hit_test.ts";
 export type {
   EdgeHitResult,
   EdgeProvider,

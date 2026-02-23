@@ -1,7 +1,7 @@
 /**
  * useGraph Composable
  *
- * Provides access to the HeroineGraph instance and common graph operations.
+ * Provides access to the GraphMother instance and common graph operations.
  *
  * @module
  */
@@ -11,11 +11,11 @@ import type {
   EdgeId,
   GraphConfig,
   GraphInput,
-  HeroineGraph,
+  GraphMother,
   NodeId,
   Vec2,
 } from "@graphmother/core";
-import { createHeroineGraph, isSupported } from "@graphmother/core";
+import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
  * Options for the useGraph composable
@@ -33,8 +33,8 @@ export interface UseGraphOptions {
  * Return value of the useGraph composable
  */
 export interface UseGraphReturn {
-  /** The HeroineGraph instance (null until initialized) */
-  graph: ShallowRef<HeroineGraph | null>;
+  /** The GraphMother instance (null until initialized) */
+  graph: ShallowRef<GraphMother | null>;
   /** Whether the graph is initialized and ready */
   isReady: Ref<boolean>;
   /** Whether the graph is currently loading data */
@@ -84,7 +84,7 @@ export interface UseGraphReturn {
 }
 
 /**
- * Composable for managing a HeroineGraph instance
+ * Composable for managing a GraphMother instance
  *
  * @example
  * ```vue
@@ -121,7 +121,7 @@ export interface UseGraphReturn {
 export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   const { config, debug = false, initialData } = options;
 
-  const graph = shallowRef<HeroineGraph | null>(null);
+  const graph = shallowRef<GraphMother | null>(null);
   const isReady = ref(false);
   const isLoading = ref(false);
   const error = ref<Error | null>(null);
@@ -134,7 +134,7 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
     }
 
     try {
-      const graphInstance = await createHeroineGraph({
+      const graphInstance = await createGraphMother({
         canvas,
         config,
         debug,

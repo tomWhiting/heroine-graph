@@ -1,7 +1,7 @@
 {
   "name": "@graphmother/vue",
   "version": "0.1.0",
-  "description": "Vue wrapper for Heroine Graph - high-performance graph visualization",
+  "description": "Vue wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -45,12 +45,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tomWhiting/heroine-graph.git",
+    "url": "https://github.com/tomWhiting/graphmother.git",
     "directory": "packages/vue"
   },
-  "homepage": "https://github.com/tomWhiting/heroine-graph",
+  "homepage": "https://github.com/tomWhiting/graphmother",
   "bugs": {
-    "url": "https://github.com/tomWhiting/heroine-graph/issues"
+    "url": "https://github.com/tomWhiting/graphmother/issues"
   },
   "sideEffects": false
 }

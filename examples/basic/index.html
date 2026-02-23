@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HeroineGraph - Basic Example</title>
+    <title>GraphMother - Basic Example</title>
     <!-- Import map for WASM module resolution -->
     <script type="importmap">
     {
       "imports": {
-        "@graphmother/wasm": "../../dist/heroine_graph_wasm.js"
+        "@graphmother/wasm": "../../dist/graphmother_wasm.js"
       }
     }
     </script>
@@ -151,7 +151,7 @@
   </head>
   <body>
     <header>
-      <h1>HeroineGraph - Basic Example</h1>
+      <h1>GraphMother - Basic Example</h1>
       <div class="stats">
         <div class="stat">
           <span class="stat-label">FPS:</span>
@@ -176,7 +176,7 @@
       <canvas id="graph"></canvas>
       <div class="loading" id="loading">
         <div class="spinner"></div>
-        <div id="loadingText">Initializing HeroineGraph...</div>
+        <div id="loadingText">Initializing GraphMother...</div>
       </div>
 
       <div class="controls" id="controls" style="display: none">
@@ -192,8 +192,8 @@
     </main>
 
     <script type="module">
-    // Import the HeroineGraph library
-    import { createHeroineGraph, getSupportInfo, isSupported } from "../../dist/heroine-graph.esm.js";
+    // Import the GraphMother library
+    import { createGraphMother, getSupportInfo, isSupported } from "../../dist/graphmother.esm.js";
 
     // UI Elements
     const canvas = document.getElementById("graph");
@@ -298,7 +298,7 @@
 
         // Create graph instance
         loadingText.textContent = "Initializing WebGPU...";
-        graph = await createHeroineGraph({
+        graph = await createGraphMother({
           canvas: "#graph",
           debug: false,
         });
@@ -410,7 +410,7 @@
           "WebGPU requires Chrome 113+, Edge 113+, or Safari 18+. Make sure you're using a supported browser with WebGPU enabled.";
         errorDiv.append(h2, p1, p2);
         loading.replaceChildren(errorDiv);
-        console.error("HeroineGraph initialization failed:", err);
+        console.error("GraphMother initialization failed:", err);
       }
     }
 

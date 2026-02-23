@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html';
-import './heroine-graph.css';
+import './graphmother.css';
 import { generateRandomGraph, generateSocialNetwork, generateTree, type GraphData } from './graph-generators.ts';
 import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
@@ -8,7 +8,7 @@ interface BasicGraphArgs {
   showStats: boolean;
 }
 
-interface HeroineGraph {
+interface GraphMother {
   frameStats: { fps?: number; avgFrameTime?: number } | null;
   nodeCount: number;
   edgeCount: number;
@@ -22,18 +22,18 @@ interface HeroineGraph {
   dispose: () => void;
 }
 
-interface HeroineGraphModule {
-  createHeroineGraph: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<HeroineGraph>;
+interface GraphMotherModule {
+  createGraphMother: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<GraphMother>;
   getSupportInfo: () => Promise<{ supported: boolean; reason?: string }>;
 }
 
 const meta: Meta<BasicGraphArgs> = {
-  title: 'HeroineGraph/Basic',
+  title: 'GraphMother/Basic',
   parameters: {
     layout: 'fullscreen',
     docs: {
       description: {
-        component: 'Basic graph visualization examples using HeroineGraph WebGPU renderer.',
+        component: 'Basic graph visualization examples using GraphMother WebGPU renderer.',
       },
     },
   },
@@ -58,40 +58,40 @@ type Story = StoryObj<BasicGraphArgs>;
  */
 function createContainer(title: string, showStats = true): HTMLDivElement {
   const container = document.createElement('div');
-  container.className = 'heroine-graph-container';
+  container.className = 'graphmother-container';
   container.innerHTML = `
-    <div class="heroine-graph-header">
-      <h3 class="heroine-graph-title">${title}</h3>
+    <div class="graphmother-header">
+      <h3 class="graphmother-title">${title}</h3>
       ${showStats ? `
-        <div class="heroine-graph-stats">
-          <div class="heroine-graph-stat">
-            <span class="heroine-graph-stat-label">FPS:</span>
-            <span class="heroine-graph-stat-value" data-stat="fps">--</span>
+        <div class="graphmother-stats">
+          <div class="graphmother-stat">
+            <span class="graphmother-stat-label">FPS:</span>
+            <span class="graphmother-stat-value" data-stat="fps">--</span>
           </div>
-          <div class="heroine-graph-stat">
-            <span class="heroine-graph-stat-label">Frame:</span>
-            <span class="heroine-graph-stat-value" data-stat="frameTime">--</span>
+          <div class="graphmother-stat">
+            <span class="graphmother-stat-label">Frame:</span>
+            <span class="graphmother-stat-value" data-stat="frameTime">--</span>
           </div>
-          <div class="heroine-graph-stat">
-            <span class="heroine-graph-stat-label">Nodes:</span>
-            <span class="heroine-graph-stat-value" data-stat="nodes">--</span>
+          <div class="graphmother-stat">
+            <span class="graphmother-stat-label">Nodes:</span>
+            <span class="graphmother-stat-value" data-stat="nodes">--</span>
           </div>
-          <div class="heroine-graph-stat">
-            <span class="heroine-graph-stat-label">Edges:</span>
-            <span class="heroine-graph-stat-value" data-stat="edges">--</span>
+          <div class="graphmother-stat">
+            <span class="graphmother-stat-label">Edges:</span>
+            <span class="graphmother-stat-value" data-stat="edges">--</span>
           </div>
         </div>
       ` : ''}
     </div>
     <canvas data-graph-canvas></canvas>
-    <div class="heroine-graph-loading">
-      <div class="heroine-graph-spinner"></div>
-      <div data-loading-text>Initializing HeroineGraph...</div>
+    <div class="graphmother-loading">
+      <div class="graphmother-spinner"></div>
+      <div data-loading-text>Initializing GraphMother...</div>
     </div>
-    <div class="heroine-graph-controls" style="display: none;">
-      <button class="heroine-graph-btn secondary" data-action="toggle-sim">Pause</button>
-      <button class="heroine-graph-btn secondary" data-action="fit-view">Fit View</button>
-      <button class="heroine-graph-btn secondary" data-action="reset">Reset</button>
+    <div class="graphmother-controls" style="display: none;">
+      <button class="graphmother-btn secondary" data-action="toggle-sim">Pause</button>
+      <button class="graphmother-btn secondary" data-action="fit-view">Fit View</button>
+      <button class="graphmother-btn secondary" data-action="reset">Reset</button>
     </div>
   `;
   return container;
@@ -126,11 +126,11 @@ function waitForLayout(container: HTMLElement, maxWait = 5000): Promise<void> {
 /**
  * Initialize the graph (async)
  */
-async function initGraph(container: HTMLElement, graphData: GraphData): Promise<HeroineGraph | undefined> {
+async function initGraph(container: HTMLElement, graphData: GraphData): Promise<GraphMother | undefined> {
   const canvas = container.querySelector<HTMLCanvasElement>('[data-graph-canvas]')!;
-  const loading = container.querySelector<HTMLElement>('.heroine-graph-loading')!;
+  const loading = container.querySelector<HTMLElement>('.graphmother-loading')!;
   const loadingText = container.querySelector<HTMLElement>('[data-loading-text]')!;
-  const controls = container.querySelector<HTMLElement>('.heroine-graph-controls')!;
+  const controls = container.querySelector<HTMLElement>('.graphmother-controls')!;
 
   try {
     // Tear down graphs/timers/listeners from previously rendered stories
@@ -145,8 +145,8 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
     canvas.height = rect.height * window.devicePixelRatio;
 
     // Dynamic import of the library
-    loadingText.textContent = 'Loading HeroineGraph...';
-    const { createHeroineGraph, getSupportInfo } = await import('../dist/heroine-graph.esm.js') as HeroineGraphModule;
+    loadingText.textContent = 'Loading GraphMother...';
+    const { createGraphMother, getSupportInfo } = await import('../dist/graphmother.esm.js') as GraphMotherModule;
 
     // Check support
     loadingText.textContent = 'Checking WebGPU support...';
@@ -158,7 +158,7 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
 
     // Create graph
     loadingText.textContent = 'Initializing WebGPU...';
-    const graph = await createHeroineGraph({ canvas, debug: false });
+    const graph = await createGraphMother({ canvas, debug: false });
 
     // Handle resize
     const resizeCanvas = () => {
@@ -258,7 +258,7 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
   } catch (err) {
     const error = err as Error;
     loading.innerHTML = `
-      <div class="heroine-graph-error">
+      <div class="graphmother-error">
         <h3>Initialization Error</h3>
         <p>${error.message}</p>
         <p style="margin-top: 12px; font-size: 12px;">
@@ -266,7 +266,7 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
         </p>
       </div>
     `;
-    console.error('HeroineGraph initialization failed:', err);
+    console.error('GraphMother initialization failed:', err);
   }
 }
 
@@ -284,7 +284,7 @@ export const RandomGraph: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) {
       return;
     }
@@ -308,7 +308,7 @@ export const SocialNetwork: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const nodeCount = parseInt(container.dataset.nodeCount || '500', 10);
     const data = generateSocialNetwork(nodeCount);
@@ -329,7 +329,7 @@ export const TreeStructure: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const data = generateTree(5, 3);
     await initGraph(container, data);
@@ -350,7 +350,7 @@ export const LargeGraph: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const nodeCount = parseInt(container.dataset.nodeCount || '10000', 10);
     const data = generateRandomGraph(nodeCount);

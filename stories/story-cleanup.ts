@@ -1,5 +1,5 @@
 /**
- * Shared teardown registry for HeroineGraph stories.
+ * Shared teardown registry for GraphMother stories.
  *
  * Storybook's HTML renderer has no per-story teardown hook for play-based
  * initialization, so each story registers its cleanup here and runs any

@@ -1,7 +1,7 @@
 /**
  * Configuration Nexus
  *
- * Central access point for all configuration in heroine-graph.
+ * Central access point for all configuration in graphmother.
  * Import from here to see all available settings in one place.
  *
  * Individual modules define their own defaults, but this file provides
@@ -31,7 +31,10 @@ export {
   mergeHeatmapConfig,
   validateHeatmapConfig,
 } from "../layers/heatmap/config.ts";
-export type { HeatmapConfig, HeatmapDataSource } from "../layers/heatmap/config.ts";
+export type {
+  HeatmapConfig,
+  HeatmapDataSource,
+} from "../layers/heatmap/config.ts";
 
 // Contour
 export {
@@ -39,7 +42,10 @@ export {
   mergeContourConfig,
   validateContourConfig,
 } from "../layers/contour/config.ts";
-export type { ContourConfig, ContourDataSource } from "../layers/contour/config.ts";
+export type {
+  ContourConfig,
+  ContourDataSource,
+} from "../layers/contour/config.ts";
 
 // Metaball
 export {
@@ -47,7 +53,10 @@ export {
   mergeMetaballConfig,
   validateMetaballConfig,
 } from "../layers/metaball/config.ts";
-export type { MetaballConfig, MetaballDataSource } from "../layers/metaball/config.ts";
+export type {
+  MetaballConfig,
+  MetaballDataSource,
+} from "../layers/metaball/config.ts";
 
 // Labels
 export { DEFAULT_LABEL_CONFIG } from "../layers/labels/config.ts";
@@ -70,7 +79,10 @@ export {
   DEFAULT_CURVED_EDGE_CONFIG,
   DEFAULT_EDGE_PIPELINE_CONFIG,
 } from "../renderer/pipelines/edges.ts";
-export type { CurvedEdgeConfig, EdgePipelineConfig } from "../renderer/pipelines/edges.ts";
+export type {
+  CurvedEdgeConfig,
+  EdgePipelineConfig,
+} from "../renderer/pipelines/edges.ts";
 
 // Edge Flow Animation
 export {
@@ -106,7 +118,10 @@ export {
   mergeForceConfig,
   validateForceConfig,
 } from "../simulation/config.ts";
-export type { ForceConfigBuilder, FullForceConfig } from "../simulation/config.ts";
+export type {
+  ForceConfigBuilder,
+  FullForceConfig,
+} from "../simulation/config.ts";
 
 // Simulation Controller
 export { calculateAlphaDecay, DEFAULT_SIMULATION_CONFIG } from "../simulation/controller.ts";
@@ -137,7 +152,10 @@ export type { TypedParserConfig } from "../graph/typed_parser.ts";
 
 // Position Initialization
 export { DEFAULT_INITIALIZE_CONFIG } from "../graph/initialize.ts";
-export type { InitializationStrategy, InitializeConfig } from "../graph/initialize.ts";
+export type {
+  InitializationStrategy,
+  InitializeConfig,
+} from "../graph/initialize.ts";
 
 // =============================================================================
 // Interaction Configuration
@@ -160,8 +178,14 @@ export type { EdgeBufferConfig } from "../renderer/buffers/edges.ts";
 // Color Scales
 // =============================================================================
 
-export { COLOR_SCALES, getColorScaleNames } from "../layers/heatmap/colorscale.ts";
-export type { ColorScaleName, ColorStop } from "../layers/heatmap/colorscale.ts";
+export {
+  COLOR_SCALES,
+  getColorScaleNames,
+} from "../layers/heatmap/colorscale.ts";
+export type {
+  ColorScaleName,
+  ColorStop,
+} from "../layers/heatmap/colorscale.ts";
 
 // Value Stream Color Presets
 export {
@@ -185,4 +209,9 @@ export {
   parseColorToRGBA,
   withAlpha,
 } from "../utils/mod.ts";
-export type { ColorInput, ColorRGB, ColorRGBA, RgbaColor } from "../utils/mod.ts";
+export type {
+  ColorInput,
+  ColorRGB,
+  ColorRGBA,
+  RgbaColor,
+} from "../utils/mod.ts";

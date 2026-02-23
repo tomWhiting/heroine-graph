@@ -7,14 +7,14 @@
  */
 
 import { onUnmounted, type Ref, ref, type ShallowRef, watch } from "vue";
-import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
+import type { ForceConfig, GraphMother, SimulationStatus } from "@graphmother/core";
 
 /**
  * Options for the useSimulation composable
  */
 export interface UseSimulationOptions {
-  /** The HeroineGraph instance to control */
-  graph: ShallowRef<HeroineGraph | null>;
+  /** The GraphMother instance to control */
+  graph: ShallowRef<GraphMother | null>;
   /** Initial force configuration */
   initialConfig?: Partial<ForceConfig>;
 }
@@ -95,7 +95,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   let tickHandler: ((event: { alpha: number }) => void) | null = null;
   let endHandler: (() => void) | null = null;
 
-  function setupEventListeners(g: HeroineGraph) {
+  function setupEventListeners(g: GraphMother) {
     // Get initial state
     status.value = g.getSimulationStatus();
     forceConfig.value = g.getForceConfig();
@@ -124,7 +124,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
     }
   }
 
-  function cleanupEventListeners(g: HeroineGraph) {
+  function cleanupEventListeners(g: GraphMother) {
     if (tickHandler) {
       g.off("simulation:tick", tickHandler);
       tickHandler = null;

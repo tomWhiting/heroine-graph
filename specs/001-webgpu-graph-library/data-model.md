@@ -1,10 +1,10 @@
-# Data Model: Heroine Graph
+# Data Model: GraphMother
 
 **Branch**: `001-webgpu-graph-library`
 **Date**: 2026-01-06
 
 This document defines the core entities, their attributes, relationships, and state
-transitions for the Heroine Graph library.
+transitions for the GraphMother library.
 
 ---
 

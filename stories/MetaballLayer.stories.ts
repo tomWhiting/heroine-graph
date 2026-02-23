@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html';
-import './heroine-graph.css';
+import './graphmother.css';
 import { generateClusteredGraph, generateSpiralGraph, type GraphData } from './graph-generators.ts';
 import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
@@ -14,7 +14,7 @@ interface MetaballConfig {
   enabled: boolean;
 }
 
-interface HeroineGraph {
+interface GraphMother {
   frameStats: { fps?: number; avgFrameTime?: number } | null;
   nodeCount: number;
   resize: (width: number, height: number) => void;
@@ -30,13 +30,13 @@ interface HeroineGraph {
   dispose: () => void;
 }
 
-interface HeroineGraphModule {
-  createHeroineGraph: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<HeroineGraph>;
+interface GraphMotherModule {
+  createGraphMother: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<GraphMother>;
   getSupportInfo: () => Promise<{ supported: boolean; reason?: string }>;
 }
 
 const meta: Meta<MetaballConfig> = {
-  title: 'HeroineGraph/Metaball Layer',
+  title: 'GraphMother/Metaball Layer',
   parameters: {
     layout: 'fullscreen',
     docs: {
@@ -89,64 +89,64 @@ type Story = StoryObj<MetaballConfig>;
  */
 function createMetaballContainer(title: string, initialConfig: MetaballConfig): HTMLDivElement {
   const container = document.createElement('div');
-  container.className = 'heroine-graph-container';
+  container.className = 'graphmother-container';
   container.innerHTML = `
-    <div class="heroine-graph-header">
-      <h3 class="heroine-graph-title">${title}</h3>
-      <div class="heroine-graph-stats">
-        <div class="heroine-graph-stat">
-          <span class="heroine-graph-stat-label">FPS:</span>
-          <span class="heroine-graph-stat-value" data-stat="fps">--</span>
+    <div class="graphmother-header">
+      <h3 class="graphmother-title">${title}</h3>
+      <div class="graphmother-stats">
+        <div class="graphmother-stat">
+          <span class="graphmother-stat-label">FPS:</span>
+          <span class="graphmother-stat-value" data-stat="fps">--</span>
         </div>
-        <div class="heroine-graph-stat">
-          <span class="heroine-graph-stat-label">Nodes:</span>
-          <span class="heroine-graph-stat-value" data-stat="nodes">--</span>
+        <div class="graphmother-stat">
+          <span class="graphmother-stat-label">Nodes:</span>
+          <span class="graphmother-stat-value" data-stat="nodes">--</span>
         </div>
       </div>
     </div>
     <canvas data-graph-canvas></canvas>
-    <div class="heroine-graph-loading">
-      <div class="heroine-graph-spinner"></div>
-      <div data-loading-text>Initializing HeroineGraph...</div>
+    <div class="graphmother-loading">
+      <div class="graphmother-spinner"></div>
+      <div data-loading-text>Initializing GraphMother...</div>
     </div>
-    <div class="heroine-graph-metaball-controls" style="display: none;">
+    <div class="graphmother-metaball-controls" style="display: none;">
       <h4>Metaball Controls</h4>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Enabled</label>
         <input type="checkbox" data-metaball="enabled" ${initialConfig.enabled ? 'checked' : ''}>
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Threshold: <span data-value="threshold">${initialConfig.threshold}</span></label>
         <input type="range" data-metaball="threshold" min="0.1" max="2.0" step="0.1" value="${initialConfig.threshold}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Blend Radius: <span data-value="blendRadius">${initialConfig.blendRadius}</span></label>
         <input type="range" data-metaball="blendRadius" min="10" max="200" step="10" value="${initialConfig.blendRadius}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Node Radius: <span data-value="nodeRadius">${initialConfig.nodeRadius}</span></label>
         <input type="range" data-metaball="nodeRadius" min="5" max="100" step="5" value="${initialConfig.nodeRadius}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Fill Color</label>
         <input type="color" data-metaball="fillColor" value="${initialConfig.fillColor}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Opacity: <span data-value="opacity">${initialConfig.opacity}</span></label>
         <input type="range" data-metaball="opacity" min="0.1" max="1.0" step="0.1" value="${initialConfig.opacity}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Outline Only</label>
         <input type="checkbox" data-metaball="outlineOnly" ${initialConfig.outlineOnly ? 'checked' : ''}>
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Outline Width: <span data-value="outlineWidth">${initialConfig.outlineWidth}</span></label>
         <input type="range" data-metaball="outlineWidth" min="1" max="10" step="1" value="${initialConfig.outlineWidth}">
       </div>
     </div>
-    <div class="heroine-graph-controls" style="display: none;">
-      <button class="heroine-graph-btn secondary" data-action="toggle-sim">Pause</button>
-      <button class="heroine-graph-btn secondary" data-action="fit-view">Fit View</button>
+    <div class="graphmother-controls" style="display: none;">
+      <button class="graphmother-btn secondary" data-action="toggle-sim">Pause</button>
+      <button class="graphmother-btn secondary" data-action="fit-view">Fit View</button>
     </div>
   `;
   return container;
@@ -183,12 +183,12 @@ async function initMetaballGraph(
   container: HTMLElement,
   graphData: GraphData,
   metaballConfig: MetaballConfig
-): Promise<HeroineGraph | undefined> {
+): Promise<GraphMother | undefined> {
   const canvas = container.querySelector<HTMLCanvasElement>('[data-graph-canvas]')!;
-  const loading = container.querySelector<HTMLElement>('.heroine-graph-loading')!;
+  const loading = container.querySelector<HTMLElement>('.graphmother-loading')!;
   const loadingText = container.querySelector<HTMLElement>('[data-loading-text]')!;
-  const controls = container.querySelector<HTMLElement>('.heroine-graph-controls')!;
-  const metaballControls = container.querySelector<HTMLElement>('.heroine-graph-metaball-controls')!;
+  const controls = container.querySelector<HTMLElement>('.graphmother-controls')!;
+  const metaballControls = container.querySelector<HTMLElement>('.graphmother-metaball-controls')!;
 
   try {
     // Tear down graphs/timers/listeners from previously rendered stories
@@ -200,8 +200,8 @@ async function initMetaballGraph(
     canvas.width = rect.width * window.devicePixelRatio;
     canvas.height = rect.height * window.devicePixelRatio;
 
-    loadingText.textContent = 'Loading HeroineGraph...';
-    const { createHeroineGraph, getSupportInfo } = await import('../dist/heroine-graph.esm.js') as HeroineGraphModule;
+    loadingText.textContent = 'Loading GraphMother...';
+    const { createGraphMother, getSupportInfo } = await import('../dist/graphmother.esm.js') as GraphMotherModule;
 
     loadingText.textContent = 'Checking WebGPU support...';
     const support = await getSupportInfo();
@@ -211,7 +211,7 @@ async function initMetaballGraph(
     }
 
     loadingText.textContent = 'Initializing WebGPU...';
-    const graph = await createHeroineGraph({ canvas, debug: false });
+    const graph = await createGraphMother({ canvas, debug: false });
 
     const resizeCanvas = () => {
       const r = container.getBoundingClientRect();
@@ -369,7 +369,7 @@ async function initMetaballGraph(
   } catch (err) {
     const error = err as Error;
     loading.innerHTML = `
-      <div class="heroine-graph-error">
+      <div class="graphmother-error">
         <h3>Initialization Error</h3>
         <p>${error.message}</p>
         <p style="margin-top: 12px; font-size: 12px;">
@@ -377,7 +377,7 @@ async function initMetaballGraph(
         </p>
       </div>
     `;
-    console.error('HeroineGraph initialization failed:', err);
+    console.error('GraphMother initialization failed:', err);
   }
 }
 
@@ -401,7 +401,7 @@ export const OrganicClusters: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.metaballConfig || '{}') as MetaballConfig;
     const data = generateClusteredGraph(5, 80);
@@ -429,7 +429,7 @@ export const OutlineMode: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.metaballConfig || '{}') as MetaballConfig;
     const data = generateClusteredGraph(6, 100);
@@ -457,7 +457,7 @@ export const TightBlobs: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.metaballConfig || '{}') as MetaballConfig;
     const data = generateClusteredGraph(8, 60);
@@ -485,7 +485,7 @@ export const SpiralMetaballs: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.metaballConfig || '{}') as MetaballConfig;
     const data = generateSpiralGraph(1200, 3);
@@ -513,7 +513,7 @@ export const LargeBlend: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.metaballConfig || '{}') as MetaballConfig;
     const data = generateClusteredGraph(4, 120);

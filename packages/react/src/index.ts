@@ -1,14 +1,14 @@
 /**
  * @graphmother/react
  *
- * React wrapper for Heroine Graph - high-performance WebGPU graph visualization.
+ * React wrapper for GraphMother - high-performance WebGPU graph visualization.
  *
  * @module
  */
 
 // Main component
-export { default, HeroineGraph } from "./HeroineGraph";
-export type { HeroineGraphProps, HeroineGraphRef } from "./HeroineGraph";
+export { default, GraphMother } from "./GraphMother";
+export type { GraphMotherProps, GraphMotherRef } from "./GraphMother";
 
 // Hooks
 export { useGraph } from "./hooks/useGraph";

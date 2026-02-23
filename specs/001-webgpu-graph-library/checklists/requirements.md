@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Heroine Graph - WebGPU Graph Visualization Library
+# Specification Quality Checklist: GraphMother - WebGPU Graph Visualization Library
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-01-06

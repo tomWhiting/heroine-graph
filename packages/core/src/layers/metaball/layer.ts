@@ -135,7 +135,7 @@ export class MetaballLayer implements Layer {
     if (nodeCount > MAX_METABALL_NODES) {
       if (!this.nodeCountWarned) {
         console.warn(
-          `[HeroineGraph] Metaball layer "${this.id}" skipped: ${nodeCount} nodes exceeds ` +
+          `[GraphMother] Metaball layer "${this.id}" skipped: ${nodeCount} nodes exceeds ` +
             `MAX_METABALL_NODES (${MAX_METABALL_NODES}). The metaball SDF shader evaluates every ` +
             `node per pixel and risks a GPU timeout (device loss) at this scale.`,
         );

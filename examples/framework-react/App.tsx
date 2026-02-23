@@ -1,5 +1,5 @@
 /**
- * Heroine Graph React Example
+ * GraphMother React Example
  *
  * Demonstrates the @graphmother/react wrapper with:
  * - Basic graph rendering
@@ -8,8 +8,8 @@
  */
 
 import { useCallback, useRef, useState } from "react";
-import { HeroineGraph } from "@graphmother/react";
-import type { EdgeInput, GraphInput, HeroineGraphRef, NodeClickEvent } from "@graphmother/react";
+import { GraphMother } from "@graphmother/react";
+import type { EdgeInput, GraphInput, GraphMotherRef, NodeClickEvent } from "@graphmother/react";
 
 // Generate sample graph data
 function generateGraph(nodeCount: number): GraphInput {
@@ -35,7 +35,7 @@ function generateGraph(nodeCount: number): GraphInput {
 }
 
 function App() {
-  const graphRef = useRef<HeroineGraphRef>(null);
+  const graphRef = useRef<GraphMotherRef>(null);
   const [graphData] = useState(() => generateGraph(100));
   const [selectedNode, setSelectedNode] = useState<number | null>(null);
   const [eventLog, setEventLog] = useState<string[]>([]);
@@ -66,7 +66,7 @@ function App() {
         }}
       >
         <h1 style={{ fontSize: "1.25rem", fontWeight: 600 }}>
-          Heroine Graph - React
+          GraphMother - React
         </h1>
         {selectedNode !== null && (
           <span style={{ color: "#888" }}>
@@ -79,7 +79,7 @@ function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* Graph */}
         <main style={{ flex: 1, position: "relative" }}>
-          <HeroineGraph
+          <GraphMother
             ref={graphRef}
             data={graphData}
             onReady={handleReady}

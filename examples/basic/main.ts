@@ -1,7 +1,7 @@
 /**
- * HeroineGraph - Basic Example
+ * GraphMother - Basic Example
  *
- * This example demonstrates how to use HeroineGraph to visualize a graph.
+ * This example demonstrates how to use GraphMother to visualize a graph.
  *
  * Run with: deno run --allow-read --allow-net examples/basic/main.ts
  *
@@ -9,7 +9,7 @@
  */
 
 // In a real application, you would import from the package:
-// import { createHeroineGraph, type GraphInput } from '@graphmother/core';
+// import { createGraphMother, type GraphInput } from '@graphmother/core';
 
 // For this example, we import from the local package:
 import { getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";
@@ -102,7 +102,7 @@ function generateTree(depth: number, branching: number): GraphInput {
  */
 async function main() {
   console.log("╔═══════════════════════════════════════════════════════════╗");
-  console.log("║           HeroineGraph - Basic Example                     ║");
+  console.log("║           GraphMother - Basic Example                     ║");
   console.log("╚═══════════════════════════════════════════════════════════╝");
   console.log();
 
@@ -121,7 +121,7 @@ async function main() {
   }
 
   // This would run in a browser environment:
-  // const graph = await createHeroineGraph({
+  // const graph = await createGraphMother({
   //   canvas: '#graph-canvas',
   //   config: {
   //     simulation: {

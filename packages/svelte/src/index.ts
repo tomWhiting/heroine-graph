@@ -1,13 +1,13 @@
 /**
  * @graphmother/svelte
  *
- * Svelte wrapper for Heroine Graph - high-performance WebGPU graph visualization.
+ * Svelte wrapper for GraphMother - high-performance WebGPU graph visualization.
  *
  * @module
  */
 
 // Main component
-export { default as HeroineGraph } from "./HeroineGraph.svelte";
+export { default as GraphMother } from "./GraphMother.svelte";
 
 // Stores
 export { createGraphStore } from "./stores/graph.svelte";

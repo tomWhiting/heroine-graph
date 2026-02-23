@@ -1,8 +1,8 @@
-# HeroineGraph
+# GraphMother
 
 High-performance graph visualization library powered by WebGPU.
 
-HeroineGraph renders large graphs using GPU-accelerated force simulation and rendering (measure your own workload with `deno task bench`). It provides interactive exploration with pan, zoom, drag, and selection, plus visualization layers for heatmaps, contours, metaballs, and text labels.
+GraphMother renders large graphs using GPU-accelerated force simulation and rendering (measure your own workload with `deno task bench`). It provides interactive exploration with pan, zoom, drag, and selection, plus visualization layers for heatmaps, contours, metaballs, and text labels.
 
 ## Features
 
@@ -15,7 +15,7 @@ HeroineGraph renders large graphs using GPU-accelerated force simulation and ren
 
 ## Browser Support
 
-HeroineGraph requires WebGPU, which is available in:
+GraphMother requires WebGPU, which is available in:
 - Chrome 113+ (April 2023)
 - Edge 113+
 - Firefox 126+ (behind flag, enabled by default in Firefox Nightly)
@@ -32,13 +32,13 @@ npm install @graphmother/core
 
 ```typescript
 // Deno (resolves the same npm package; there is no JSR publication)
-import { createHeroineGraph } from "npm:@graphmother/core";
+import { createGraphMother } from "npm:@graphmother/core";
 ```
 
 ## Quick Start
 
 ```typescript
-import { createHeroineGraph, getSupportInfo } from "@graphmother/core";
+import { createGraphMother, getSupportInfo } from "@graphmother/core";
 
 // Check WebGPU support
 const support = await getSupportInfo();
@@ -51,7 +51,7 @@ if (!support.supported) {
 const canvas = document.getElementById("graph-canvas") as HTMLCanvasElement;
 
 // Create the graph instance
-const graph = await createHeroineGraph({ canvas });
+const graph = await createGraphMother({ canvas });
 
 // Load data
 await graph.load({
@@ -290,7 +290,7 @@ copy them into your public directory).
 ## Configuration Options
 
 ```typescript
-const graph = await createHeroineGraph({
+const graph = await createGraphMother({
   canvas,                        // HTMLCanvasElement or CSS selector
   config: {
     // Visual defaults (GraphConfig)
@@ -356,7 +356,7 @@ deno task build
 
 ## Architecture
 
-HeroineGraph uses a GPU-first architecture:
+GraphMother uses a GPU-first architecture:
 
 1. **WASM Module** (Rust): Graph topology storage, spatial indexing with R-tree
 2. **GPU Compute Shaders** (WGSL): Force simulation (repulsion, springs, integration)

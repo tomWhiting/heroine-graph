@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html';
-import './heroine-graph.css';
+import './graphmother.css';
 import { generateClusteredGraph, generateSpiralGraph, type GraphData } from './graph-generators.ts';
 import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
@@ -11,7 +11,7 @@ interface LabelConfig {
   enabled: boolean;
 }
 
-interface HeroineGraph {
+interface GraphMother {
   frameStats: { fps?: number; avgFrameTime?: number } | null;
   nodeCount: number;
   resize: (width: number, height: number) => void;
@@ -37,13 +37,13 @@ interface LabelData {
   minZoom?: number;
 }
 
-interface HeroineGraphModule {
-  createHeroineGraph: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<HeroineGraph>;
+interface GraphMotherModule {
+  createGraphMother: (options: { canvas: HTMLCanvasElement; debug?: boolean }) => Promise<GraphMother>;
   getSupportInfo: () => Promise<{ supported: boolean; reason?: string }>;
 }
 
 const meta: Meta<LabelConfig> = {
-  title: 'HeroineGraph/Labels Layer',
+  title: 'GraphMother/Labels Layer',
   parameters: {
     layout: 'fullscreen',
     docs: {
@@ -84,48 +84,48 @@ type Story = StoryObj<LabelConfig>;
  */
 function createLabelsContainer(title: string, initialConfig: LabelConfig): HTMLDivElement {
   const container = document.createElement('div');
-  container.className = 'heroine-graph-container';
+  container.className = 'graphmother-container';
   container.innerHTML = `
-    <div class="heroine-graph-header">
-      <h3 class="heroine-graph-title">${title}</h3>
-      <div class="heroine-graph-stats">
-        <div class="heroine-graph-stat">
-          <span class="heroine-graph-stat-label">FPS:</span>
-          <span class="heroine-graph-stat-value" data-stat="fps">--</span>
+    <div class="graphmother-header">
+      <h3 class="graphmother-title">${title}</h3>
+      <div class="graphmother-stats">
+        <div class="graphmother-stat">
+          <span class="graphmother-stat-label">FPS:</span>
+          <span class="graphmother-stat-value" data-stat="fps">--</span>
         </div>
-        <div class="heroine-graph-stat">
-          <span class="heroine-graph-stat-label">Nodes:</span>
-          <span class="heroine-graph-stat-value" data-stat="nodes">--</span>
+        <div class="graphmother-stat">
+          <span class="graphmother-stat-label">Nodes:</span>
+          <span class="graphmother-stat-value" data-stat="nodes">--</span>
         </div>
       </div>
     </div>
     <canvas data-graph-canvas></canvas>
-    <div class="heroine-graph-loading">
-      <div class="heroine-graph-spinner"></div>
-      <div data-loading-text>Initializing HeroineGraph...</div>
+    <div class="graphmother-loading">
+      <div class="graphmother-spinner"></div>
+      <div data-loading-text>Initializing GraphMother...</div>
     </div>
-    <div class="heroine-graph-labels-controls" style="display: none;">
+    <div class="graphmother-labels-controls" style="display: none;">
       <h4>Labels Controls</h4>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Enabled</label>
         <input type="checkbox" data-labels="enabled" ${initialConfig.enabled ? 'checked' : ''}>
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Font Size: <span data-value="fontSize">${initialConfig.fontSize}</span>px</label>
         <input type="range" data-labels="fontSize" min="8" max="32" step="1" value="${initialConfig.fontSize}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Min Zoom: <span data-value="minZoom">${initialConfig.minZoom}</span></label>
         <input type="range" data-labels="minZoom" min="0.1" max="2.0" step="0.1" value="${initialConfig.minZoom}">
       </div>
-      <div class="heroine-graph-control-row">
+      <div class="graphmother-control-row">
         <label>Max Labels: <span data-value="maxLabels">${initialConfig.maxLabels}</span></label>
         <input type="range" data-labels="maxLabels" min="10" max="500" step="10" value="${initialConfig.maxLabels}">
       </div>
     </div>
-    <div class="heroine-graph-controls" style="display: none;">
-      <button class="heroine-graph-btn secondary" data-action="toggle-sim">Pause</button>
-      <button class="heroine-graph-btn secondary" data-action="fit-view">Fit View</button>
+    <div class="graphmother-controls" style="display: none;">
+      <button class="graphmother-btn secondary" data-action="toggle-sim">Pause</button>
+      <button class="graphmother-btn secondary" data-action="fit-view">Fit View</button>
     </div>
   `;
   return container;
@@ -191,12 +191,12 @@ async function initLabelsGraph(
   container: HTMLElement,
   graphData: GraphData,
   labelsConfig: LabelConfig
-): Promise<HeroineGraph | undefined> {
+): Promise<GraphMother | undefined> {
   const canvas = container.querySelector<HTMLCanvasElement>('[data-graph-canvas]')!;
-  const loading = container.querySelector<HTMLElement>('.heroine-graph-loading')!;
+  const loading = container.querySelector<HTMLElement>('.graphmother-loading')!;
   const loadingText = container.querySelector<HTMLElement>('[data-loading-text]')!;
-  const controls = container.querySelector<HTMLElement>('.heroine-graph-controls')!;
-  const labelsControls = container.querySelector<HTMLElement>('.heroine-graph-labels-controls')!;
+  const controls = container.querySelector<HTMLElement>('.graphmother-controls')!;
+  const labelsControls = container.querySelector<HTMLElement>('.graphmother-labels-controls')!;
 
   try {
     // Tear down graphs/timers/listeners from previously rendered stories
@@ -208,8 +208,8 @@ async function initLabelsGraph(
     canvas.width = rect.width * window.devicePixelRatio;
     canvas.height = rect.height * window.devicePixelRatio;
 
-    loadingText.textContent = 'Loading HeroineGraph...';
-    const { createHeroineGraph, getSupportInfo } = await import('../dist/heroine-graph.esm.js') as HeroineGraphModule;
+    loadingText.textContent = 'Loading GraphMother...';
+    const { createGraphMother, getSupportInfo } = await import('../dist/graphmother.esm.js') as GraphMotherModule;
 
     loadingText.textContent = 'Checking WebGPU support...';
     const support = await getSupportInfo();
@@ -219,7 +219,7 @@ async function initLabelsGraph(
     }
 
     loadingText.textContent = 'Initializing WebGPU...';
-    const graph = await createHeroineGraph({ canvas, debug: false });
+    const graph = await createGraphMother({ canvas, debug: false });
 
     // Handle resize
     const resizeCanvas = () => {
@@ -355,7 +355,7 @@ async function initLabelsGraph(
   } catch (err) {
     const error = err as Error;
     loading.innerHTML = `
-      <div class="heroine-graph-error">
+      <div class="graphmother-error">
         <h3>Initialization Error</h3>
         <p>${error.message}</p>
         <p style="margin-top: 12px; font-size: 12px;">
@@ -363,7 +363,7 @@ async function initLabelsGraph(
         </p>
       </div>
     `;
-    console.error('HeroineGraph initialization failed:', err);
+    console.error('GraphMother initialization failed:', err);
   }
 }
 
@@ -384,7 +384,7 @@ export const ClusteredGraphWithLabels: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.labelsConfig || '{}') as LabelConfig;
     const data = generateClusteredGraph(5, 50);
@@ -409,7 +409,7 @@ export const SpiralGalaxyWithLabels: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.labelsConfig || '{}') as LabelConfig;
     const data = generateSpiralGraph(500, 3);
@@ -434,7 +434,7 @@ export const HighDensityLabels: Story = {
     return container;
   },
   play: async ({ canvasElement }) => {
-    const container = canvasElement.querySelector<HTMLElement>('.heroine-graph-container');
+    const container = canvasElement.querySelector<HTMLElement>('.graphmother-container');
     if (!container) return;
     const config = JSON.parse(container.dataset.labelsConfig || '{}') as LabelConfig;
     const data = generateClusteredGraph(8, 125);

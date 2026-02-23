@@ -12,7 +12,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["@webgpu/types"],
     "paths": {
-      "@graphmother/wasm": ["../wasm/pkg/heroine_graph_wasm.d.ts"]
+      "@graphmother/wasm": ["../wasm/pkg/graphmother_wasm.d.ts"]
     },
     "baseUrl": "."
   },

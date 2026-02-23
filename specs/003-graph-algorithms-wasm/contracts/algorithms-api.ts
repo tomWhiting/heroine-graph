@@ -2,25 +2,25 @@
  * Graph Algorithms WASM API Contract
  *
  * This file defines the TypeScript interface for the graph algorithms
- * exposed by the WASM module. These are the methods added to HeroineGraphWasm.
+ * exposed by the WASM module. These are the methods added to GraphMotherWasm.
  *
- * @module heroine-graph-wasm/algorithms
+ * @module graphmother-wasm/algorithms
  */
 
 // =============================================================================
 // Enums & Types
 // =============================================================================
 
-export type CommunityAlgorithm = 'louvain' | 'leiden';
-export type HullType = 'convex' | 'concave';
+export type CommunityAlgorithm = "louvain" | "leiden";
+export type HullType = "convex" | "concave";
 export type CentralityType =
-  | 'pagerank'
-  | 'betweenness'
-  | 'closeness'
-  | 'eigenvector'
-  | 'degree'
-  | 'katz';
-export type ComponentType = 'weak' | 'strong';
+  | "pagerank"
+  | "betweenness"
+  | "closeness"
+  | "eigenvector"
+  | "degree"
+  | "katz";
+export type ComponentType = "weak" | "strong";
 
 // =============================================================================
 // Configuration Interfaces
@@ -181,7 +181,7 @@ export interface AlgorithmProgress {
 export type ProgressCallback = (progress: AlgorithmProgress) => void;
 
 // =============================================================================
-// API Methods (added to HeroineGraphWasm)
+// API Methods (added to GraphMotherWasm)
 // =============================================================================
 
 export interface GraphAlgorithmsAPI {
@@ -202,7 +202,7 @@ export interface GraphAlgorithmsAPI {
    */
   detectCommunities(
     config?: CommunityDetectionConfig,
-    onProgress?: ProgressCallback
+    onProgress?: ProgressCallback,
   ): CommunityAssignment;
 
   /**
@@ -230,7 +230,7 @@ export interface GraphAlgorithmsAPI {
    */
   computeHulls(
     communities: CommunityAssignment,
-    config?: HullComputationConfig
+    config?: HullComputationConfig,
   ): CommunityBoundary[];
 
   /**
@@ -240,7 +240,10 @@ export interface GraphAlgorithmsAPI {
    * @param config - Hull computation options
    * @returns Boundary polygon
    */
-  computeHull(nodeIds: Uint32Array, config?: HullComputationConfig): CommunityBoundary;
+  computeHull(
+    nodeIds: Uint32Array,
+    config?: HullComputationConfig,
+  ): CommunityBoundary;
 
   // -------------------------------------------------------------------------
   // Boundary Physics (FR-012 to FR-016)
@@ -254,7 +257,7 @@ export interface GraphAlgorithmsAPI {
    */
   initBoundaryPhysics(
     boundaries: CommunityBoundary[],
-    config?: BoundaryPhysicsConfig
+    config?: BoundaryPhysicsConfig,
   ): void;
 
   /**
@@ -300,7 +303,7 @@ export interface GraphAlgorithmsAPI {
    */
   computeCentrality(
     config: CentralityConfig,
-    onProgress?: ProgressCallback
+    onProgress?: ProgressCallback,
   ): CentralityResult;
 
   /**

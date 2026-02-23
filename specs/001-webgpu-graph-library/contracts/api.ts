@@ -1,5 +1,5 @@
 /**
- * Heroine Graph - Public API Contract
+ * GraphMother - Public API Contract
  *
  * This file defines the public API that implementations must provide.
  */
@@ -33,8 +33,8 @@ import type {
 // Initialization Options
 // =============================================================================
 
-/** Options for creating a HeroineGraph instance */
-export interface HeroineGraphOptions {
+/** Options for creating a GraphMother instance */
+export interface GraphMotherOptions {
   /** Canvas element or CSS selector */
   readonly canvas: HTMLCanvasElement | string;
   /** Initial graph data (optional, can load later) */
@@ -67,8 +67,8 @@ export interface WebGPUStatus {
 // Main API Interface
 // =============================================================================
 
-/** Main HeroineGraph API */
-export interface HeroineGraph {
+/** Main GraphMother API */
+export interface GraphMother {
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -388,7 +388,11 @@ export interface HeroineGraph {
    * @param padding Padding in pixels (default: 50)
    * @param animate Animate the transition (default: false)
    */
-  fitNodes(nodeIds: readonly NodeId[], padding?: number, animate?: boolean): void;
+  fitNodes(
+    nodeIds: readonly NodeId[],
+    padding?: number,
+    animate?: boolean,
+  ): void;
 
   /**
    * Convert screen coordinates to graph coordinates.
@@ -475,7 +479,11 @@ export interface HeroineGraph {
    * @param tolerance Hit tolerance in pixels (default: 5)
    * @returns EdgeId or undefined if no edge at position
    */
-  getEdgeAtPosition(screenX: number, screenY: number, tolerance?: number): EdgeId | undefined;
+  getEdgeAtPosition(
+    screenX: number,
+    screenY: number,
+    tolerance?: number,
+  ): EdgeId | undefined;
 
   /**
    * Find all nodes in a screen rectangle.
@@ -485,7 +493,12 @@ export interface HeroineGraph {
    * @param y2 Bottom-right Y in screen pixels
    * @returns Array of NodeIds in the rectangle
    */
-  getNodesInRect(x1: number, y1: number, x2: number, y2: number): readonly NodeId[];
+  getNodesInRect(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+  ): readonly NodeId[];
 
   /**
    * Find the nearest node to a position.
@@ -494,7 +507,11 @@ export interface HeroineGraph {
    * @param maxDistance Maximum distance in pixels (default: Infinity)
    * @returns NodeId or undefined if no node within maxDistance
    */
-  getNearestNode(screenX: number, screenY: number, maxDistance?: number): NodeId | undefined;
+  getNearestNode(
+    screenX: number,
+    screenY: number,
+    maxDistance?: number,
+  ): NodeId | undefined;
 
   // ---------------------------------------------------------------------------
   // Configuration
@@ -522,7 +539,10 @@ export interface HeroineGraph {
    * @param handler Event handler function
    * @returns Unsubscribe function
    */
-  on<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): () => void;
+  on<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): () => void;
 
   /**
    * Subscribe to an event (one-time).
@@ -530,14 +550,20 @@ export interface HeroineGraph {
    * @param handler Event handler function
    * @returns Unsubscribe function
    */
-  once<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): () => void;
+  once<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): () => void;
 
   /**
    * Unsubscribe from an event.
    * @param type Event type
    * @param handler Event handler function
    */
-  off<K extends keyof EventMap>(type: K, handler: EventHandler<EventMap[K]>): void;
+  off<K extends keyof EventMap>(
+    type: K,
+    handler: EventHandler<EventMap[K]>,
+  ): void;
 
   // ---------------------------------------------------------------------------
   // Utilities
@@ -586,9 +612,11 @@ export interface HeroineGraph {
 export declare function checkWebGPU(): Promise<WebGPUStatus>;
 
 /**
- * Create a new HeroineGraph instance.
+ * Create a new GraphMother instance.
  * @param options Initialization options
- * @returns Promise resolving to HeroineGraph instance
+ * @returns Promise resolving to GraphMother instance
  * @throws Error if WebGPU is not available
  */
-export declare function createHeroineGraph(options: HeroineGraphOptions): Promise<HeroineGraph>;
+export declare function createGraphMother(
+  options: GraphMotherOptions,
+): Promise<GraphMother>;

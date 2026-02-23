@@ -1,7 +1,7 @@
 /**
- * Heroine Graph - Core Type Definitions
+ * GraphMother - Core Type Definitions
  *
- * This file defines the public API types for the Heroine Graph library.
+ * This file defines the public API types for the GraphMother library.
  * These are contracts - implementations must conform to these interfaces.
  */
 
@@ -484,7 +484,7 @@ export interface BackgroundClickEvent extends GraphEvent {
 }
 
 /** Union of all events */
-export type HeroineGraphEvent =
+export type GraphMotherEvent =
   | NodeClickEvent
   | NodeDoubleClickEvent
   | NodeHoverEnterEvent

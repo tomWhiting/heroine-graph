@@ -138,7 +138,7 @@ async function buildAll(): Promise<void> {
       "--format=esm",
       "--platform=browser",
       "--target=es2022",
-      "--outfile=dist/heroine-graph.esm.js",
+      "--outfile=dist/graphmother.esm.js",
       "--loader:.wgsl=text",
       "--external:@graphmother/wasm",
     ],

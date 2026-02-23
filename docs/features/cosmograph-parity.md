@@ -1,6 +1,6 @@
 # Cosmograph Feature Parity Spec
 
-This document tracks features from the Cosmograph fork that should be implemented in heroine-graph.
+This document tracks features from the Cosmograph fork that should be implemented in graphmother.
 
 **Source:** `/Users/tom/Developer/projects/graph/`
 
@@ -15,7 +15,7 @@ This document tracks features from the Cosmograph fork that should be implemente
 - `/Users/tom/Developer/projects/graph/src/config.ts` (lines 315-412)
 - `/Users/tom/Developer/projects/graph/src/stories/flow-demo/flow-demo.ts`
 
-### Current heroine-graph state:
+### Current graphmother state:
 - Basic dual-layer flow implemented
 - Missing: Full per-layer RGBA color controls, proper layer blending
 
@@ -198,7 +198,7 @@ focusedPointRingColor: string | [r,g,b,a]    // Focused ring color
 focusedPointIndex: number | undefined         // Which point to focus
 ```
 
-**Current heroine-graph state:**
+**Current graphmother state:**
 - Nodes have a hardcoded border
 - Need: Border on/off toggle, thickness, color configuration
 

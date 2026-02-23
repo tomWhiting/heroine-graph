@@ -5,16 +5,16 @@
 
 ## Overview
 
-This guide shows how to use the advanced visualization features in heroine-graph.
+This guide shows how to use the advanced visualization features in graphmother.
 
 ## Per-Item Styling
 
 ### Setting Node Colors Directly
 
 ```typescript
-import { HeroineGraph } from '@graphmother/core';
+import { GraphMother } from '@graphmother/core';
 
-const graph = await HeroineGraph.create(canvas);
+const graph = await GraphMother.create(canvas);
 graph.loadGraph({ nodes, edges });
 
 // Color each node individually (4 floats per node: RGBA)
@@ -245,11 +245,11 @@ graph.setContours({
 ## Complete Example
 
 ```typescript
-import { HeroineGraph } from '@graphmother/core';
+import { GraphMother } from '@graphmother/core';
 
 async function createVisualization() {
     const canvas = document.getElementById('graph') as HTMLCanvasElement;
-    const graph = await HeroineGraph.create(canvas);
+    const graph = await GraphMother.create(canvas);
 
     // Load data
     await graph.loadGraph({

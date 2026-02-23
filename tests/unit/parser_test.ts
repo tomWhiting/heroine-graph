@@ -9,7 +9,7 @@ import {
   validateGraphInput,
 } from "../../packages/core/src/graph/parser.ts";
 import { NODE_ATTR_FLOATS } from "../../packages/core/src/api/graph_state.ts";
-import { HeroineGraphError } from "../../packages/core/src/errors.ts";
+import { GraphMotherError } from "../../packages/core/src/errors.ts";
 import { microTreeGraph, triangleGraph } from "../fixtures/tiny_graphs.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
 
@@ -88,7 +88,7 @@ Deno.test("parseGraphInput: duplicate node id throws", () => {
         nodes: [{ id: "dup" }, { id: "dup" }],
         edges: [],
       }),
-    HeroineGraphError,
+    GraphMotherError,
     "Duplicate node ID",
   );
 });
@@ -99,7 +99,7 @@ Deno.test("parseGraphInput: dangling edge reference throws unless validation dis
     edges: [{ source: "a", target: "ghost" }],
   };
 
-  assertThrows(() => parseGraphInput(input), HeroineGraphError, "not found");
+  assertThrows(() => parseGraphInput(input), GraphMotherError, "not found");
 
   const lax = parseGraphInput(input, { validateReferences: false });
   assertEquals(lax.edgeTargets[0], 0); // dangling target mapped to 0

@@ -4,7 +4,7 @@
  * Handles WebGPU device/adapter initialization and lifecycle.
  */
 
-import { ErrorCode, Errors, HeroineGraphError } from "../errors.ts";
+import { ErrorCode, Errors, GraphMotherError } from "../errors.ts";
 
 /**
  * GPU context configuration options.
@@ -50,7 +50,7 @@ export interface GPUContext {
 }
 
 /**
- * Default required limits for Heroine Graph.
+ * Default required limits for GraphMother.
  *
  * These are the minimum limits we need for graph visualization.
  */
@@ -66,11 +66,17 @@ const DEFAULT_REQUIRED_LIMITS: Record<string, number> = {
  *
  * @param options Configuration options
  * @returns Promise resolving to the GPU context
- * @throws HeroineGraphError if WebGPU initialization fails
+ * @throws GraphMotherError if WebGPU initialization fails
  */
-export async function createGPUContext(options: GPUContextOptions): Promise<GPUContext> {
-  const { canvas, powerPreference = "high-performance", debug = false, alphaMode = "opaque" } =
-    options;
+export async function createGPUContext(
+  options: GPUContextOptions,
+): Promise<GPUContext> {
+  const {
+    canvas,
+    powerPreference = "high-performance",
+    debug = false,
+    alphaMode = "opaque",
+  } = options;
 
   // Check WebGPU availability
   if (!navigator.gpu) {
@@ -91,7 +97,9 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
   const unsupportedLimits: string[] = [];
 
   for (const [key, value] of Object.entries(DEFAULT_REQUIRED_LIMITS)) {
-    const adapterLimit = (adapter.limits as unknown as Record<string, number>)[key];
+    const adapterLimit = (adapter.limits as unknown as Record<string, number>)[
+      key
+    ];
 
     if (typeof adapterLimit === "number") {
       if (adapterLimit >= value) {
@@ -122,7 +130,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
       requiredFeatures,
     });
   } catch (error) {
-    throw new HeroineGraphError(
+    throw new GraphMotherError(
       ErrorCode.WEBGPU_DEVICE_FAILED,
       `Failed to create GPU device: ${error instanceof Error ? error.message : String(error)}`,
       { originalError: error, unsupportedLimits },
@@ -132,7 +140,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
   // Set up error handling
   device.addEventListener("uncapturederror", (event) => {
     const gpuEvent = event as GPUUncapturedErrorEvent;
-    console.error("[HeroineGraph] Uncaptured WebGPU error:", gpuEvent.error);
+    console.error("[GraphMother] Uncaptured WebGPU error:", gpuEvent.error);
     if (debug) {
       console.error("Error details:", gpuEvent.error.message);
     }
@@ -144,7 +152,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
   const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
   if (!context) {
     device.destroy();
-    throw new HeroineGraphError(
+    throw new GraphMotherError(
       ErrorCode.CANVAS_NOT_FOUND,
       "Failed to get WebGPU context from canvas",
       {},
@@ -176,7 +184,7 @@ export async function createGPUContext(options: GPUContextOptions): Promise<GPUC
   // Handle device loss
   device.lost.then((info) => {
     gpuContext.isDeviceLost = true;
-    console.error("[HeroineGraph] GPU device lost:", info.message);
+    console.error("[GraphMother] GPU device lost:", info.message);
     console.error("Reason:", info.reason);
     if (options.onDeviceLost) {
       options.onDeviceLost(info.reason ?? "unknown", info.message);
@@ -205,7 +213,11 @@ export function destroyGPUContext(ctx: GPUContext): void {
  * @param width New width in pixels
  * @param height New height in pixels
  */
-export function resizeGPUContext(ctx: GPUContext, width: number, height: number): void {
+export function resizeGPUContext(
+  ctx: GPUContext,
+  width: number,
+  height: number,
+): void {
   const dpr = globalThis.devicePixelRatio || 1;
   const scaledWidth = Math.floor(width * dpr);
   const scaledHeight = Math.floor(height * dpr);

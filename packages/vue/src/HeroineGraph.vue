@@ -1,7 +1,7 @@
 <!--
-  HeroineGraph Vue Component
+  GraphMother Vue Component
 
-  A Vue wrapper for the Heroine Graph visualization library.
+  A Vue wrapper for the GraphMother visualization library.
   Handles WebGPU initialization, lifecycle management, and event forwarding.
 
   @module
@@ -42,7 +42,7 @@ import {
 import type {
   GraphConfig,
   GraphInput,
-  HeroineGraph as HeroineGraphCore,
+  GraphMother as GraphMotherCore,
   NodeClickEvent,
   NodeDoubleClickEvent,
   NodeDragEndEvent,
@@ -59,12 +59,12 @@ import type {
   SimulationEndEvent,
   BackgroundClickEvent,
 } from "@graphmother/core";
-import { createHeroineGraph, isSupported } from "@graphmother/core";
+import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
- * Props for the HeroineGraph component
+ * Props for the GraphMother component
  */
-export interface HeroineGraphProps {
+export interface GraphMotherProps {
   /** Graph data to display */
   data?: GraphInput;
   /** Graph configuration */
@@ -79,14 +79,14 @@ export interface HeroineGraphProps {
   debug?: boolean;
 }
 
-const props = withDefaults(defineProps<HeroineGraphProps>(), {
+const props = withDefaults(defineProps<GraphMotherProps>(), {
   width: "100%",
   height: "100%",
   debug: false,
 });
 
 const emit = defineEmits<{
-  ready: [graph: HeroineGraphCore];
+  ready: [graph: GraphMotherCore];
   error: [error: Error];
   nodeClick: [event: NodeClickEvent];
   nodeDoubleClick: [event: NodeDoubleClickEvent];
@@ -110,13 +110,13 @@ const containerRef = ref<HTMLDivElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 
 // State
-const graph = ref<HeroineGraphCore | null>(null);
+const graph = ref<GraphMotherCore | null>(null);
 const isInitialized = ref(false);
 const error = ref<Error | null>(null);
 
 // Expose graph instance to parent
 defineExpose({
-  /** Get the underlying HeroineGraph instance */
+  /** Get the underlying GraphMother instance */
   getGraph: () => graph.value,
   /** Get the canvas element */
   getCanvas: () => canvasRef.value,
@@ -153,7 +153,7 @@ const errorStyle = computed<CSSProperties>(() => ({
 // Event handler registration and cleanup
 const registeredHandlers: Array<{ event: string; handler: (e: unknown) => void }> = [];
 
-function registerEventHandlers(graphInstance: HeroineGraphCore) {
+function registerEventHandlers(graphInstance: GraphMotherCore) {
   const handlers: Array<[string, (e: unknown) => void]> = [
     ["node:click", (e) => emit("nodeClick", e as NodeClickEvent)],
     ["node:dblclick", (e) => emit("nodeDoubleClick", e as NodeDoubleClickEvent)],
@@ -198,7 +198,7 @@ async function initGraph(): Promise<void> {
     }
 
     // Create graph instance
-    const graphInstance = await createHeroineGraph({
+    const graphInstance = await createGraphMother({
       canvas,
       config: props.config,
       debug: props.debug,

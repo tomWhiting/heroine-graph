@@ -1,5 +1,5 @@
 /**
- * HeroineGraph - Interactive Demo
+ * GraphMother - Interactive Demo
  *
  * Demonstrates all interactive features:
  * - Click to select nodes
@@ -14,9 +14,9 @@
 
 import {
   type BackgroundClickEvent,
-  createHeroineGraph,
+  createGraphMother,
   type GraphInput,
-  type HeroineGraph,
+  type GraphMother,
   type NodeClickEvent,
   type NodeDragEndEvent,
   type NodeHoverEnterEvent,
@@ -42,7 +42,7 @@ const layerLabels = document.getElementById("layer-labels") as HTMLInputElement;
 const eventLog = document.getElementById("event-log") as HTMLDivElement;
 
 // State
-let graph: HeroineGraph | null = null;
+let graph: GraphMother | null = null;
 let isSimulationRunning = true;
 let selectedNodeId: NodeId | null = null;
 let nodeCounter = 0;
@@ -233,7 +233,7 @@ function generateSampleGraph() {
  */
 async function init() {
   // Create graph
-  graph = await createHeroineGraph({
+  graph = await createGraphMother({
     canvas,
     config: {},
   });

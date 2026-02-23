@@ -6,7 +6,7 @@
  * @module
  */
 
-import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
+import type { ForceConfig, GraphMother, SimulationStatus } from "@graphmother/core";
 import type { GraphStore } from "./graph.svelte";
 
 /**
@@ -51,9 +51,9 @@ export function createSimulationStore(options: SimulationStoreOptions) {
   // Event handlers
   let tickHandler: ((event: { alpha: number }) => void) | null = null;
   let endHandler: (() => void) | null = null;
-  let currentGraph: HeroineGraph | null = null;
+  let currentGraph: GraphMother | null = null;
 
-  function setupEventListeners(g: HeroineGraph) {
+  function setupEventListeners(g: GraphMother) {
     // Cleanup previous listeners
     cleanupEventListeners();
 
