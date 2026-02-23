@@ -16,6 +16,7 @@
     "@types/node": "^25.0.3",
     "@vitest/browser-playwright": "^4.0.16",
     "@vitest/coverage-v8": "^4.0.16",
+    "@webgpu/types": "^0.1.69",
     "playwright": "^1.57.0",
     "storybook": "^10.1.11",
     "vitest": "^4.0.16"

@@ -5,11 +5,11 @@
   "type": "module",
   "main": "./dist/heroine-graph.esm.js",
   "module": "./dist/heroine-graph.esm.js",
-  "types": "./dist/heroine-graph.d.ts",
+  "types": "./dist/mod.d.ts",
   "exports": {
     ".": {
       "import": "./dist/heroine-graph.esm.js",
-      "types": "./dist/heroine-graph.d.ts"
+      "types": "./dist/mod.d.ts"
     }
   },
   "files": [
@@ -27,6 +27,7 @@
     "@graphmother/wasm": "^0.1.0"
   },
   "devDependencies": {
+    "@webgpu/types": "^0.1.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.7.0"
   },

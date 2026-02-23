@@ -84,17 +84,18 @@ if [ -f pkg/heroine_graph_wasm.js ]; then
     # wasm-pack regenerates pkg/package.json on every build, overwriting our
     # scoped name, repository URLs, homepage, bugs, and keywords.
     echo "Patching pkg/package.json with npm metadata..."
-    TEMP_PKG=$(mktemp)
-    cat pkg/package.json | \
-        sed 's/"name": "heroine-graph-wasm"/"name": "@graphmother\/wasm"/' | \
-        sed '/"version"/a\
-  "license": "MIT OR Apache-2.0",\
-  "repository": { "type": "git", "url": "https://github.com/tomWhiting/heroine-graph.git", "directory": "packages/wasm" },\
-  "homepage": "https://github.com/tomWhiting/heroine-graph",\
-  "bugs": { "url": "https://github.com/tomWhiting/heroine-graph/issues" },\
-  "keywords": ["graph", "visualization", "wasm", "webgpu", "graphmother"],' \
-        > "$TEMP_PKG"
-    mv "$TEMP_PKG" pkg/package.json
+    deno eval '
+      const pkg = JSON.parse(Deno.readTextFileSync("pkg/package.json"));
+      Object.assign(pkg, {
+        name: "@graphmother/wasm",
+        license: "MIT OR Apache-2.0",
+        repository: { type: "git", url: "https://github.com/tomWhiting/heroine-graph.git", directory: "packages/wasm" },
+        homepage: "https://github.com/tomWhiting/heroine-graph",
+        bugs: { url: "https://github.com/tomWhiting/heroine-graph/issues" },
+        keywords: ["graph", "visualization", "wasm", "webgpu", "graphmother"],
+      });
+      Deno.writeTextFileSync("pkg/package.json", JSON.stringify(pkg, null, 2) + "\n");
+    '
 
     echo "Output files:"
     ls -lh pkg/
