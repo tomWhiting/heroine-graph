@@ -22,12 +22,17 @@ use crate::spatial::SpatialIndex;
 /// - Node state (pinned, hidden, selected, hovered)
 /// - Spatial index for hit testing
 /// - ID mapping between stable IDs and internal indices
+///
+/// NodeId IS the petgraph slot index: freed indices are reused exactly as
+/// StableGraph reuses them, so NodeId space, CSR index space, SoA slot space,
+/// and layout output space are all identical.
 pub struct GraphEngine {
     /// The underlying graph structure.
-    /// Nodes store their stable NodeId, edges store weight.
+    /// Nodes store their NodeId (== slot index), edges store weight.
     graph: StableGraph<NodeId, f32, Directed>,
 
-    /// Map from stable NodeId to petgraph NodeIndex
+    /// Map from NodeId to petgraph NodeIndex (tracks liveness; the mapping
+    /// is the identity on the raw index)
     node_id_to_index: HashMap<NodeId, NodeIndex>,
 
     /// Map from stable EdgeId to petgraph EdgeIndex
@@ -35,9 +40,6 @@ pub struct GraphEngine {
 
     /// Reverse map from petgraph EdgeIndex to stable EdgeId (for O(1) lookup during removal)
     edge_index_to_id: HashMap<EdgeIndex, EdgeId>,
-
-    /// Next node ID to assign
-    next_node_id: u32,
 
     /// Next edge ID to assign
     next_edge_id: u32,
@@ -72,7 +74,6 @@ impl GraphEngine {
             node_id_to_index: HashMap::new(),
             edge_id_to_index: HashMap::new(),
             edge_index_to_id: HashMap::new(),
-            next_node_id: 0,
             next_edge_id: 0,
             pos_x: Vec::new(),
             pos_y: Vec::new(),
@@ -91,7 +92,6 @@ impl GraphEngine {
             node_id_to_index: HashMap::with_capacity(node_capacity),
             edge_id_to_index: HashMap::with_capacity(edge_capacity),
             edge_index_to_id: HashMap::with_capacity(edge_capacity),
-            next_node_id: 0,
             next_edge_id: 0,
             pos_x: Vec::with_capacity(node_capacity),
             pos_y: Vec::with_capacity(node_capacity),
@@ -108,18 +108,32 @@ impl GraphEngine {
     // =========================================================================
 
     /// Add a node at the specified position.
+    ///
+    /// The returned NodeId is the node's slot index. petgraph reuses freed
+    /// slots, so an id freed by remove_node may be handed out again.
     pub fn add_node(&mut self, x: f32, y: f32) -> NodeId {
-        let id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
-
-        let index = self.graph.add_node(id);
+        // The slot index isn't known until petgraph picks it, so add with a
+        // placeholder weight and patch it once the index is assigned.
+        let index = self.graph.add_node(NodeId(0));
+        let id = NodeId(index.index() as u32);
+        self.graph[index] = id;
         self.node_id_to_index.insert(id, index);
 
-        self.pos_x.push(x);
-        self.pos_y.push(y);
-        self.vel_x.push(0.0);
-        self.vel_y.push(0.0);
-        self.states.push(NodeState::new());
+        // Write SoA data at the slot index: extend for new tail slots
+        // (zero-filling any dead slots in between), overwrite reused ones.
+        let i = index.index();
+        if i >= self.pos_x.len() {
+            self.pos_x.resize(i + 1, 0.0);
+            self.pos_y.resize(i + 1, 0.0);
+            self.vel_x.resize(i + 1, 0.0);
+            self.vel_y.resize(i + 1, 0.0);
+            self.states.resize(i + 1, NodeState::new());
+        }
+        self.pos_x[i] = x;
+        self.pos_y[i] = y;
+        self.vel_x[i] = 0.0;
+        self.vel_y[i] = 0.0;
+        self.states[i] = NodeState::new();
 
         self.spatial_dirty.set(true);
         id
@@ -149,35 +163,46 @@ impl GraphEngine {
 
     /// Remove a node and all its connected edges.
     pub fn remove_node(&mut self, id: NodeId) -> bool {
-        if let Some(index) = self.node_id_to_index.remove(&id) {
-            // Remove edges connected to this node (both incoming and outgoing)
-            let edges: Vec<_> = self.graph
-                .edges_directed(index, Direction::Outgoing)
-                .chain(self.graph.edges_directed(index, Direction::Incoming))
-                .map(|e| e.id())
-                .collect();
-            for edge_index in edges {
-                if let Some(edge_id) = self.edge_index_to_id.remove(&edge_index) {
-                    self.edge_id_to_index.remove(&edge_id);
-                }
-            }
+        let Some(index) = self.node_id_to_index.remove(&id) else {
+            return false;
+        };
 
-            // Zero out SoA arrays for the removed node's slot
-            let i = index.index();
-            if i < self.pos_x.len() {
-                self.pos_x[i] = 0.0;
-                self.pos_y[i] = 0.0;
-                self.vel_x[i] = 0.0;
-                self.vel_y[i] = 0.0;
-                self.states[i] = NodeState::new();
+        // Remove edges connected to this node (both incoming and outgoing)
+        let edges: Vec<_> = self.graph
+            .edges_directed(index, Direction::Outgoing)
+            .chain(self.graph.edges_directed(index, Direction::Incoming))
+            .map(|e| e.id())
+            .collect();
+        for edge_index in edges {
+            if let Some(edge_id) = self.edge_index_to_id.remove(&edge_index) {
+                self.edge_id_to_index.remove(&edge_id);
             }
-
-            self.graph.remove_node(index);
-            self.spatial_dirty.set(true);
-            true
-        } else {
-            false
         }
+
+        // Zero out SoA arrays for the removed node's slot
+        let i = index.index();
+        if i < self.pos_x.len() {
+            self.pos_x[i] = 0.0;
+            self.pos_y[i] = 0.0;
+            self.vel_x[i] = 0.0;
+            self.vel_y[i] = 0.0;
+            self.states[i] = NodeState::new();
+        }
+
+        self.graph.remove_node(index);
+
+        // node_bound() shrinks when the highest-index node is removed;
+        // keep the SoA arrays exactly node_bound() long so position views
+        // never expose slots past the bound.
+        let bound = self.graph.node_bound();
+        self.pos_x.truncate(bound);
+        self.pos_y.truncate(bound);
+        self.vel_x.truncate(bound);
+        self.vel_y.truncate(bound);
+        self.states.truncate(bound);
+
+        self.spatial_dirty.set(true);
+        true
     }
 
     /// Get the number of nodes.
@@ -388,14 +413,13 @@ impl GraphEngine {
         // Only consider active nodes (those still in the graph)
         for node_index in self.graph.node_indices() {
             let i = node_index.index();
-            if i < self.pos_x.len() {
-                let x = self.pos_x[i];
-                let y = self.pos_y[i];
-                if x < min_x { min_x = x; }
-                if x > max_x { max_x = x; }
-                if y < min_y { min_y = y; }
-                if y > max_y { max_y = y; }
+            if i >= self.pos_x.len() {
+                continue;
             }
+            min_x = min_x.min(self.pos_x[i]);
+            max_x = max_x.max(self.pos_x[i]);
+            min_y = min_y.min(self.pos_y[i]);
+            max_y = max_y.max(self.pos_y[i]);
         }
 
         if min_x == f32::INFINITY {
@@ -411,7 +435,6 @@ impl GraphEngine {
         self.node_id_to_index.clear();
         self.edge_id_to_index.clear();
         self.edge_index_to_id.clear();
-        self.next_node_id = 0;
         self.next_edge_id = 0;
         self.pos_x.clear();
         self.pos_y.clear();
@@ -453,13 +476,14 @@ impl GraphEngine {
             let source = edge.source().index();
             let target = edge.target().index() as u32;
 
-            if source < node_bound {
-                let offset = current_offsets[source] as usize;
-                if offset < targets.len() {
-                    targets[offset] = target;
-                }
-                current_offsets[source] += 1;
+            if source >= node_bound {
+                continue;
             }
+            let offset = current_offsets[source] as usize;
+            if offset < targets.len() {
+                targets[offset] = target;
+            }
+            current_offsets[source] += 1;
         }
 
         // Combine offsets and targets
@@ -503,12 +527,13 @@ impl GraphEngine {
             let source = edge.source().index() as u32;
             let target = edge.target().index();
 
-            if target < node_bound {
-                let offset = current_offsets[target] as usize;
-                if offset < sources.len() {
-                    sources[offset] = source;
-                    current_offsets[target] += 1;
-                }
+            if target >= node_bound {
+                continue;
+            }
+            let offset = current_offsets[target] as usize;
+            if offset < sources.len() {
+                sources[offset] = source;
+                current_offsets[target] += 1;
             }
         }
 
@@ -689,6 +714,121 @@ mod tests {
         // node_count drops but node_bound stays
         assert_eq!(engine.node_count(), 2);
         assert_eq!(engine.node_bound(), 3);
+    }
+
+    #[test]
+    fn test_add_after_remove_reuses_slot() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(1.0, 1.0);
+        let _b = engine.add_node(2.0, 2.0);
+        let _c = engine.add_node(3.0, 3.0);
+
+        engine.pin_node(a);
+        engine.remove_node(a);
+        let d = engine.add_node(99.0, 88.0);
+
+        // The freed slot is reused, so the public id equals the slot index
+        assert_eq!(d.0, 0);
+        assert_eq!(engine.node_bound(), 3);
+        assert_eq!(engine.get_node_position(d), Some((99.0, 88.0)));
+        assert_eq!(engine.positions_x()[d.0 as usize], 99.0);
+        assert_eq!(engine.positions_y()[d.0 as usize], 88.0);
+        // No orphaned tail entry, and the reused slot's state is fresh
+        assert_eq!(engine.positions_x().len(), 3);
+        assert!(!engine.is_node_pinned(d));
+    }
+
+    #[test]
+    fn test_remove_tail_node_truncates_soa_to_node_bound() {
+        let mut engine = GraphEngine::new();
+        let _a = engine.add_node(1.0, 1.0);
+        let _b = engine.add_node(2.0, 2.0);
+        let c = engine.add_node(3.0, 3.0);
+
+        engine.remove_node(c);
+        // node_bound shrinks with the tail removal; SoA must follow
+        assert_eq!(engine.node_bound(), 2);
+        assert_eq!(engine.positions_x().len(), 2);
+
+        // Re-adding reuses the freed tail slot and re-extends the SoA
+        let d = engine.add_node(7.0, 8.0);
+        assert_eq!(d.0, 2);
+        assert_eq!(engine.node_bound(), 3);
+        assert_eq!(engine.positions_x().len(), 3);
+        assert_eq!(engine.get_node_position(d), Some((7.0, 8.0)));
+    }
+
+    #[test]
+    fn test_remove_add_cycles_keep_positions_consistent() {
+        let mut engine = GraphEngine::new();
+        let mut live: Vec<(NodeId, f32, f32)> = (0..8)
+            .map(|i| {
+                let (x, y) = (i as f32 * 10.0, i as f32 * -5.0);
+                (engine.add_node(x, y), x, y)
+            })
+            .collect();
+
+        for round in 0..6 {
+            let (victim, _, _) = live.remove(round % live.len());
+            engine.remove_node(victim);
+
+            let (x, y) = (1000.0 + round as f32, -(round as f32));
+            live.push((engine.add_node(x, y), x, y));
+
+            // SoA length must track node_bound exactly
+            assert!(engine.positions_x().len() <= engine.node_bound() as usize);
+            assert_eq!(engine.positions_x().len(), engine.positions_y().len());
+            assert_eq!(engine.positions_x().len(), engine.velocities_x().len());
+
+            // Every live node reads back its own position, both by id and
+            // by raw slot index into the SoA views
+            for &(id, ex, ey) in &live {
+                assert_eq!(engine.get_node_position(id), Some((ex, ey)));
+                assert_eq!(engine.positions_x()[id.0 as usize], ex);
+                assert_eq!(engine.positions_y()[id.0 as usize], ey);
+            }
+        }
+    }
+
+    #[test]
+    fn test_csr_and_degrees_agree_with_positions_after_reuse() {
+        let mut engine = GraphEngine::new();
+        let a = engine.add_node(0.0, 0.0);
+        let b = engine.add_node(1.0, 1.0);
+        let _c = engine.add_node(2.0, 2.0);
+
+        engine.remove_node(a);
+        let d = engine.add_node(9.0, 9.0);
+        assert_eq!(d.0, 0); // reused slot
+
+        engine.add_edge(d, b, 1.0).unwrap();
+
+        let bound = engine.node_bound() as usize;
+        let csr = engine.get_edges_csr();
+        let offsets = &csr[..bound + 1];
+        let targets = &csr[bound + 1..];
+
+        // The edge's source slot in the CSR is d's public id
+        let s = d.0 as usize;
+        assert_eq!(offsets[s + 1] - offsets[s], 1);
+        assert_eq!(targets[offsets[s] as usize], b.0);
+
+        // Degrees are indexed by the same slot
+        let degrees = engine.get_node_degrees();
+        assert_eq!(degrees[s * 2], 1); // out-degree of d
+        assert_eq!(degrees[b.0 as usize * 2 + 1], 1); // in-degree of b
+
+        // Inverse CSR attributes the incoming edge of b to source slot d
+        let inv = engine.get_inverse_edges_csr();
+        let inv_offsets = &inv[..bound + 1];
+        let sources = &inv[bound + 1..];
+        let t = b.0 as usize;
+        assert_eq!(inv_offsets[t + 1] - inv_offsets[t], 1);
+        assert_eq!(sources[inv_offsets[t] as usize], d.0);
+
+        // And the position at that same index is d's position
+        assert_eq!(engine.positions_x()[s], 9.0);
+        assert_eq!(engine.get_node_position(d), Some((9.0, 9.0)));
     }
 
     #[test]

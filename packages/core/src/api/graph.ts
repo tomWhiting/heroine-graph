@@ -76,6 +76,9 @@ import {
   createSimulationBindGroups,
   createSimulationBuffers,
   createSimulationPipeline,
+  DEAD_SLOT_RADIUS,
+  NODE_FLAG_DEAD,
+  NODE_FLAG_PINNED,
   readbackPositions,
   recordSimulationStepWithOptions,
   type SimulationBindGroups,
@@ -180,7 +183,11 @@ interface WasmEngine extends SpatialQueryEngine {
   findNearestNode(x: number, y: number): number | undefined;
   /** Clear all graph data */
   clear(): void;
-  /** Add a single node at position */
+  /**
+   * Add a single node at position. Returns the node's id, which by contract
+   * equals its slot index: the engine reuses freed slots in the same LIFO
+   * order as MutableGraphState.allocateNodeSlot, so ids and GPU slots match.
+   */
   addNode(x: number, y: number): number;
   /** Add multiple nodes from interleaved positions [x0, y0, x1, y1, ...] */
   addNodesFromPositions(positions: Float32Array): number;
@@ -539,8 +546,10 @@ export class HeroineGraph {
       prioritizeNodes: true,
     });
 
-    // WASM spatial engine is populated during load() with graph data.
-    // Enables O(log n) spatial queries for hit testing.
+    // Hit testing brute-forces the CPU position shadow (refreshed from the
+    // GPU every SYNC_INTERVAL frames). The WASM R-tree is not wired up
+    // because its position copy is never synced from the simulation — see
+    // populateWasmEngine for the full rationale.
 
     // Initialize pointer manager for interaction
     this.pointerManager = createPointerManager({
@@ -746,6 +755,12 @@ export class HeroineGraph {
     const { device } = this.gpuContext;
     const alpha = this.simulationController.state.alpha;
 
+    // Simulation must cover ALL occupied slots (live + holes), like rendering
+    // does — using the live nodeCount would skip live nodes in high slots
+    // after removals, freezing them. Hole slots are inert: they carry the
+    // dead flag in nodeFlags and a negative collision radius.
+    const simNodeCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
+
     // When the current algorithm handles gravity itself, suppress integration
     // gravity to avoid double-applying center pull. The algorithm's gravity
     // pass uses mass-weighted gravity; the integration shader's is uniform.
@@ -758,7 +773,7 @@ export class HeroineGraph {
     updateSimulationUniforms(
       device,
       this.simBuffers,
-      this.state.nodeCount,
+      simNodeCount,
       this.state.edgeCount,
       alpha,
       effectiveForceConfig,
@@ -771,7 +786,7 @@ export class HeroineGraph {
       ? computeBoundsFromPositions(
           this.state.parsedGraph.positionsX,
           this.state.parsedGraph.positionsY,
-          this.state.nodeCount,
+          simNodeCount,
         )
       : undefined;
 
@@ -796,7 +811,7 @@ export class HeroineGraph {
         device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
-        nodeCount: this.state.nodeCount,
+        nodeCount: simNodeCount,
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
@@ -814,7 +829,7 @@ export class HeroineGraph {
       encoder,
       this.simulationPipeline,
       this.simBindGroups,
-      this.state.nodeCount,
+      simNodeCount,
       this.state.edgeCount,
       {
         recordRepulsionPass:
@@ -824,7 +839,7 @@ export class HeroineGraph {
                 enc,
                 this.algorithmPipelines!,
                 this.algorithmBindGroups!,
-                this.state.nodeCount,
+                simNodeCount,
               );
             }
             : undefined,
@@ -839,7 +854,7 @@ export class HeroineGraph {
       this.collisionBuffers &&
       this.collisionBindGroup
     ) {
-      const nodeCount = this.state.nodeCount;
+      const nodeCount = simNodeCount;
       const useGridCollision = nodeCount > 5000 &&
         this.gridCollisionPipeline &&
         this.gridCollisionBuffers &&
@@ -933,7 +948,7 @@ export class HeroineGraph {
         device: this.gpuContext.device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
-        nodeCount: this.state.nodeCount,
+        nodeCount: this.graphState?.nodeHighWater ?? this.state.nodeCount,
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds: this.frameBounds,
@@ -1202,7 +1217,9 @@ export class HeroineGraph {
     const pg = this.state.parsedGraph;
     if (!pg) return;
 
-    const nodeCount = this.state.nodeCount;
+    // Cover all occupied slots so live nodes in high slots (after removals)
+    // count toward convergence; static hole slots contribute zero displacement.
+    const nodeCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
     if (nodeCount === 0) return;
 
     // Already converged (alpha = 0) — nothing to do
@@ -1272,11 +1289,17 @@ export class HeroineGraph {
       ? parseGraphTypedInput(data as GraphTypedInput)
       : parseGraphInput(data as GraphInput);
 
+    // Pins reference slots of the previous graph — the fresh nodeFlags buffer
+    // is zero-filled, so the CPU set must reset to match
+    this.pinnedNodes.clear();
+
     // Handle empty graph gracefully
     if (parsed.nodeCount === 0) {
       // Clear existing state
       this.destroyBuffers();
       this.destroySimulationBuffers();
+      this.graphState = null;
+      this.wasmEngine?.clear();
       this.state.loaded = true;
       this.state.nodeCount = 0;
       this.state.edgeCount = 0;
@@ -1325,6 +1348,14 @@ export class HeroineGraph {
 
     // Create GPU simulation buffers and bind groups
     this.createSimulationResources(parsed);
+
+    // Alias parsedGraph views onto graphState's arrays so there is exactly ONE
+    // CPU shadow from the start. Readback and styling write through parsedGraph;
+    // mutation flushes upload graphState's arrays — without this aliasing the
+    // first batch mutation would upload stale load-time positions and colors.
+    // Must run after populateWasmEngine/createBuffers/createSimulationResources,
+    // which rely on parsed arrays being exactly nodeCount long.
+    this.syncParsedGraphFromState();
 
     // Update layer render contexts with new position buffers
     this.updateLayerRenderContext();
@@ -1549,7 +1580,13 @@ export class HeroineGraph {
   /**
    * Populate the WASM engine with graph data from a ParsedGraph.
    * Clears any existing data and bulk-loads nodes and edges.
-   * This enables the rstar spatial index for O(log n) hit testing.
+   *
+   * The engine serves TOPOLOGY consumers (CSR generation, tree/community/
+   * codebase layouts). Its R-tree spatial index is deliberately NOT
+   * maintained: node positions live on the GPU and only the CPU shadow
+   * (parsedGraph.positionsX/Y) is refreshed via readback, so the engine's
+   * position copy goes stale the moment simulation starts. Hit testing
+   * therefore brute-forces over the CPU shadow (see updateHitTester).
    */
   private populateWasmEngine(parsed: ParsedGraph): void {
     if (!this.wasmEngine) return;
@@ -1575,8 +1612,6 @@ export class HeroineGraph {
       }
       this.wasmEngine.addEdgesFromPairs(edgePairs);
     }
-
-    this.wasmEngine.rebuildSpatialIndex();
   }
 
   /**
@@ -1815,10 +1850,11 @@ export class HeroineGraph {
       await this.reallocateNodeBuffers(growCapacity(gs.nodeHighWater + 1, gs.nodeCapacity));
     }
 
-    // Allocate slot
+    // Allocate slot — allocateNodeSlot owns slot allocation; the ID map must
+    // adopt its index (add() would pop the map's own diverging free list)
     const slot = gs.allocateNodeSlot();
     const nodeId = node.id;
-    gs.nodeIdMap.add(nodeId);
+    gs.nodeIdMap.set(nodeId, slot);
 
     // Parse position
     const x = node.x ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
@@ -1864,10 +1900,19 @@ export class HeroineGraph {
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
 
-    // Update WASM engine
+    // Mark the slot live for simulation and collision (clears any dead-slot
+    // flag / negative-radius sentinel left by a previous removal)
+    this.writeNodeSlotLiveness(slot, radius);
+
+    // Update WASM engine — by contract the engine reuses freed slots in the
+    // same LIFO order as allocateNodeSlot, so the returned id equals `slot`.
+    // No spatial index rebuild: the index has no consumers (hit testing
+    // brute-forces the CPU shadow; see populateWasmEngine).
     if (this.wasmEngine) {
-      this.wasmEngine.addNode(x, y);
-      this.wasmEngine.rebuildSpatialIndex();
+      const wasmId = this.wasmEngine.addNode(x, y);
+      if (this.debug && wasmId !== slot) {
+        console.warn(`WASM slot contract violated: engine id ${wasmId}, expected slot ${slot}`);
+      }
     }
 
     // Update counts
@@ -1905,7 +1950,8 @@ export class HeroineGraph {
 
     const gs = this.graphState;
     const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
-    if (slot === undefined) return false;
+    // Reject already-freed slots — a double free would corrupt the free list
+    if (slot === undefined || gs.nodeFreeSet.has(slot)) return false;
 
     // Remove all connected edges first — sort descending so swap-remove only
     // moves edges from higher indices to lower, not affecting edges still to process
@@ -1930,10 +1976,13 @@ export class HeroineGraph {
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, slot * 8, zeroVec2);
     device.queue.writeBuffer(this.simBuffers.forces, slot * 8, zeroVec2);
 
-    // Update WASM engine
+    // Mark the slot dead so simulation shaders and collision skip it entirely
+    // (a zeroed slot at the origin would otherwise still repel and collide)
+    this.writeNodeSlotLiveness(slot, undefined);
+
+    // Update WASM engine (NodeId == slot by contract)
     if (this.wasmEngine) {
       this.wasmEngine.removeNode(slot);
-      this.wasmEngine.rebuildSpatialIndex();
     }
 
     // Update counts
@@ -1975,10 +2024,10 @@ export class HeroineGraph {
       await this.reallocateEdgeBuffers(growCapacity(gs.edgeCount + 1, gs.edgeCapacity));
     }
 
-    // Allocate slot
+    // Allocate slot — edgeIdMap adopts the dense slot from allocateEdgeSlot
     const slot = gs.allocateEdgeSlot();
     const edgeId = (edge as Record<string, unknown>)["id"] as string | number | undefined ?? `edge_${slot}`;
-    gs.edgeIdMap.add(edgeId);
+    gs.edgeIdMap.set(edgeId, slot);
 
     // Parse attributes
     const width = edge.width ?? 1;
@@ -2144,7 +2193,9 @@ export class HeroineGraph {
     const ids: NodeId[] = [];
     for (const node of nodes) {
       const slot = gs.allocateNodeSlot();
-      gs.nodeIdMap.add(node.id);
+      gs.nodeIdMap.set(node.id, slot);
+      // A reused slot must not inherit the previous occupant's pin
+      this.pinnedNodes.delete(slot);
 
       const x = node.x ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
       const y = node.y ?? (Math.random() - 0.5) * Math.sqrt(gs.nodeCount) * 20;
@@ -2178,6 +2229,7 @@ export class HeroineGraph {
 
     // Flush all node data to GPU in bulk
     this.flushNodeBuffersToGPU();
+    this.flushNodeSlotFlagsToGPU();
 
     // Update WASM engine in batch
     if (this.wasmEngine) {
@@ -2188,7 +2240,6 @@ export class HeroineGraph {
         positions[i * 2 + 1] = gs.positionsY[slot];
       }
       this.wasmEngine.addNodesFromPositions(positions);
-      this.wasmEngine.rebuildSpatialIndex();
     }
 
     this.state.nodeCount = gs.nodeCount;
@@ -2415,8 +2466,19 @@ export class HeroineGraph {
       gs.addEdgeAdjacency(i, gs.edgeSources[i]!, gs.edgeTargets[i]!);
     }
 
-    // 7. Single GPU flush for all data
+    // Remap pinned slots — removed nodes drop their pin, survivors may have
+    // moved. Must happen before the flag flush below writes pinned bits.
+    const remappedPinned = new Set<NodeId>();
+    for (const slot of this.pinnedNodes) {
+      const newSlot = nodeSlotRemap.get(slot);
+      if (newSlot !== undefined) remappedPinned.add(newSlot);
+    }
+    this.pinnedNodes = remappedPinned;
+
+    // 7. Single GPU flush for all data (compaction moved slots, so the
+    // liveness flags and collision radii must be rewritten for all slots)
     this.flushNodeBuffersToGPU();
+    this.flushNodeSlotFlagsToGPU();
     this.flushEdgeBuffersToGPU();
 
     // 8. Rebuild WASM engine from current state (single rebuild instead of N removes)
@@ -2438,8 +2500,6 @@ export class HeroineGraph {
         }
         this.wasmEngine.addEdgesFromPairs(edgePairs);
       }
-
-      this.wasmEngine.rebuildSpatialIndex();
     }
 
     // 9. Update counts and sync
@@ -2538,7 +2598,7 @@ export class HeroineGraph {
       const edgeId =
         ((edge as Record<string, unknown>)["id"] as string | number | undefined) ??
         `edge_${slot}`;
-      gs.edgeIdMap.add(edgeId);
+      gs.edgeIdMap.set(edgeId, slot);
 
       const width = edge.width ?? 1;
       const [r, g, b] = edge.color ? parseColorToRGB(edge.color) : [0.5, 0.5, 0.5];
@@ -2720,6 +2780,12 @@ export class HeroineGraph {
       }
       this.wasmEngine.addNodesFromPositions(positions);
 
+      // Recreate hole slots so the engine's vacancy list matches nodeFreeList
+      // (same push order → same LIFO reuse order → NodeId == slot holds)
+      for (const slot of gs.nodeFreeList) {
+        this.wasmEngine.removeNode(slot);
+      }
+
       // Re-add surviving edges
       if (gs.edgeCount > 0) {
         const edgePairs = new Uint32Array(gs.edgeCount * 2);
@@ -2729,8 +2795,6 @@ export class HeroineGraph {
         }
         this.wasmEngine.addEdgesFromPairs(edgePairs);
       }
-
-      this.wasmEngine.rebuildSpatialIndex();
     }
 
     // 9. Update counts and sync
@@ -2790,6 +2854,76 @@ export class HeroineGraph {
     device.queue.writeBuffer(this.simBuffers.velocities, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
+  }
+
+  /**
+   * Update one slot's GPU liveness data: the dead-slot flag in nodeFlags and
+   * the collision radius. Pass the node's radius to mark the slot live, or
+   * undefined to mark it dead (skipped by simulation and collision shaders).
+   *
+   * Both call sites (re)assign the slot to a fresh or removed node, so any
+   * pin held by the slot's previous occupant is dropped.
+   */
+  private writeNodeSlotLiveness(slot: number, radius: number | undefined): void {
+    const { device } = this.gpuContext;
+    const dead = radius === undefined;
+
+    this.pinnedNodes.delete(slot);
+
+    if (this.simBuffers) {
+      device.queue.writeBuffer(
+        this.simBuffers.nodeFlags,
+        slot * 4,
+        new Uint32Array([dead ? NODE_FLAG_DEAD : 0]),
+      );
+    }
+
+    if (this.collisionBuffers) {
+      device.queue.writeBuffer(
+        this.collisionBuffers.nodeSizes,
+        slot * 4,
+        new Float32Array([dead ? DEAD_SLOT_RADIUS : radius]),
+      );
+      if (!dead && radius > this.maxNodeRadius) {
+        this.maxNodeRadius = radius;
+      }
+    }
+  }
+
+  /**
+   * Rewrite all per-slot liveness data ([0, nodeHighWater)) from graph state.
+   * Used after batch mutations and buffer reallocation, where slots may have
+   * moved (compaction) or the GPU buffers were recreated.
+   */
+  private flushNodeSlotFlagsToGPU(): void {
+    if (!this.graphState || !this.simBuffers) return;
+
+    const gs = this.graphState;
+    const { device } = this.gpuContext;
+    const hw = gs.nodeHighWater;
+
+    const flags = new Uint32Array(hw);
+    for (const slot of gs.nodeFreeSet) {
+      if (slot < hw) flags[slot] = NODE_FLAG_DEAD;
+    }
+    for (const slot of this.pinnedNodes) {
+      if (slot < hw && flags[slot] === 0) flags[slot] = NODE_FLAG_PINNED;
+    }
+    device.queue.writeBuffer(this.simBuffers.nodeFlags, 0, flags);
+
+    if (this.collisionBuffers) {
+      const sizes = new Float32Array(hw);
+      for (let i = 0; i < hw; i++) {
+        if (gs.nodeFreeSet.has(i)) {
+          sizes[i] = DEAD_SLOT_RADIUS;
+        } else {
+          const radius = gs.nodeAttributes[i * NODE_ATTR_FLOATS];
+          sizes[i] = radius > 0 ? radius : 5.0; // default matches initializeCollisionResources
+          if (sizes[i] > this.maxNodeRadius) this.maxNodeRadius = sizes[i];
+        }
+      }
+      device.queue.writeBuffer(this.collisionBuffers.nodeSizes, 0, sizes);
+    }
   }
 
   /**
@@ -3064,6 +3198,10 @@ export class HeroineGraph {
 
     // === Rebuild collision buffers ===
     this.initializeCollisionResources(device, newCapacity, gs.nodeAttributes);
+
+    // Restore per-slot liveness — the recreated nodeFlags buffer is zeroed
+    // and initializeCollisionResources gives holes the default radius
+    this.flushNodeSlotFlagsToGPU();
 
     // === Update layer render contexts ===
     this.updateLayerRenderContext();
@@ -3498,11 +3636,13 @@ export class HeroineGraph {
       );
 
       // Compute bounds from current positions for spatial algorithms.
+      // Cover all occupied slots (nodeHighWater), not just live nodes.
+      const algNodeCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
       const bounds = this.state.parsedGraph
         ? computeBoundsFromPositions(
             this.state.parsedGraph.positionsX,
             this.state.parsedGraph.positionsY,
-            this.state.nodeCount,
+            algNodeCount,
           )
         : undefined;
 
@@ -3511,7 +3651,7 @@ export class HeroineGraph {
         device: this.gpuContext.device,
         positions: this.simBuffers.positions,
         forces: this.simBuffers.forces,
-        nodeCount: this.state.nodeCount,
+        nodeCount: algNodeCount,
         edgeCount: this.state.edgeCount,
         forceConfig: this.forceConfig,
         bounds,
@@ -5375,10 +5515,11 @@ export class HeroineGraph {
 
         const nodeType = parsed.nodeTypes?.[i];
 
-        // If the node type has no registered style, preserve per-node attributes
-        // from the CPU shadow. This prevents applyTypeStyles from clobbering
-        // colors for types not yet in the style map.
-        if (nodeType && !this.typeStyleManager.getNodeTypeStyle(nodeType)) {
+        // Only restyle nodes whose type has a registered style. Untyped nodes
+        // and nodes with unstyled types keep their explicitly-set or
+        // parser-provided attributes from the CPU shadow — resolving them to
+        // the default gray would permanently destroy per-node colors.
+        if (!nodeType || !this.typeStyleManager.getNodeTypeStyle(nodeType)) {
           for (let k = 0; k < NODE_ATTR_FLOATS; k++) {
             nodeAttributes[baseOffset + k] = parsed.nodeAttributes[baseOffset + k] ?? 0;
           }
@@ -5431,11 +5572,11 @@ export class HeroineGraph {
         const edgeType = parsed.edgeTypes?.[i];
         const baseOffset = i * 8;
 
-        // If the edge type has no registered style, preserve per-edge attributes
-        // from the CPU shadow. This prevents addNodes→applyTypeStyles from
-        // clobbering edge colors for types not yet in the style map (e.g.
-        // followed_by::session_* sub-types discovered after last setEdgeTypeStyles).
-        if (edgeType && !this.typeStyleManager.getEdgeTypeStyle(edgeType)) {
+        // Only restyle edges whose type has a registered style. Untyped edges
+        // and edges with unstyled types keep their per-edge attributes from
+        // the CPU shadow (e.g. followed_by::session_* sub-types discovered
+        // after the last setEdgeTypeStyles, or parser-provided colors).
+        if (!edgeType || !this.typeStyleManager.getEdgeTypeStyle(edgeType)) {
           for (let k = 0; k < 8; k++) {
             edgeAttributes[baseOffset + k] = parsed.edgeAttributes[baseOffset + k] ?? 0;
           }
@@ -5449,10 +5590,23 @@ export class HeroineGraph {
         edgeAttributes[baseOffset + 1] = style.color[0]; // r
         edgeAttributes[baseOffset + 2] = style.color[1]; // g
         edgeAttributes[baseOffset + 3] = style.color[2]; // b
-        edgeAttributes[baseOffset + 4] = 0; // selected
-        edgeAttributes[baseOffset + 5] = 0; // hovered
-        edgeAttributes[baseOffset + 6] = 0; // curvature (default: straight)
+        // Preserve interaction state and per-edge curvature (setEdgeCurvatures
+        // writes the shadow) — type styles only own width/color/opacity
+        edgeAttributes[baseOffset + 4] =
+          parsed.edgeAttributes[baseOffset + 4] ?? 0; // selected
+        edgeAttributes[baseOffset + 5] =
+          parsed.edgeAttributes[baseOffset + 5] ?? 0; // hovered
+        edgeAttributes[baseOffset + 6] =
+          parsed.edgeAttributes[baseOffset + 6] ?? 0; // curvature
         edgeAttributes[baseOffset + 7] = style.color[3]; // opacity from resolved alpha (0.0 = hidden)
+
+        // Sync type-styled values to the CPU shadow so later shadow-based
+        // uploads (mutation flushes, the preserve path above) keep them
+        parsed.edgeAttributes[baseOffset + 0] = style.width;
+        parsed.edgeAttributes[baseOffset + 1] = style.color[0];
+        parsed.edgeAttributes[baseOffset + 2] = style.color[1];
+        parsed.edgeAttributes[baseOffset + 3] = style.color[2];
+        parsed.edgeAttributes[baseOffset + 7] = style.color[3];
       }
 
       device.queue.writeBuffer(
@@ -5715,11 +5869,39 @@ export class HeroineGraph {
   }
 
   /**
+   * Set a node's pinned state in both the CPU set and the GPU nodeFlags
+   * buffer. The integrate shader holds pinned nodes in place: their position
+   * is carried through the ping-pong unchanged and their velocity zeroed,
+   * so forces stop moving them while they keep repelling/attracting others.
+   */
+  private setNodePinnedState(slot: number, pinned: boolean): void {
+    if (pinned) {
+      this.pinnedNodes.add(slot);
+    } else {
+      this.pinnedNodes.delete(slot);
+    }
+
+    if (!this.simBuffers) return;
+    const hw = this.graphState?.nodeHighWater ?? this.state.nodeCount;
+    if (slot < 0 || slot >= hw) return;
+
+    // Preserve the dead bit — pinning a freed slot must not resurrect it
+    const dead = this.graphState?.nodeFreeSet.has(slot) ?? false;
+    const flags = (dead ? NODE_FLAG_DEAD : 0) |
+      (pinned && !dead ? NODE_FLAG_PINNED : 0);
+    this.gpuContext.device.queue.writeBuffer(
+      this.simBuffers.nodeFlags,
+      slot * 4,
+      new Uint32Array([flags]),
+    );
+  }
+
+  /**
    * Pin a node (exclude from simulation, fixed position).
    * @param nodeId Node ID to pin
    */
   pinNode(nodeId: NodeId): void {
-    this.pinnedNodes.add(nodeId);
+    this.setNodePinnedState(nodeId, true);
     this.events.emit({
       type: "node:pin",
       timestamp: Date.now(),
@@ -5732,7 +5914,7 @@ export class HeroineGraph {
    * @param nodeId Node ID to unpin
    */
   unpinNode(nodeId: NodeId): void {
-    this.pinnedNodes.delete(nodeId);
+    this.setNodePinnedState(nodeId, false);
     this.events.emit({
       type: "node:unpin",
       timestamp: Date.now(),
@@ -5771,8 +5953,8 @@ export class HeroineGraph {
     this.state.parsedGraph.positionsX[idx] = x;
     this.state.parsedGraph.positionsY[idx] = y;
 
-    // Pin the node
-    this.pinnedNodes.add(nodeId);
+    // Pin the node (sets the GPU flag so integration holds the written position)
+    this.setNodePinnedState(nodeId, true);
 
     // Update GPU buffer
     this.syncPositionToGPU(nodeId, x, y);
@@ -5838,7 +6020,7 @@ export class HeroineGraph {
         this.draggedNode = nodeId;
         this.lastDragPosition = { ...e.graphPosition };
         this.dragStartScreenPosition = { ...e.screenPosition };
-        this.pinnedNodes.add(nodeId);
+        this.setNodePinnedState(nodeId, true);
 
         // Select if not already selected (or add to selection with shift)
         if (!e.modifiers.shift && !this.selectedNodes.has(nodeId)) {
@@ -5931,7 +6113,7 @@ export class HeroineGraph {
 
         if (isClick) {
           // Unpin node — it wasn't actually dragged, just clicked
-          this.pinnedNodes.delete(nodeId);
+          this.setNodePinnedState(nodeId, false);
 
           // pointerup always has a PointerEvent (not WheelEvent)
           this.events.emit(
@@ -5939,7 +6121,7 @@ export class HeroineGraph {
           );
         } else {
           // Optionally unpin after drag (could be configurable)
-          // this.pinnedNodes.delete(nodeId);
+          // this.setNodePinnedState(nodeId, false);
 
           this.events.emit({
             type: "node:dragend",
@@ -6140,7 +6322,16 @@ export class HeroineGraph {
   }
 
   /**
-   * Update hit tester with current position data
+   * Update hit tester with current position data.
+   *
+   * Deliberately does NOT wire the WASM spatial engine: the R-tree indexes
+   * the engine's own position copy, which is only written at load/mutation
+   * time — the GPU simulation moves nodes every frame, so R-tree queries
+   * would hit-test against stale layout. Keeping it fresh would require
+   * pushing all positions into WASM and an O(n log n) rebuild every
+   * position sync (every SYNC_INTERVAL frames), which at target scale
+   * (~35K nodes) costs far more than the on-demand O(N) scan of the CPU
+   * shadow that only runs on pointer events.
    */
   private updateHitTester(): void {
     if (!this.state.parsedGraph) return;
@@ -6181,11 +6372,6 @@ export class HeroineGraph {
       },
       getEdgeCount: () => parsedGraph.edgeSources.length,
     });
-
-    // Rebuild WASM spatial index with new graph data
-    if (this.wasmEngine) {
-      this.wasmEngine.rebuildSpatialIndex();
-    }
   }
 
   // ==========================================================================

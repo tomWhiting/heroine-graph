@@ -204,7 +204,7 @@ pub fn compute_codebase_layout(
     }
 
     // Bottom-up pass: compute radii
-    compute_radii(0, &mut layout_nodes, config);
+    compute_radii(&mut layout_nodes, config);
 
     // Top-down pass: assign positions (root at origin)
     layout_nodes[0].x = 0.0;
@@ -230,12 +230,13 @@ fn count_descendants(node: u32, children_map: &HashMap<u32, Vec<u32>>) -> usize 
     let mut visited = HashSet::new();
     visited.insert(node);
     while let Some(n) = stack.pop() {
-        if let Some(children) = children_map.get(&n) {
-            for &child in children {
-                if visited.insert(child) {
-                    count += 1;
-                    stack.push(child);
-                }
+        let Some(children) = children_map.get(&n) else {
+            continue;
+        };
+        for &child in children {
+            if visited.insert(child) {
+                count += 1;
+                stack.push(child);
             }
         }
     }
@@ -243,8 +244,10 @@ fn count_descendants(node: u32, children_map: &HashMap<u32, Vec<u32>>) -> usize 
 }
 
 /// Build layout tree via DFS with cycle detection.
+/// Uses an explicit stack so tree depth cannot overflow the call stack
+/// (a fatal, uncatchable trap in WASM).
 fn build_layout_tree(
-    node_id: u32,
+    root: u32,
     node_categories: &[u8],
     node_count: usize,
     children_map: &HashMap<u32, Vec<u32>>,
@@ -252,53 +255,45 @@ fn build_layout_tree(
     node_to_layout: &mut HashMap<u32, usize>,
     visited: &mut HashSet<u32>,
 ) {
-    if !visited.insert(node_id) {
-        return; // Cycle detected
-    }
+    // (node_id, parent layout index)
+    let mut stack: Vec<(u32, Option<usize>)> = vec![(root, None)];
 
-    let slot = node_id as usize;
-    let category = if slot < node_categories.len() {
-        NodeCategory::from(node_categories[slot])
-    } else if slot < node_count {
-        NodeCategory::Other
-    } else {
-        return; // Out of bounds
-    };
-
-    let layout_idx = layout_nodes.len();
-    node_to_layout.insert(node_id, layout_idx);
-
-    layout_nodes.push(LayoutNode {
-        slot,
-        category,
-        children: Vec::new(),
-        radius: 0.0,
-        x: 0.0,
-        y: 0.0,
-    });
-
-    if let Some(children) = children_map.get(&node_id) {
-        let mut child_layout_indices: Vec<usize> = Vec::with_capacity(children.len());
-
-        for &child_id in children {
-            let before_len = layout_nodes.len();
-            build_layout_tree(
-                child_id,
-                node_categories,
-                node_count,
-                children_map,
-                layout_nodes,
-                node_to_layout,
-                visited,
-            );
-            if layout_nodes.len() > before_len {
-                if let Some(&child_idx) = node_to_layout.get(&child_id) {
-                    child_layout_indices.push(child_idx);
-                }
-            }
+    while let Some((node_id, parent_idx)) = stack.pop() {
+        if !visited.insert(node_id) {
+            continue; // Cycle detected
         }
 
-        layout_nodes[layout_idx].children = child_layout_indices;
+        let slot = node_id as usize;
+        let category = if slot < node_categories.len() {
+            NodeCategory::from(node_categories[slot])
+        } else if slot < node_count {
+            NodeCategory::Other
+        } else {
+            continue; // Out of bounds
+        };
+
+        let layout_idx = layout_nodes.len();
+        node_to_layout.insert(node_id, layout_idx);
+
+        layout_nodes.push(LayoutNode {
+            slot,
+            category,
+            children: Vec::new(),
+            radius: 0.0,
+            x: 0.0,
+            y: 0.0,
+        });
+
+        if let Some(parent_idx) = parent_idx {
+            layout_nodes[parent_idx].children.push(layout_idx);
+        }
+
+        if let Some(children) = children_map.get(&node_id) {
+            // Push in reverse so children pop in insertion order.
+            for &child_id in children.iter().rev() {
+                stack.push((child_id, Some(layout_idx)));
+            }
+        }
     }
 }
 
@@ -306,41 +301,44 @@ fn build_layout_tree(
 ///
 /// Leaf nodes get a base radius from their category.
 /// Internal nodes get a radius that encloses all children circles.
-fn compute_radii(idx: usize, nodes: &mut Vec<LayoutNode>, config: &CodebaseLayoutConfig) {
-    // First, recursively compute children's radii
-    let children: Vec<usize> = nodes[idx].children.clone();
-    for &child_idx in &children {
-        compute_radii(child_idx, nodes, config);
-    }
+///
+/// `build_layout_tree` assigns indices in DFS preorder, so every child index
+/// is greater than its parent's; a reverse index sweep is therefore a valid
+/// post-order (children before parents) without recursion.
+fn compute_radii(nodes: &mut [LayoutNode], config: &CodebaseLayoutConfig) {
+    for idx in (0..nodes.len()).rev() {
+        if nodes[idx].children.is_empty() {
+            // Leaf node: base radius from category
+            nodes[idx].radius = base_radius(nodes[idx].category, config);
+        } else {
+            // Internal node: compute enclosing radius for all children
+            // Sum of children circle areas determines minimum enclosing radius
+            let total_area: f32 = nodes[idx]
+                .children
+                .iter()
+                .map(|&c| {
+                    let r = nodes[c].radius;
+                    std::f32::consts::PI * r * r
+                })
+                .sum();
 
-    if children.is_empty() {
-        // Leaf node: base radius from category
-        nodes[idx].radius = base_radius(nodes[idx].category, config);
-    } else {
-        // Internal node: compute enclosing radius for all children
-        // Sum of children circle areas determines minimum enclosing radius
-        let total_area: f32 = children.iter()
-            .map(|&c| {
-                let r = nodes[c].radius;
-                std::f32::consts::PI * r * r
-            })
-            .sum();
+            // Enclosing circle radius from total area: A = π * R² → R = √(A/π)
+            // Apply a packing efficiency factor (~0.9 for circles)
+            let packing_efficiency = 0.82; // Typical for random circle packing
+            let enclosing_radius =
+                (total_area / (std::f32::consts::PI * packing_efficiency)).sqrt();
 
-        // Enclosing circle radius from total area: A = π * R² → R = √(A/π)
-        // Apply a packing efficiency factor (~0.9 for circles)
-        let packing_efficiency = 0.82; // Typical for random circle packing
-        let enclosing_radius = (total_area / (std::f32::consts::PI * packing_efficiency)).sqrt();
+            // Add padding based on node category
+            let padding = match nodes[idx].category {
+                NodeCategory::Repository | NodeCategory::Directory => config.directory_padding,
+                NodeCategory::File => config.file_padding,
+                _ => config.file_padding,
+            };
 
-        // Add padding based on node category
-        let padding = match nodes[idx].category {
-            NodeCategory::Repository | NodeCategory::Directory => config.directory_padding,
-            NodeCategory::File => config.file_padding,
-            _ => config.file_padding,
-        };
-
-        // Ensure minimum radius for the category
-        let min_radius = base_radius(nodes[idx].category, config);
-        nodes[idx].radius = enclosing_radius.max(min_radius) + padding;
+            // Ensure minimum radius for the category
+            let min_radius = base_radius(nodes[idx].category, config);
+            nodes[idx].radius = enclosing_radius.max(min_radius) + padding;
+        }
     }
 }
 
@@ -356,138 +354,203 @@ fn base_radius(category: NodeCategory, config: &CodebaseLayoutConfig) -> f32 {
 }
 
 /// Top-down position assignment using sunflower spiral within each parent.
-fn assign_positions(idx: usize, nodes: &mut Vec<LayoutNode>, config: &CodebaseLayoutConfig) {
-    let children: Vec<usize> = nodes[idx].children.clone();
-
-    if children.is_empty() {
-        return;
+///
+/// Iterative (explicit two-phase stack) so tree depth cannot overflow the
+/// call stack. `Place` positions a node's direct children and descends;
+/// `Resolve` runs sibling overlap relaxation after all their subtrees are
+/// placed, matching the original recursion order.
+fn assign_positions(root: usize, nodes: &mut [LayoutNode], config: &CodebaseLayoutConfig) {
+    enum Frame {
+        Place(usize),
+        Resolve {
+            children: Vec<(usize, f32)>,
+            parent_x: f32,
+            parent_y: f32,
+            available_radius: f32,
+            max_child_radius: f32,
+        },
     }
 
-    let parent_x = nodes[idx].x;
-    let parent_y = nodes[idx].y;
-    let parent_radius = nodes[idx].radius;
+    let mut stack = vec![Frame::Place(root)];
 
-    // Determine padding to use
-    let padding = match nodes[idx].category {
-        NodeCategory::Repository | NodeCategory::Directory => config.directory_padding,
-        NodeCategory::File => config.file_padding,
-        _ => config.file_padding,
-    };
-
-    // Available radius for placing children (subtract padding)
-    let available_radius = (parent_radius - padding).max(0.0);
-
-    let n = children.len();
-
-    if n == 1 {
-        // Single child: place at parent center
-        let child_idx = children[0];
-        nodes[child_idx].x = parent_x;
-        nodes[child_idx].y = parent_y;
-        assign_positions(child_idx, nodes, config);
-        return;
-    }
-
-    // Sort children by radius (largest first) for better packing
-    let mut sorted_children: Vec<(usize, f32)> = children.iter()
-        .map(|&c| (c, nodes[c].radius))
-        .collect();
-    sorted_children.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Use sunflower spiral placement
-    // The golden angle ensures approximately uniform distribution
-    let golden_angle = std::f32::consts::TAU * (1.0 - 1.0 / ((1.0 + 5.0f32.sqrt()) / 2.0));
-
-    // Compute placement radius: scale based on child sizes relative to parent
-    let max_child_radius = sorted_children.iter()
-        .map(|&(_, r)| r)
-        .fold(0.0f32, f32::max);
-
-    for (i, &(child_idx, child_radius)) in sorted_children.iter().enumerate() {
-        // Spiral parameter: how far from center to place this child
-        let t = if n <= 2 {
-            // For 1-2 children, place at specific positions
-            (i as f32 + 1.0) / (n as f32 + 1.0)
-        } else {
-            (i as f32 + 0.5) / n as f32
+    while let Some(frame) = stack.pop() {
+        let idx = match frame {
+            Frame::Place(idx) => idx,
+            Frame::Resolve {
+                children,
+                parent_x,
+                parent_y,
+                available_radius,
+                max_child_radius,
+            } => {
+                // Avoid overlaps between siblings by checking pairwise distances
+                // and pushing apart if needed (single pass relaxation)
+                resolve_overlaps(
+                    &children,
+                    nodes,
+                    parent_x,
+                    parent_y,
+                    available_radius,
+                    max_child_radius,
+                );
+                continue;
+            }
         };
 
-        // Distance from parent center, scaled so children don't overlap parent boundary
-        let placement_radius = (available_radius - child_radius).max(0.0) * t.sqrt();
+        let children: Vec<usize> = nodes[idx].children.clone();
 
-        // Angle: golden angle spiral
-        let angle = i as f32 * golden_angle;
-
-        nodes[child_idx].x = parent_x + placement_radius * angle.cos();
-        nodes[child_idx].y = parent_y + placement_radius * angle.sin();
-
-        // If child overlaps parent boundary, clamp it
-        let dist_from_parent = placement_radius + child_radius;
-        if dist_from_parent > parent_radius - padding * 0.5 && placement_radius > f32::EPSILON {
-            let clamped_dist = (parent_radius - padding * 0.5 - child_radius).max(0.0);
-            let scale = clamped_dist / placement_radius;
-            nodes[child_idx].x = parent_x + placement_radius * scale * angle.cos();
-            nodes[child_idx].y = parent_y + placement_radius * scale * angle.sin();
+        if children.is_empty() {
+            continue;
         }
 
-        // Recurse into child
-        assign_positions(child_idx, nodes, config);
-    }
+        let parent_x = nodes[idx].x;
+        let parent_y = nodes[idx].y;
+        let parent_radius = nodes[idx].radius;
 
-    // Avoid overlaps between siblings by checking pairwise distances
-    // and pushing apart if needed (single pass relaxation)
-    resolve_overlaps(&sorted_children, nodes, parent_x, parent_y, available_radius, max_child_radius);
+        // Determine padding to use
+        let padding = match nodes[idx].category {
+            NodeCategory::Repository | NodeCategory::Directory => config.directory_padding,
+            NodeCategory::File => config.file_padding,
+            _ => config.file_padding,
+        };
+
+        // Available radius for placing children (subtract padding)
+        let available_radius = (parent_radius - padding).max(0.0);
+
+        let n = children.len();
+
+        if n == 1 {
+            // Single child: place at parent center
+            let child_idx = children[0];
+            nodes[child_idx].x = parent_x;
+            nodes[child_idx].y = parent_y;
+            stack.push(Frame::Place(child_idx));
+            continue;
+        }
+
+        // Sort children by radius (largest first) for better packing
+        let mut sorted_children: Vec<(usize, f32)> = children.iter()
+            .map(|&c| (c, nodes[c].radius))
+            .collect();
+        sorted_children.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Use sunflower spiral placement
+        // The golden angle ensures approximately uniform distribution
+        let golden_angle = std::f32::consts::TAU * (1.0 - 1.0 / ((1.0 + 5.0f32.sqrt()) / 2.0));
+
+        // Compute placement radius: scale based on child sizes relative to parent
+        let max_child_radius = sorted_children.iter()
+            .map(|&(_, r)| r)
+            .fold(0.0f32, f32::max);
+
+        for (i, &(child_idx, child_radius)) in sorted_children.iter().enumerate() {
+            // Spiral parameter: how far from center to place this child
+            let t = if n <= 2 {
+                // For 1-2 children, place at specific positions
+                (i as f32 + 1.0) / (n as f32 + 1.0)
+            } else {
+                (i as f32 + 0.5) / n as f32
+            };
+
+            // Distance from parent center, scaled so children don't overlap parent boundary
+            let placement_radius = (available_radius - child_radius).max(0.0) * t.sqrt();
+
+            // Angle: golden angle spiral
+            let angle = i as f32 * golden_angle;
+
+            nodes[child_idx].x = parent_x + placement_radius * angle.cos();
+            nodes[child_idx].y = parent_y + placement_radius * angle.sin();
+
+            // If child overlaps parent boundary, clamp it
+            let dist_from_parent = placement_radius + child_radius;
+            if dist_from_parent > parent_radius - padding * 0.5 && placement_radius > f32::EPSILON {
+                let clamped_dist = (parent_radius - padding * 0.5 - child_radius).max(0.0);
+                let scale = clamped_dist / placement_radius;
+                nodes[child_idx].x = parent_x + placement_radius * scale * angle.cos();
+                nodes[child_idx].y = parent_y + placement_radius * scale * angle.sin();
+            }
+        }
+
+        // Resolve runs after all children subtrees are placed (LIFO: pushed
+        // below the child Place frames).
+        // Push in reverse so subtrees are processed largest-first, as before.
+        let place_order: Vec<usize> = sorted_children.iter().rev().map(|&(c, _)| c).collect();
+        stack.push(Frame::Resolve {
+            children: sorted_children,
+            parent_x,
+            parent_y,
+            available_radius,
+            max_child_radius,
+        });
+        for child_idx in place_order {
+            stack.push(Frame::Place(child_idx));
+        }
+    }
 }
 
 /// Single-pass overlap resolution for sibling circles.
 /// Pushes overlapping children apart radially from the parent center.
 fn resolve_overlaps(
     children: &[(usize, f32)],
-    nodes: &mut Vec<LayoutNode>,
+    nodes: &mut [LayoutNode],
     parent_x: f32,
     parent_y: f32,
     available_radius: f32,
     _max_child_radius: f32,
 ) {
-    let n = children.len();
-    if n <= 1 {
+    if children.len() <= 1 {
         return;
     }
 
     // Run a few relaxation iterations for better results
     for _ in 0..3 {
-        for i in 0..n {
-            let (ci, ri) = children[i];
-            for j in (i + 1)..n {
-                let (cj, rj) = children[j];
-
-                let dx = nodes[cj].x - nodes[ci].x;
-                let dy = nodes[cj].y - nodes[ci].y;
-                let dist_sq = dx * dx + dy * dy;
-                let min_dist = ri + rj;
-                let min_dist_sq = min_dist * min_dist;
-
-                if dist_sq < min_dist_sq && dist_sq > f32::EPSILON {
-                    let dist = dist_sq.sqrt();
-                    let overlap = min_dist - dist;
-                    let push = overlap * 0.5;
-
-                    // Push apart along the line connecting their centers
-                    let nx = dx / dist;
-                    let ny = dy / dist;
-
-                    nodes[ci].x -= nx * push;
-                    nodes[ci].y -= ny * push;
-                    nodes[cj].x += nx * push;
-                    nodes[cj].y += ny * push;
-
-                    // Clamp to stay within parent
-                    clamp_to_parent(ci, ri, parent_x, parent_y, available_radius, nodes);
-                    clamp_to_parent(cj, rj, parent_x, parent_y, available_radius, nodes);
-                }
+        for (i, &a) in children.iter().enumerate() {
+            for &b in &children[i + 1..] {
+                separate_pair(a, b, parent_x, parent_y, available_radius, nodes);
             }
         }
     }
+}
+
+/// Push one overlapping pair of sibling circles `(node_idx, radius)` apart
+/// along the line connecting their centers, keeping both within the parent.
+fn separate_pair(
+    a: (usize, f32),
+    b: (usize, f32),
+    parent_x: f32,
+    parent_y: f32,
+    available_radius: f32,
+    nodes: &mut [LayoutNode],
+) {
+    let (ci, ri) = a;
+    let (cj, rj) = b;
+
+    let dx = nodes[cj].x - nodes[ci].x;
+    let dy = nodes[cj].y - nodes[ci].y;
+    let dist_sq = dx * dx + dy * dy;
+    let min_dist = ri + rj;
+    let min_dist_sq = min_dist * min_dist;
+
+    if dist_sq >= min_dist_sq || dist_sq <= f32::EPSILON {
+        return;
+    }
+
+    let dist = dist_sq.sqrt();
+    let overlap = min_dist - dist;
+    let push = overlap * 0.5;
+
+    // Push apart along the line connecting their centers
+    let nx = dx / dist;
+    let ny = dy / dist;
+
+    nodes[ci].x -= nx * push;
+    nodes[ci].y -= ny * push;
+    nodes[cj].x += nx * push;
+    nodes[cj].y += ny * push;
+
+    // Clamp to stay within parent
+    clamp_to_parent(ci, ri, parent_x, parent_y, available_radius, nodes);
+    clamp_to_parent(cj, rj, parent_x, parent_y, available_radius, nodes);
 }
 
 /// Clamp a child's position so it stays within the parent's available radius.
@@ -663,6 +726,28 @@ mod tests {
         assert!(positions[0] >= sentinel, "Invalid edge array should produce sentinel");
     }
 
+    /// Append `count` children of `category` under `parent`, allocating
+    /// ids from `next_id`. Returns the new children's ids.
+    fn add_children(
+        edges: &mut Vec<u32>,
+        categories: &mut [u8],
+        parent: u32,
+        count: u32,
+        category: u8,
+        next_id: &mut u32,
+    ) -> Vec<u32> {
+        let mut ids = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let id = *next_id;
+            categories[id as usize] = category;
+            edges.push(parent);
+            edges.push(id);
+            ids.push(id);
+            *next_id += 1;
+        }
+        ids
+    }
+
     #[test]
     fn test_large_codebase_hierarchy() {
         // Simulate: 1 repo → 10 dirs → 10 files each → 5 symbols each = 1 + 10 + 100 + 500 = 611 nodes
@@ -674,30 +759,12 @@ mod tests {
         categories[0] = 0;
         let mut next_id = 1u32;
 
-        // 10 directories
-        for _ in 0..10 {
-            let dir_id = next_id;
-            categories[dir_id as usize] = 1;
-            edges.push(0);
-            edges.push(dir_id);
-            next_id += 1;
-
-            // 10 files per directory
-            for _ in 0..10 {
-                let file_id = next_id;
-                categories[file_id as usize] = 2;
-                edges.push(dir_id);
-                edges.push(file_id);
-                next_id += 1;
-
-                // 5 symbols per file
-                for _ in 0..5 {
-                    let sym_id = next_id;
-                    categories[sym_id as usize] = 3;
-                    edges.push(file_id);
-                    edges.push(sym_id);
-                    next_id += 1;
-                }
+        // 10 directories, each with 10 files, each with 5 symbols
+        let dirs = add_children(&mut edges, &mut categories, 0, 10, 1, &mut next_id);
+        for dir_id in dirs {
+            let files = add_children(&mut edges, &mut categories, dir_id, 10, 2, &mut next_id);
+            for file_id in files {
+                add_children(&mut edges, &mut categories, file_id, 5, 3, &mut next_id);
             }
         }
 
@@ -720,6 +787,34 @@ mod tests {
                 "Node {} should have finite positions",
                 i
             );
+        }
+    }
+
+    #[test]
+    fn test_deep_chain_no_stack_overflow() {
+        // 100_000-node linked chain: recursive tree walks would overflow the
+        // stack (fatal trap in WASM); all traversals must be iterative.
+        let n: u32 = 100_000;
+        let mut edges = Vec::with_capacity((n as usize - 1) * 2);
+        for i in 0..n - 1 {
+            edges.push(i);
+            edges.push(i + 1);
+        }
+        let categories = vec![1u8; n as usize];
+
+        let positions = compute_codebase_layout(
+            &edges,
+            &categories,
+            n as usize,
+            Some(0),
+            &CodebaseLayoutConfig::default(),
+        );
+        assert_eq!(positions.len(), n as usize * 2);
+
+        let sentinel = 3.402_823e+38_f32;
+        // Every node in the chain should have been placed
+        for i in 0..n as usize {
+            assert!(positions[i * 2] < sentinel, "Node {i} should be placed");
         }
     }
 

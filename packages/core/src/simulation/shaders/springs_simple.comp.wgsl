@@ -30,6 +30,11 @@ struct SpringUniforms {
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
 @group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
 
+// Node state flags (bit 0 = dead slot from removal)
+@group(0) @binding(5) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let edge_idx = global_id.x;
@@ -40,6 +45,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let source_idx = edge_sources[edge_idx];
     let target_idx = edge_targets[edge_idx];
+
+    // Edges are cascade-removed with their nodes, so live edges should never
+    // reference dead slots — skip defensively if buffers are mid-update
+    if (((node_flags[source_idx] | node_flags[target_idx]) & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
 
     // Get positions
     let source_pos = positions[source_idx];

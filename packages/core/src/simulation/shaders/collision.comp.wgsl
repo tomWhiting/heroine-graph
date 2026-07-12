@@ -24,7 +24,9 @@ struct CollisionUniforms {
 // Node positions (read-write for in-place update) - vec2<f32> per node
 @group(0) @binding(1) var<storage, read_write> positions: array<vec2<f32>>;
 
-// Node sizes/radii (read-only, optional - uses default if all zeros)
+// Node sizes/radii (read-only, optional - uses default if all zeros).
+// A negative radius marks a dead slot (hole from removal) — those slots
+// do not exist for collision purposes and are skipped entirely.
 @group(0) @binding(2) var<storage, read> node_sizes: array<f32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
@@ -43,8 +45,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Get this node's position and radius
     var pos = positions[node_idx];
 
-    // Get node radius (use default if size buffer has zero)
+    // Get node radius (negative = dead slot, use default if size buffer has zero)
     var radius_i = node_sizes[node_idx];
+    if (radius_i < 0.0) {
+        return;
+    }
     if (radius_i <= EPSILON) {
         radius_i = uniforms.default_radius;
     }
@@ -60,14 +65,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        let other_pos = positions[j];
-
-        // Get other node's radius
+        // Get other node's radius (skip dead slots)
         var radius_j = node_sizes[j];
+        if (radius_j < 0.0) {
+            continue;
+        }
         if (radius_j <= EPSILON) {
             radius_j = uniforms.default_radius;
         }
         radius_j *= uniforms.radius_multiplier;
+
+        let other_pos = positions[j];
 
         // Distance between centers
         let delta = pos - other_pos;
@@ -119,7 +127,8 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
 
     // CRITICAL: All threads must reach workgroupBarrier() calls.
     // Out-of-bounds threads participate in barriers but skip actual work.
-    let is_valid = node_idx < uniforms.node_count;
+    // Dead slots (negative radius) participate in barriers but never collide.
+    var is_valid = node_idx < uniforms.node_count;
 
     // Load this node's data (only valid threads read from global memory)
     var pos = vec2<f32>(0.0, 0.0);
@@ -127,7 +136,9 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
     if (is_valid) {
         pos = positions[node_idx];
         radius = node_sizes[node_idx];
-        if (radius <= EPSILON) {
+        if (radius < 0.0) {
+            is_valid = false;
+        } else if (radius <= EPSILON) {
             radius = uniforms.default_radius;
         }
         radius *= uniforms.radius_multiplier;
@@ -145,13 +156,14 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
         if (tile_idx < uniforms.node_count) {
             shared_pos[tid] = positions[tile_idx];
             var r = node_sizes[tile_idx];
-            if (r <= EPSILON) {
+            if (r >= 0.0 && r <= EPSILON) {
                 r = uniforms.default_radius;
             }
+            // Dead slots keep their negative radius as a skip marker
             shared_radius[tid] = r * uniforms.radius_multiplier;
         } else {
             shared_pos[tid] = vec2<f32>(0.0, 0.0);
-            shared_radius[tid] = 0.0;
+            shared_radius[tid] = -1.0;
         }
 
         // ALL threads must reach this barrier
@@ -168,6 +180,11 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
 
                 let other_pos = shared_pos[j];
                 let other_radius = shared_radius[j];
+
+                // Skip dead slots (negative radius marker)
+                if (other_radius < 0.0) {
+                    continue;
+                }
 
                 let delta = pos - other_pos;
                 let dist_sq = dot(delta, delta);

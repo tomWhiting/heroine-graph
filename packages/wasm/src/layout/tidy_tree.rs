@@ -78,7 +78,7 @@ struct LayoutNode {
     shift: f32,
     /// Change value for even spacing of intermediate children.
     change: f32,
-    /// Number (left-to-right index among siblings).
+    /// Left-to-right index into the parent's `children` vec.
     number: usize,
 }
 
@@ -210,8 +210,6 @@ impl TidyTreeLayout {
 
         Self::build_layout_tree(
             root,
-            None,
-            0,
             &children_map,
             &mut layout_nodes,
             &mut node_to_layout,
@@ -231,7 +229,7 @@ impl TidyTreeLayout {
 
         // Collect final prelim values after second walk
         let mut final_x: Vec<f32> = vec![0.0; layout_nodes.len()];
-        self.second_walk_collect(0, 0.0, &layout_nodes, &mut final_x);
+        self.second_walk_collect(0, &layout_nodes, &mut final_x);
 
         // Center the tree: find min x and shift everything so min_x = 0
         let min_x = final_x.iter().copied().fold(f32::INFINITY, f32::min);
@@ -242,67 +240,97 @@ impl TidyTreeLayout {
         let x_range = max_x - min_x;
 
         // Convert to output coordinates (sentinel means "not in tree")
-        let mut positions_x = vec![SENTINEL; node_count];
-        let mut positions_y = vec![SENTINEL; node_count];
-        let mut laid_out = 0;
+        let mut result = TidyTreeResult {
+            positions_x: vec![SENTINEL; node_count],
+            positions_y: vec![SENTINEL; node_count],
+            node_count: 0,
+        };
 
         match self.config.coordinate_mode {
             CoordinateMode::Linear => {
                 // Center horizontally around 0
                 let x_offset = -(min_x + x_range / 2.0);
-                for (layout_idx, node) in layout_nodes.iter().enumerate() {
-                    let slot = node.slot;
-                    if slot < node_count {
-                        positions_x[slot] =
-                            (final_x[layout_idx] + x_offset) * self.config.level_separation;
-                        positions_y[slot] =
-                            node.depth as f32 * self.config.level_separation;
-                        laid_out += 1;
-                    }
-                }
+                self.emit_linear(&layout_nodes, &final_x, x_offset, &mut result);
             }
             CoordinateMode::Radial => {
-                // Map x range to angular range (0..2*PI), depth to radius
-                let divisor = x_range + self.config.sibling_separation;
-                if x_range > 0.0 && divisor > f32::EPSILON {
-                    let angular_scale = std::f32::consts::TAU / divisor;
-                    for (layout_idx, node) in layout_nodes.iter().enumerate() {
-                        let slot = node.slot;
-                        if slot < node_count {
-                            let normalized_x = final_x[layout_idx] - min_x;
-                            let angle = normalized_x * angular_scale;
-                            let radius = (node.depth as f32 + 1.0) * self.config.level_separation;
-                            positions_x[slot] = radius * angle.cos();
-                            positions_y[slot] = radius * angle.sin();
-                            laid_out += 1;
-                        }
-                    }
-                    // Root at center
-                    if let Some(&root_layout_idx) = node_to_layout.get(&root) {
-                        let slot = layout_nodes[root_layout_idx].slot;
-                        if slot < node_count {
-                            positions_x[slot] = 0.0;
-                            positions_y[slot] = 0.0;
-                        }
-                    }
-                } else {
-                    // Single node or all nodes at same x
-                    for node in &layout_nodes {
-                        let slot = node.slot;
-                        if slot < node_count {
-                            positions_x[slot] = 0.0;
-                            positions_y[slot] = 0.0;
-                            laid_out += 1;
-                        }
-                    }
-                }
+                let root_layout_idx = node_to_layout.get(&root).copied();
+                self.emit_radial(&layout_nodes, &final_x, min_x, x_range, root_layout_idx, &mut result);
             }
         }
 
-        TidyTreeResult {
-            positions_x,
-            positions_y,
-            node_count: laid_out,
+        result
+    }
+
+    /// Write linear (top-down) coordinates into `out`, counting laid-out nodes.
+    fn emit_linear(
+        &self,
+        layout_nodes: &[LayoutNode],
+        final_x: &[f32],
+        x_offset: f32,
+        out: &mut TidyTreeResult,
+    ) {
+        let node_count = out.positions_x.len();
+        for (layout_idx, node) in layout_nodes.iter().enumerate() {
+            let slot = node.slot;
+            if slot < node_count {
+                out.positions_x[slot] =
+                    (final_x[layout_idx] + x_offset) * self.config.level_separation;
+                out.positions_y[slot] = node.depth as f32 * self.config.level_separation;
+                out.node_count += 1;
+            }
+        }
+    }
+
+    /// Write radial coordinates into `out`: x range maps to angular range
+    /// (0..2*PI), depth to radius, root pinned at the center.
+    fn emit_radial(
+        &self,
+        layout_nodes: &[LayoutNode],
+        final_x: &[f32],
+        min_x: f32,
+        x_range: f32,
+        root_layout_idx: Option<usize>,
+        out: &mut TidyTreeResult,
+    ) {
+        let node_count = out.positions_x.len();
+        let divisor = x_range + self.config.sibling_separation;
+
+        if x_range <= 0.0 || divisor <= f32::EPSILON {
+            // Single node or all nodes at same x
+            for node in layout_nodes.iter().filter(|n| n.slot < node_count) {
+                out.positions_x[node.slot] = 0.0;
+                out.positions_y[node.slot] = 0.0;
+                out.node_count += 1;
+            }
+            return;
+        }
+
+        let angular_scale = std::f32::consts::TAU / divisor;
+        // Arc-length preservation: grow the innermost ring so one
+        // Buchheim x-unit maps to at least one world unit of arc.
+        // With a fixed radius, per-node arc spacing shrinks as 1/N
+        // and the leaf-heavy outer levels merge into a solid ring
+        // at 1K+ nodes.
+        let ring_base = (divisor / std::f32::consts::TAU).max(self.config.level_separation);
+        for (layout_idx, node) in layout_nodes.iter().enumerate() {
+            let slot = node.slot;
+            if slot < node_count {
+                let normalized_x = final_x[layout_idx] - min_x;
+                let angle = normalized_x * angular_scale;
+                let radius = ring_base + node.depth as f32 * self.config.level_separation;
+                out.positions_x[slot] = radius * angle.cos();
+                out.positions_y[slot] = radius * angle.sin();
+                out.node_count += 1;
+            }
+        }
+
+        // Root at center
+        if let Some(root_idx) = root_layout_idx {
+            let slot = layout_nodes[root_idx].slot;
+            if slot < node_count {
+                out.positions_x[slot] = 0.0;
+                out.positions_y[slot] = 0.0;
+            }
         }
     }
 
@@ -314,171 +342,166 @@ impl TidyTreeLayout {
         let mut visited = HashSet::new();
         visited.insert(node);
         while let Some(n) = stack.pop() {
-            if let Some(children) = children_map.get(&n) {
-                for &child in children {
-                    if visited.insert(child) {
-                        count += 1;
-                        stack.push(child);
-                    }
-                }
+            let Some(children) = children_map.get(&n) else {
+                continue;
+            };
+            // filter marks nodes visited as a side effect (insert returns
+            // false for already-visited children, i.e. cycle back-edges)
+            for &child in children.iter().filter(|&&c| visited.insert(c)) {
+                count += 1;
+                stack.push(child);
             }
         }
         count
     }
 
     /// Build the layout tree via DFS from root.
-    /// Uses a visited set to prevent infinite recursion on cyclic graphs.
-    /// Nodes already visited are skipped (breaking the cycle).
+    /// Uses an explicit stack so tree depth cannot overflow the call stack,
+    /// and a visited set to break cycles (back-edges are skipped).
     fn build_layout_tree(
-        node_id: u32,
-        parent_layout_idx: Option<usize>,
-        depth: u32,
+        root: u32,
         children_map: &HashMap<u32, Vec<u32>>,
         layout_nodes: &mut Vec<LayoutNode>,
         node_to_layout: &mut HashMap<u32, usize>,
         visited: &mut HashSet<u32>,
     ) {
-        // Cycle detection: skip already-visited nodes
-        if !visited.insert(node_id) {
-            return;
-        }
+        // (node_id, parent layout index, depth)
+        let mut stack: Vec<(u32, Option<usize>, u32)> = vec![(root, None, 0)];
 
-        let layout_idx = layout_nodes.len();
-        node_to_layout.insert(node_id, layout_idx);
-
-        layout_nodes.push(LayoutNode {
-            slot: node_id as usize,
-            depth,
-            parent: parent_layout_idx,
-            children: Vec::new(),
-            prelim: 0.0,
-            modifier: 0.0,
-            thread_left: None,
-            thread_right: None,
-            ancestor: layout_idx,
-            shift: 0.0,
-            change: 0.0,
-            number: 0,
-        });
-
-        if let Some(children) = children_map.get(&node_id) {
-            let mut child_layout_indices: Vec<usize> = Vec::with_capacity(children.len());
-
-            for (number, &child_id) in children.iter().enumerate() {
-                let before_len = layout_nodes.len();
-                Self::build_layout_tree(
-                    child_id,
-                    Some(layout_idx),
-                    depth + 1,
-                    children_map,
-                    layout_nodes,
-                    node_to_layout,
-                    visited,
-                );
-                // Only add to children list if the node was actually inserted
-                // (it won't be if it was a cycle back-edge)
-                if layout_nodes.len() > before_len {
-                    if let Some(&child_idx) = node_to_layout.get(&child_id) {
-                        layout_nodes[child_idx].number = number;
-                        child_layout_indices.push(child_idx);
-                    }
-                }
+        while let Some((node_id, parent_layout_idx, depth)) = stack.pop() {
+            // Cycle detection: skip already-visited nodes
+            if !visited.insert(node_id) {
+                continue;
             }
 
-            layout_nodes[layout_idx].children = child_layout_indices;
+            let layout_idx = layout_nodes.len();
+            node_to_layout.insert(node_id, layout_idx);
+
+            // Number = index into the parent's accepted-children list (needed
+            // for left-sibling lookup and move_subtree spacing). Cycle
+            // back-edges never claim an index, so numbers stay contiguous.
+            let number = parent_layout_idx
+                .map(|p| layout_nodes[p].children.len())
+                .unwrap_or(0);
+
+            layout_nodes.push(LayoutNode {
+                slot: node_id as usize,
+                depth,
+                parent: parent_layout_idx,
+                children: Vec::new(),
+                prelim: 0.0,
+                modifier: 0.0,
+                thread_left: None,
+                thread_right: None,
+                ancestor: layout_idx,
+                shift: 0.0,
+                change: 0.0,
+                number,
+            });
+
+            if let Some(parent_idx) = parent_layout_idx {
+                layout_nodes[parent_idx].children.push(layout_idx);
+            }
+
+            // Push in reverse so children pop (and get numbered) in order.
+            for &child_id in children_map.get(&node_id).into_iter().flatten().rev() {
+                stack.push((child_id, Some(layout_idx), depth + 1));
+            }
         }
     }
 
     /// Buchheim first walk: bottom-up assignment of preliminary x-coordinates.
-    fn first_walk(&self, v: usize, nodes: &mut Vec<LayoutNode>) {
-        // Clone children indices to avoid borrow conflict during recursion
-        let children: Vec<usize> = nodes[v].children.clone();
-
-        if children.is_empty() {
-            // Leaf node: position relative to left sibling
-            nodes[v].prelim = 0.0;
-            return;
+    ///
+    /// Iterative post-order traversal (explicit stack) so tree depth cannot
+    /// overflow the call stack. Follows the published algorithm: each child
+    /// subtree is apportioned against its left-sibling forest as soon as it
+    /// finishes, then the node is placed relative to its left sibling (or
+    /// centered over its children if it has none).
+    fn first_walk(&self, root: usize, nodes: &mut [LayoutNode]) {
+        // Per-node traversal state: which child to descend into next, and the
+        // running default ancestor for apportion.
+        struct Frame {
+            v: usize,
+            next_child: usize,
+            default_ancestor: usize,
         }
 
-        // Recursively walk children
-        for &child in &children {
-            self.first_walk(child, nodes);
-        }
+        let root_default = nodes[root].children.first().copied().unwrap_or(root);
+        let mut stack = vec![Frame {
+            v: root,
+            next_child: 0,
+            default_ancestor: root_default,
+        }];
 
-        // Default ancestor for the apportion step
-        let mut default_ancestor = children[0];
+        while !stack.is_empty() {
+            let top = stack.len() - 1;
+            let v = stack[top].v;
+            let cursor = stack[top].next_child;
+            let child_count = nodes[v].children.len();
 
-        // Position children and merge contours
-        for (i, &child) in children.iter().enumerate() {
-            if i > 0 {
-                let left_sibling = children[i - 1];
-                // Shift child so it doesn't overlap left sibling's subtree
-                let shift = self.separate(left_sibling, child, nodes);
-                nodes[child].prelim += shift;
-                nodes[child].modifier += shift;
-
-                // Apportion: handle subtrees between left_sibling and child
-                default_ancestor =
-                    self.apportion(child, left_sibling, default_ancestor, nodes);
+            // A child subtree just finished: apportion it against the forest
+            // of its left siblings (canonical order: firstWalk(w); apportion(w)).
+            if cursor > 0 {
+                let w = nodes[v].children[cursor - 1];
+                let da = stack[top].default_ancestor;
+                stack[top].default_ancestor = self.apportion(w, da, nodes);
             }
+
+            if cursor < child_count {
+                stack[top].next_child += 1;
+                let w = nodes[v].children[cursor];
+                let w_default = nodes[w].children.first().copied().unwrap_or(w);
+                stack.push(Frame {
+                    v: w,
+                    next_child: 0,
+                    default_ancestor: w_default,
+                });
+                continue;
+            }
+
+            // All children processed: assign v's preliminary position.
+            self.assign_prelim(v, nodes);
+            stack.pop();
+        }
+    }
+
+    /// Assign v's preliminary position once all its children are placed:
+    /// a leaf sits next to its left sibling; an internal node is centered
+    /// over its children, shifted right of the left sibling if one exists.
+    fn assign_prelim(&self, v: usize, nodes: &mut [LayoutNode]) {
+        let child_count = nodes[v].children.len();
+        if child_count == 0 {
+            nodes[v].prelim = match self.left_sibling(v, nodes) {
+                Some(w) => nodes[w].prelim + self.config.sibling_separation,
+                None => 0.0,
+            };
+            return;
         }
 
         // Distribute extra space evenly among intermediate children
         self.execute_shifts(v, nodes);
 
-        // Center parent over first and last children
-        // Safety: children is non-empty (checked above), so first()/last() are safe
-        let first_child_prelim = nodes[children[0]].prelim;
-        let last_child_prelim = nodes[children[children.len() - 1]].prelim;
+        let first_child_prelim = nodes[nodes[v].children[0]].prelim;
+        let last_child_prelim = nodes[nodes[v].children[child_count - 1]].prelim;
         let midpoint = (first_child_prelim + last_child_prelim) / 2.0;
-        nodes[v].prelim = midpoint;
-    }
 
-    /// Compute the minimum separation needed between two sibling subtrees.
-    fn separate(&self, left: usize, right: usize, nodes: &Vec<LayoutNode>) -> f32 {
-        // Walk the right contour of left subtree and left contour of right subtree
-        let mut left_contour = left;
-        let mut right_contour = right;
-        let mut left_mod = 0.0f32;
-        let mut right_mod = 0.0f32;
-        let mut max_shift = 0.0f32;
-
-        loop {
-            let left_x = nodes[left_contour].prelim + left_mod;
-            let right_x = nodes[right_contour].prelim + right_mod;
-
-            let desired_sep = if self.are_siblings(left_contour, right_contour, nodes) {
-                self.config.sibling_separation
-            } else {
-                self.config.subtree_separation
-            };
-
-            let overlap = left_x + desired_sep - right_x;
-            if overlap > max_shift {
-                max_shift = overlap;
-            }
-
-            // Advance contours down one level
-            let next_left = self.next_right(left_contour, nodes);
-            let next_right = self.next_left(right_contour, nodes);
-
-            match (next_left, next_right) {
-                (Some(nl), Some(nr)) => {
-                    left_mod += nodes[left_contour].modifier;
-                    right_mod += nodes[right_contour].modifier;
-                    left_contour = nl;
-                    right_contour = nr;
-                }
-                _ => break,
-            }
+        if let Some(w) = self.left_sibling(v, nodes) {
+            nodes[v].prelim = nodes[w].prelim + self.config.sibling_separation;
+            nodes[v].modifier = nodes[v].prelim - midpoint;
+        } else {
+            nodes[v].prelim = midpoint;
         }
-
-        max_shift
     }
 
-    /// Check if two layout nodes are siblings (share the same parent).
-    fn are_siblings(&self, a: usize, b: usize, nodes: &[LayoutNode]) -> bool {
-        nodes[a].parent.is_some() && nodes[a].parent == nodes[b].parent
+    /// The sibling immediately to the left of v, if any.
+    fn left_sibling(&self, v: usize, nodes: &[LayoutNode]) -> Option<usize> {
+        let parent = nodes[v].parent?;
+        let number = nodes[v].number;
+        if number > 0 {
+            Some(nodes[parent].children[number - 1])
+        } else {
+            None
+        }
     }
 
     /// Get the next node on the right contour of a subtree.
@@ -499,22 +522,26 @@ impl TidyTreeLayout {
         }
     }
 
-    /// Apportion: ensure that subtrees between siblings don't overlap.
+    /// Apportion: resolve overlaps between v's subtree and the forest of its
+    /// left siblings by walking the two facing contours level by level.
     /// This is the core of Buchheim's linear-time improvement over Walker's algorithm.
     fn apportion(
         &self,
         v: usize,
-        left_sibling: usize,
         mut default_ancestor: usize,
-        nodes: &mut Vec<LayoutNode>,
+        nodes: &mut [LayoutNode],
     ) -> usize {
-        // v_inner_left: left contour of v's subtree
-        // v_outer_left: left contour going leftward from v
-        // v_inner_right: right contour of left_sibling's subtree
-        // v_outer_right: right contour going rightward from v
+        let Some(left_sibling) = self.left_sibling(v, nodes) else {
+            return default_ancestor;
+        };
 
+        // Contour walkers (Buchheim's notation in parentheses):
+        // v_inner_right: right contour of the left-sibling forest (v_i⁻)
+        // v_outer_right: right contour of v's own subtree (v_o⁺)
+        // v_inner_left:  left contour of v's own subtree (v_i⁺)
+        // v_outer_left:  left contour of the leftmost sibling (v_o⁻)
         let mut v_inner_right = left_sibling;
-        let mut v_outer_right = left_sibling;
+        let mut v_outer_right = v;
         let mut v_inner_left = v;
         // Find leftmost sibling via O(1) parent lookup
         let mut v_outer_left = if let Some(parent_idx) = nodes[v].parent {
@@ -549,6 +576,8 @@ impl TidyTreeLayout {
                 v_outer_right = next;
             }
 
+            // Record which sibling's subtree the right contour belongs to, so
+            // later apportion calls can shift the correct ancestor sibling.
             nodes[v_outer_right].ancestor = v;
 
             let shift = (nodes[v_inner_right].prelim + s_inner_right)
@@ -556,17 +585,11 @@ impl TidyTreeLayout {
                 + self.config.subtree_separation;
 
             if shift > 0.0 {
-                let ancestor_v = nodes[v].ancestor;
-                let move_ancestor = if self.is_ancestor_of(ancestor_v, v, nodes) {
-                    ancestor_v
-                } else {
-                    default_ancestor
-                };
-
+                let move_ancestor = self.select_ancestor(v_inner_right, v, default_ancestor, nodes);
                 self.move_subtree(move_ancestor, v, shift, nodes);
 
                 s_inner_left += shift;
-                s_outer_left += shift;
+                s_outer_right += shift;
             }
 
             s_inner_right += nodes[v_inner_right].modifier;
@@ -575,7 +598,8 @@ impl TidyTreeLayout {
             s_outer_right += nodes[v_outer_right].modifier;
         }
 
-        // Set threads
+        // Set threads so later contour walks continue past the shallower
+        // subtree's bottom into the deeper one.
         if self.next_right(v_inner_right, nodes).is_some()
             && self.next_right(v_outer_right, nodes).is_none()
         {
@@ -596,14 +620,22 @@ impl TidyTreeLayout {
         default_ancestor
     }
 
-    /// Check if `ancestor` is an ancestor of `v` within the same sibling group.
-    fn is_ancestor_of(&self, ancestor: usize, v: usize, nodes: &[LayoutNode]) -> bool {
-        // In Buchheim's algorithm, this checks if ancestor is a sibling of v
-        // or an ancestor of a sibling. We simplify: check same depth and
-        // that ancestor's ancestor field points to a valid common ancestor.
-        let v_depth = nodes[v].depth;
-        let a_depth = nodes[ancestor].depth;
-        a_depth <= v_depth
+    /// Buchheim's Ancestor function: use the recorded ancestor of the contour
+    /// node if it is a sibling of v (so move_subtree shifts against a real
+    /// left sibling); otherwise fall back to the default ancestor.
+    fn select_ancestor(
+        &self,
+        contour_node: usize,
+        v: usize,
+        default_ancestor: usize,
+        nodes: &[LayoutNode],
+    ) -> usize {
+        let candidate = nodes[contour_node].ancestor;
+        if nodes[candidate].parent.is_some() && nodes[candidate].parent == nodes[v].parent {
+            candidate
+        } else {
+            default_ancestor
+        }
     }
 
     /// Move subtree: shift node v and adjust spacing between ancestor and v.
@@ -612,7 +644,7 @@ impl TidyTreeLayout {
         wl: usize,
         wr: usize,
         shift: f32,
-        nodes: &mut Vec<LayoutNode>,
+        nodes: &mut [LayoutNode],
     ) {
         let subtrees = (nodes[wr].number as f32 - nodes[wl].number as f32).max(1.0);
         let per_subtree = shift / subtrees;
@@ -625,7 +657,7 @@ impl TidyTreeLayout {
     }
 
     /// Execute accumulated shifts for children of node v.
-    fn execute_shifts(&self, v: usize, nodes: &mut Vec<LayoutNode>) {
+    fn execute_shifts(&self, v: usize, nodes: &mut [LayoutNode]) {
         // Clone children indices to avoid borrow conflict
         let children: Vec<usize> = nodes[v].children.clone();
         let mut shift = 0.0f32;
@@ -640,17 +672,16 @@ impl TidyTreeLayout {
     }
 
     /// Second walk: apply accumulated modifiers to get final x-coordinates.
-    fn second_walk_collect(
-        &self,
-        v: usize,
-        modifier_sum: f32,
-        nodes: &[LayoutNode],
-        final_x: &mut Vec<f32>,
-    ) {
-        final_x[v] = nodes[v].prelim + modifier_sum;
+    /// Iterative (explicit stack) so tree depth cannot overflow the call stack.
+    fn second_walk_collect(&self, root: usize, nodes: &[LayoutNode], final_x: &mut [f32]) {
+        let mut stack: Vec<(usize, f32)> = vec![(root, 0.0)];
 
-        for &child in &nodes[v].children {
-            self.second_walk_collect(child, modifier_sum + nodes[v].modifier, nodes, final_x);
+        while let Some((v, modifier_sum)) = stack.pop() {
+            final_x[v] = nodes[v].prelim + modifier_sum;
+
+            for &child in &nodes[v].children {
+                stack.push((child, modifier_sum + nodes[v].modifier));
+            }
         }
     }
 }
@@ -850,6 +881,109 @@ mod tests {
 
         // Self-loop should be skipped, only 0→1 edge used
         assert_eq!(result.node_count, 2, "Self-loop should be skipped");
+    }
+
+    #[test]
+    fn test_cousin_subtrees_do_not_overlap() {
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            coordinate_mode: CoordinateMode::Linear,
+            level_separation: 1.0, // Keep output in raw Buchheim x-units
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+        });
+
+        // Deep/shallow/deep: root(0) → A(1), B(2 leaf), C(3).
+        // A and C both have depth-2 leaves; B has none, so the A/C conflict
+        // is only visible via contour threading across the shallow sibling.
+        // A(1) → 4, 5, 6; C(3) → 7, 8, 9
+        let edges = [0u32, 1, 0, 2, 0, 3, 1, 4, 1, 5, 1, 6, 3, 7, 3, 8, 3, 9];
+        let result = layout.compute(10, &edges, Some(0));
+        assert_eq!(result.node_count, 10);
+
+        // All depth-2 leaves (A's and C's) must respect the separation floor.
+        let depth2 = [4usize, 5, 6, 7, 8, 9];
+        for (i, &a) in depth2.iter().enumerate() {
+            for &b in &depth2[i + 1..] {
+                let gap = (result.positions_x[a] - result.positions_x[b]).abs();
+                assert!(
+                    gap >= layout.config.sibling_separation - 1e-3,
+                    "Depth-2 nodes {a} and {b} too close: gap {gap} \
+                     (x = {}, {})",
+                    result.positions_x[a],
+                    result.positions_x[b]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_radial_large_tree_outer_ring_spacing() {
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            coordinate_mode: CoordinateMode::Radial,
+            level_separation: 80.0,
+            sibling_separation: 1.0,
+            subtree_separation: 2.0,
+        });
+
+        // Root → 40 dirs → 50 leaves each = 2000 leaves at the outer depth.
+        let mut edges: Vec<u32> = Vec::new();
+        let mut leaf_ids: Vec<usize> = Vec::new();
+        let mut next_id = 1u32;
+        for _ in 0..40 {
+            let dir = next_id;
+            next_id += 1;
+            edges.push(0);
+            edges.push(dir);
+            for _ in 0..50 {
+                let leaf = next_id;
+                next_id += 1;
+                edges.push(dir);
+                edges.push(leaf);
+                leaf_ids.push(leaf as usize);
+            }
+        }
+        let node_count = next_id as usize;
+
+        let result = layout.compute(node_count, &edges, Some(0));
+        assert_eq!(result.node_count, node_count);
+
+        // Arc-length preservation: min pairwise world distance among the 2000
+        // outer-depth leaves must stay above a floor near sibling_separation,
+        // instead of shrinking as 1/N with a fixed-radius ring.
+        let mut min_dist_sq = f32::INFINITY;
+        for (i, &a) in leaf_ids.iter().enumerate() {
+            for &b in &leaf_ids[i + 1..] {
+                let dx = result.positions_x[a] - result.positions_x[b];
+                let dy = result.positions_y[a] - result.positions_y[b];
+                let d = dx * dx + dy * dy;
+                min_dist_sq = min_dist_sq.min(d);
+            }
+        }
+        let min_dist = min_dist_sq.sqrt();
+        let floor = layout.config.sibling_separation * 0.9;
+        assert!(
+            min_dist >= floor,
+            "Outer-ring leaves too close: min distance {min_dist} < floor {floor}"
+        );
+    }
+
+    #[test]
+    fn test_deep_chain_no_stack_overflow() {
+        // 100_000-node linked chain: recursive tree walks would overflow the
+        // stack (fatal trap in WASM); all traversals must be iterative.
+        let n: u32 = 100_000;
+        let mut edges = Vec::with_capacity((n as usize - 1) * 2);
+        for i in 0..n - 1 {
+            edges.push(i);
+            edges.push(i + 1);
+        }
+
+        let layout = TidyTreeLayout::new(TidyTreeConfig {
+            coordinate_mode: CoordinateMode::Linear,
+            ..Default::default()
+        });
+        let result = layout.compute(n as usize, &edges, Some(0));
+        assert_eq!(result.node_count, n as usize);
     }
 
     #[test]

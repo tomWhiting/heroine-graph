@@ -62,6 +62,12 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    // Dead slots (negative radius sentinel) are never inserted into cell
+    // lists, so no live node ever collides with them
+    if (node_sizes[idx] < 0.0) {
+        return;
+    }
+
     let pos = positions[idx];
 
     // Map position to grid cell, clamped to valid range.
@@ -94,8 +100,11 @@ fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let pos = positions[node_idx];
 
-    // Get this node's radius
+    // Get this node's radius (negative = dead slot, not in any cell list)
     var radius_i = node_sizes[node_idx];
+    if (radius_i < 0.0) {
+        return;
+    }
     if (radius_i <= EPSILON) {
         radius_i = uniforms.default_radius;
     }

@@ -13,8 +13,8 @@
     "build": "deno run -A scripts/build.ts",
     "build:wasm": "cd packages/wasm && ./build.sh",
     "bundle": "bunx esbuild packages/core/mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm && cp packages/wasm/pkg/heroine_graph_wasm.js packages/wasm/pkg/heroine_graph_wasm_bg.wasm dist/",
-    "test": "deno test --allow-read --allow-net --allow-env",
-    "test:coverage": "deno test --allow-read --allow-net --allow-env --coverage=coverage",
+    "test": "deno test --allow-read --allow-net --allow-env --unstable-webgpu tests/",
+    "test:coverage": "deno test --allow-read --allow-net --allow-env --unstable-webgpu --coverage=coverage tests/",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "check": "deno check packages/core/mod.ts",
@@ -34,7 +34,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
-    "noPropertyAccessFromIndexSignature": true
+    "noPropertyAccessFromIndexSignature": true,
+    "lib": ["deno.window", "dom", "dom.iterable", "dom.asynciterable", "deno.webgpu"]
   },
   "lint": {
     "include": ["packages/", "tests/", "examples/"],

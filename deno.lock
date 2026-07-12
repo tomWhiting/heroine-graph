@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/path@*": "1.1.4",
     "npm:@sveltejs/package@^2.3.0": "2.5.7_svelte@5.46.1__acorn@8.15.0_typescript@5.9.3",
@@ -16,6 +17,12 @@
     "npm:vue@^3.5.0": "3.5.26_typescript@5.9.3"
   },
   "jsr": {
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
     "@std/internal@1.0.12": {
       "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
     },
@@ -1172,15 +1179,27 @@
         "npm:@types/node@^25.0.3",
         "npm:@vitest/browser-playwright@^4.0.16",
         "npm:@vitest/coverage-v8@^4.0.16",
+        "npm:@webgpu/types@~0.1.69",
         "npm:playwright@^1.57.0",
         "npm:storybook@^10.1.11",
         "npm:vitest@^4.0.16"
       ]
     },
     "members": {
+      "packages/core": {
+        "packageJson": {
+          "dependencies": [
+            "npm:@graphmother/wasm@0.1",
+            "npm:@webgpu/types@0.1",
+            "npm:esbuild@0.24",
+            "npm:typescript@^5.7.0"
+          ]
+        }
+      },
       "packages/react": {
         "packageJson": {
           "dependencies": [
+            "npm:@graphmother/core@0.1",
             "npm:@types/react-dom@19",
             "npm:@types/react@19",
             "npm:react-dom@19",
@@ -1193,6 +1212,7 @@
       "packages/svelte": {
         "packageJson": {
           "dependencies": [
+            "npm:@graphmother/core@0.1",
             "npm:@sveltejs/package@^2.3.0",
             "npm:@sveltejs/vite-plugin-svelte@4",
             "npm:svelte-check@4",
@@ -1204,6 +1224,7 @@
       "packages/vue": {
         "packageJson": {
           "dependencies": [
+            "npm:@graphmother/core@0.1",
             "npm:@vue/tsconfig@0.7",
             "npm:tsup@^8.3.0",
             "npm:typescript@^5.7.0",

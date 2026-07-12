@@ -6,8 +6,8 @@
  * single source of truth for incremental mutations.
  *
  * Node slots use a free-list with a high-water mark. Removed node slots
- * are zeroed (radius=0 → invisible, position=0 → no forces) and reused
- * on subsequent adds.
+ * are zeroed (radius=0 → invisible), flagged dead on the GPU (excluded
+ * from forces/integration/collision) and reused on subsequent adds.
  *
  * Edge slots use dense packing with swap-remove. The last edge is swapped
  * into the removed slot, keeping the array contiguous.
@@ -174,6 +174,13 @@ export class MutableGraphState {
 
   /**
    * Free a node slot. Zeros the slot data and adds to free list.
+   *
+   * Freed slots are kept in the free list even when they form a trailing
+   * run below nodeHighWater. The pure LIFO push/pop order must mirror
+   * petgraph StableGraph's vacancy list in the WASM engine, which never
+   * reclaims trailing slots — pruning here would make the two sides reuse
+   * different slots and break the NodeId == slot contract. Holes are
+   * reclaimed by the compacting batch paths (removeNodesBatch) instead.
    */
   freeNodeSlot(index: number): void {
     this.nodeCount--;
@@ -188,23 +195,6 @@ export class MutableGraphState {
 
     this.nodeFreeList.push(index);
     this.nodeFreeSet.add(index);
-
-    // Recalculate high water mark if this was the last slot — O(1) per step using Set
-    if (index === this.nodeHighWater - 1) {
-      while (this.nodeHighWater > 0 && this.nodeFreeSet.has(this.nodeHighWater - 1)) {
-        this.nodeFreeSet.delete(this.nodeHighWater - 1);
-        this.nodeHighWater--;
-      }
-      // Rebuild the free list array to match (remove entries >= nodeHighWater)
-      const hw = this.nodeHighWater;
-      let writeIdx = 0;
-      for (let i = 0; i < this.nodeFreeList.length; i++) {
-        if (this.nodeFreeList[i] < hw) {
-          this.nodeFreeList[writeIdx++] = this.nodeFreeList[i];
-        }
-      }
-      this.nodeFreeList.length = writeIdx;
-    }
 
     // Clean up adjacency
     this.nodeEdges.delete(index);

@@ -42,6 +42,12 @@ struct IntegrationUniforms {
 // Node depth from root (f32 per node, 0.0 = root or non-hierarchical)
 @group(0) @binding(6) var<storage, read> node_depth: array<f32>;
 
+// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned)
+@group(0) @binding(7) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_PINNED: u32 = 2u;
+
 // Clamp vector magnitude
 fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
     let mag = length(v);
@@ -57,6 +63,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = global_id.x;
 
     if (node_idx >= uniforms.node_count) {
+        return;
+    }
+
+    // Dead slots don't integrate — carry the (zeroed) position through the
+    // ping-pong so the output buffer never holds stale data for the slot.
+    // Pinned nodes hold their externally-written position (pinNode / drag
+    // writes both ping-pong buffers) with zero velocity.
+    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
+        positions_out[node_idx] = positions_in[node_idx];
+        velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
         return;
     }
 

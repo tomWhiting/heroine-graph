@@ -1,8 +1,16 @@
 /**
- * Hit Testing via WASM R-tree
+ * Hit Testing
  *
- * Provides efficient spatial queries for node and edge hit testing
- * using the WASM-based R-tree spatial index.
+ * Provides spatial queries for node and edge hit testing.
+ *
+ * By default queries brute-force over the position provider (the CPU shadow
+ * of GPU positions), which is the freshest CPU-side data available — node
+ * positions live on the GPU and are read back periodically. An optional
+ * SpatialQueryEngine (WASM R-tree) can be wired via setSpatialEngine(), but
+ * the caller is then responsible for keeping the engine's positions in sync
+ * with the simulation and rebuilding the index; heroine-graph core does not
+ * wire it because syncing + rebuilding every readback would cost more than
+ * the per-pointer-event scan.
  *
  * @module
  */
@@ -105,7 +113,8 @@ export interface EdgeProvider {
 /**
  * Hit tester for graph elements.
  *
- * Uses a WASM R-tree for efficient node hit testing.
+ * Node hit testing scans the position provider (or an optional spatial
+ * engine, if the caller wires one and keeps its index fresh).
  * Edge hit testing uses line-point distance calculations.
  */
 export class HitTester {

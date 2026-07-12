@@ -19,10 +19,15 @@ export interface IdMap<T extends IdLike = IdLike> {
   /** Number of IDs in the map */
   readonly size: number;
 
-  /** Add an ID and return its index */
+  /**
+   * Add an ID and return its index, allocated from the map's own free list.
+   * Only for sequential builds (parsing, rebuilds after clear()). When an
+   * external allocator owns slot indices (MutableGraphState.allocateNodeSlot),
+   * use set(id, index) instead — the two free lists diverge otherwise.
+   */
   add: (id: T) => number;
 
-  /** Force-assign a specific index to an ID, bypassing the free list */
+  /** Assign a specific externally-allocated index to an ID */
   set: (id: T, index: number) => void;
 
   /** Get index for an ID (undefined if not found) */

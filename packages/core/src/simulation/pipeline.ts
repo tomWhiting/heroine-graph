@@ -87,6 +87,28 @@ import SPRINGS_SIMPLE_WGSL from "./shaders/springs_simple.comp.wgsl";
 import INTEGRATE_WGSL from "./shaders/integrate.comp.wgsl";
 
 /**
+ * nodeFlags bit 0: the slot is a hole left by a removal. Simulation shaders
+ * (repulsion, springs, integration) skip dead slots entirely — they neither
+ * exert nor receive forces and are never integrated.
+ */
+export const NODE_FLAG_DEAD = 1;
+
+/**
+ * nodeFlags bit 1: the node is pinned (pinNode / active drag). The integrate
+ * shader carries its position through the ping-pong unchanged and zeroes its
+ * velocity, so external writes to the position buffers hold. Pinned nodes
+ * still exert repulsion and spring forces on their neighbors.
+ */
+export const NODE_FLAG_PINNED = 2;
+
+/**
+ * Sentinel written into the collision node_sizes buffer for dead slots.
+ * Collision shaders treat any negative radius as "slot does not exist"
+ * (0 means "use default radius", so it cannot mark dead slots).
+ */
+export const DEAD_SLOT_RADIUS = -1;
+
+/**
  * Simulation pipeline configuration
  */
 export interface SimulationPipelineConfig {
@@ -145,7 +167,8 @@ export interface SimulationBuffers {
   repulsionUniforms: GPUBuffer;
   springUniforms: GPUBuffer;
   integrationUniforms: GPUBuffer;
-  // Node state flags (for pinned nodes)
+  // Node state flags (u32 per node, bit 0 = dead slot, bit 1 = pinned;
+  // see NODE_FLAG_DEAD / NODE_FLAG_PINNED)
   nodeFlags: GPUBuffer;
   // Node depth from root (f32 per node) for hierarchical settling
   nodeDepth: GPUBuffer;
@@ -199,7 +222,9 @@ export function createSimulationPipeline(
     layout: "auto",
     compute: {
       module: repulsionModule,
-      entryPoint: "main",
+      // Dead-slot-masked variant; plain "main" is used by the N² algorithm
+      // plugin whose bind group has no node_flags buffer
+      entryPoint: "main_masked",
     },
   });
 
@@ -381,7 +406,7 @@ export function createSimulationBindGroups(
     ],
   });
 
-  // Repulsion bind group (bindings 0-2)
+  // Repulsion bind group (bindings 0-3)
   const repulsion = device.createBindGroup({
     label: "Repulsion Bind Group",
     layout: pipeline.pipelines.repulsion.getBindGroupLayout(0),
@@ -389,10 +414,11 @@ export function createSimulationBindGroups(
       { binding: 0, resource: { buffer: buffers.repulsionUniforms } },
       { binding: 1, resource: { buffer: buffers.positions } },
       { binding: 2, resource: { buffer: buffers.forces } },
+      { binding: 3, resource: { buffer: buffers.nodeFlags } },
     ],
   });
 
-  // Springs bind group (bindings 0-4)
+  // Springs bind group (bindings 0-5)
   const springs = device.createBindGroup({
     label: "Springs Bind Group",
     layout: pipeline.pipelines.springs.getBindGroupLayout(0),
@@ -402,10 +428,11 @@ export function createSimulationBindGroups(
       { binding: 2, resource: { buffer: buffers.forces } },
       { binding: 3, resource: { buffer: buffers.edgeSources } },
       { binding: 4, resource: { buffer: buffers.edgeTargets } },
+      { binding: 5, resource: { buffer: buffers.nodeFlags } },
     ],
   });
 
-  // Integration bind group (bindings 0-6)
+  // Integration bind group (bindings 0-7)
   const integration = device.createBindGroup({
     label: "Integration Bind Group",
     layout: pipeline.pipelines.integrate.getBindGroupLayout(0),
@@ -417,6 +444,7 @@ export function createSimulationBindGroups(
       { binding: 4, resource: { buffer: buffers.velocitiesOut } },
       { binding: 5, resource: { buffer: buffers.forces } },
       { binding: 6, resource: { buffer: buffers.nodeDepth } },
+      { binding: 7, resource: { buffer: buffers.nodeFlags } },
     ],
   });
 
@@ -521,7 +549,7 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Node state flags (for pinned nodes, etc.)
+  // Node state flags (dead-slot masking; zero-initialized = all live)
   const nodeFlags = device.createBuffer({
     label: "Node Flags",
     size: nodeFlagBytes,
@@ -682,7 +710,7 @@ export function copyPositionsToSimulation(
   device.queue.writeBuffer(buffers.velocitiesOut, 0, toArrayBuffer(zerosVec2));
   device.queue.writeBuffer(buffers.forces, 0, toArrayBuffer(zerosVec2));
 
-  // Initialize node flags to 0 (all unpinned, visible)
+  // Initialize node flags to 0 (all slots live)
   const zeroFlags = new Uint32Array(nodeCount);
   device.queue.writeBuffer(buffers.nodeFlags, 0, toArrayBuffer(zeroFlags));
 }

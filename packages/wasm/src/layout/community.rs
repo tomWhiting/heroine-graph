@@ -109,12 +109,12 @@ impl AdjacencyList {
         // If both A→B and B→A exist, that's weight 2.0 between them.
         for src in 0..node_count {
             let start = offsets[src] as usize;
-            let end = offsets[src + 1] as usize;
-            for i in start..end.min(targets.len()) {
-                let tgt = targets[i] as usize;
-                if tgt >= node_count {
-                    continue;
-                }
+            let end = (offsets[src + 1] as usize).min(targets.len());
+            let valid_targets = targets[start..end]
+                .iter()
+                .map(|&t| t as usize)
+                .filter(|&tgt| tgt < node_count);
+            for tgt in valid_targets {
                 let w = 1.0f64; // All edges have weight 1.0 in our graph
 
                 // Add forward edge A→B
@@ -192,6 +192,36 @@ fn coarsen_graph(
     }
 }
 
+/// Find the community with the highest modularity gain for a node.
+///
+/// `comm_weights` maps neighboring communities to the node's edge weight into
+/// them. Returns (best_community, best_gain); stays in `node_comm` when no
+/// move has positive net gain.
+fn find_best_community(
+    comm_weights: &HashMap<usize, f64>,
+    sigma_tot: &[f64],
+    node_comm: usize,
+    k_i: f64,
+    k_i_in: f64,
+    m2: f64,
+    resolution: f64,
+) -> (usize, f64) {
+    // Cost of leaving the current community is the same for every target
+    let delta_q_back = k_i_in / m2 - resolution * sigma_tot[node_comm] * k_i / (m2 * m2);
+
+    let mut best_comm = node_comm;
+    let mut best_gain = 0.0f64;
+    for (&target_comm, &k_i_to_c) in comm_weights {
+        let delta_q = k_i_to_c / m2 - resolution * sigma_tot[target_comm] * k_i / (m2 * m2);
+        let net_gain = delta_q - delta_q_back;
+        if net_gain > best_gain {
+            best_gain = net_gain;
+            best_comm = target_comm;
+        }
+    }
+    (best_comm, best_gain)
+}
+
 /// Run Phase 1 of Louvain: local moving optimization.
 ///
 /// Returns the community assignment for each node (0-indexed, NOT compacted).
@@ -215,10 +245,10 @@ fn louvain_local_moving(
 
     // For the coarsened graph, self-loops represent internal edges from previous level.
     // Initialize sigma_in from self-loops in adjacency.
-    for node in 0..node_count {
+    for (node, sigma) in sigma_in.iter_mut().enumerate() {
         for &(neighbor, weight) in &adj.neighbors[node] {
             if neighbor == node {
-                sigma_in[node] += weight;
+                *sigma += weight;
             }
         }
     }
@@ -253,21 +283,15 @@ fn louvain_local_moving(
             sigma_in[node_comm] -= 2.0 * k_i_in;
 
             // Find the best community to move to
-            let mut best_comm = node_comm;
-            let mut best_gain = 0.0f64;
-
-            for (&target_comm, &k_i_to_c) in &comm_weights {
-                let delta_q = k_i_to_c / m2
-                    - resolution * sigma_tot[target_comm] * k_i / (m2 * m2);
-                let delta_q_back = k_i_in / m2
-                    - resolution * sigma_tot[node_comm] * k_i / (m2 * m2);
-                let net_gain = delta_q - delta_q_back;
-
-                if net_gain > best_gain {
-                    best_gain = net_gain;
-                    best_comm = target_comm;
-                }
-            }
+            let (best_comm, best_gain) = find_best_community(
+                &comm_weights,
+                &sigma_tot,
+                node_comm,
+                k_i,
+                k_i_in,
+                m2,
+                resolution,
+            );
 
             // Move node to best community
             community[node] = best_comm;
@@ -316,12 +340,12 @@ fn compact_communities(community: &[usize]) -> (Vec<usize>, usize) {
 /// all levels to find its final community.
 fn map_levels_to_original(levels: &[Vec<usize>], node_count: usize) -> Vec<u32> {
     let mut assignments = vec![0u32; node_count];
-    for node in 0..node_count {
+    for (node, assignment) in assignments.iter_mut().enumerate() {
         let mut comm = node;
         for level in levels {
             comm = level[comm];
         }
-        assignments[node] = comm as u32;
+        *assignment = comm as u32;
     }
 
     // Re-compact to contiguous IDs
@@ -537,19 +561,29 @@ pub fn compute_community_layout(
         }
     }
 
+    // Arc length each community needs along the ring: its disk diameter plus
+    // spacing. Angular slices must be allocated with these same weights that
+    // size the circumference — a disk's arc need grows as sqrt(members), not
+    // members, so member-count fractions give skewed community distributions
+    // slices narrower than their disks and neighbours overlap.
+    let arc_needs: Vec<f32> = community_members
+        .iter()
+        .map(|m| {
+            if m.is_empty() {
+                0.0
+            } else {
+                let r = community_inner_radius(m.len(), config.node_spacing);
+                r * 2.0 + config.community_spacing
+            }
+        })
+        .collect();
+    let total_arc: f32 = arc_needs.iter().sum();
+
     // Compute community center positions on a circle.
-    // The circle radius scales with the total number of nodes and spacing.
+    // The circumference is the sum of arc needs, so every slice fits its disk.
     let base_radius = if community_count <= 1 {
         0.0
     } else {
-        // Circumference should be large enough to space communities apart.
-        // Each community gets an arc proportional to its member count.
-        let total_arc = community_members.iter()
-            .map(|m| {
-                let r = community_inner_radius(m.len(), config.node_spacing);
-                r * 2.0 + config.community_spacing
-            })
-            .sum::<f32>();
         total_arc / std::f32::consts::TAU
     };
 
@@ -557,12 +591,9 @@ pub fn compute_community_layout(
 
     // Place community centers along the circle
     let mut angle = 0.0f32;
-    let total_weighted_count: f32 = community_members.iter()
-        .map(|m| m.len() as f32)
-        .sum();
 
     // Prevent division by zero for empty graphs
-    let total_weighted_count = if total_weighted_count < 1.0 { 1.0 } else { total_weighted_count };
+    let total_arc = if total_arc < f32::EPSILON { 1.0 } else { total_arc };
 
     for comm_id in 0..community_count as usize {
         let members = &community_members[comm_id];
@@ -570,8 +601,9 @@ pub fn compute_community_layout(
             continue;
         }
 
-        // Fraction of circle this community occupies (weighted by size)
-        let fraction = members.len() as f32 / total_weighted_count;
+        // Fraction of circle this community occupies (weighted by arc need;
+        // fractions over non-empty communities sum to 1, keeping total = 2π)
+        let fraction = arc_needs[comm_id] / total_arc;
         let center_angle = angle + fraction * std::f32::consts::TAU / 2.0;
 
         let cx = outer_radius * center_angle.cos();
@@ -732,12 +764,13 @@ mod tests {
         let mut current = offsets[..node_count].to_vec();
         for &(src, tgt) in edges {
             let s = src as usize;
-            if s < node_count {
-                let offset = current[s] as usize;
-                if offset < targets.len() {
-                    targets[offset] = tgt;
-                    current[s] += 1;
-                }
+            if s >= node_count {
+                continue;
+            }
+            let offset = current[s] as usize;
+            if offset < targets.len() {
+                targets[offset] = tgt;
+                current[s] += 1;
             }
         }
 
@@ -745,6 +778,18 @@ mod tests {
         result.extend(offsets);
         result.extend(targets);
         result
+    }
+
+    /// Ring-lattice edges within one community: each node connects to the
+    /// next `k` nodes (wrapping around).
+    fn ring_lattice_edges(base: usize, size: usize, k: usize, edges: &mut Vec<(u32, u32)>) {
+        for i in 0..size {
+            let src = (base + i) as u32;
+            for j in 1..=k {
+                let tgt = (base + (i + j) % size) as u32;
+                edges.push((src, tgt));
+            }
+        }
     }
 
     #[test]
@@ -892,6 +937,65 @@ mod tests {
     }
 
     #[test]
+    fn test_skewed_community_sizes_do_not_overlap() {
+        // Typical Louvain output on code graphs: one giant community plus
+        // many mid-sized ones. Angular slices must fit each community's disk
+        // (arc need grows as sqrt(members)), or mid-sized disks overlap.
+        let big = 10_000usize;
+        let mid = 100usize;
+        let mid_count = 50usize;
+        let n = big + mid * mid_count;
+        let community_count = 1 + mid_count;
+
+        let mut assignments = vec![0u32; big];
+        for c in 0..mid_count {
+            assignments.extend(std::iter::repeat_n((c + 1) as u32, mid));
+        }
+
+        let config = CommunityLayoutConfig::default();
+        let positions = compute_community_layout(&assignments, community_count as u32, n, &config);
+        assert_eq!(positions.len(), n * 2);
+
+        // Measure each community's placed disk: centroid + max member extent.
+        let mut centroids = vec![(0.0f32, 0.0f32); community_count];
+        let mut counts = vec![0usize; community_count];
+        for (i, &comm) in assignments.iter().enumerate() {
+            centroids[comm as usize].0 += positions[i * 2];
+            centroids[comm as usize].1 += positions[i * 2 + 1];
+            counts[comm as usize] += 1;
+        }
+        for (c, centroid) in centroids.iter_mut().enumerate() {
+            centroid.0 /= counts[c] as f32;
+            centroid.1 /= counts[c] as f32;
+        }
+        let mut extents = vec![0.0f32; community_count];
+        for (i, &comm) in assignments.iter().enumerate() {
+            let c = comm as usize;
+            let dx = positions[i * 2] - centroids[c].0;
+            let dy = positions[i * 2 + 1] - centroids[c].1;
+            let d = (dx * dx + dy * dy).sqrt();
+            if d > extents[c] {
+                extents[c] = d;
+            }
+        }
+
+        // No two community disks may overlap (small tolerance for the
+        // chord-vs-arc difference between adjacent slices).
+        for i in 0..community_count {
+            for j in (i + 1)..community_count {
+                let dx = centroids[j].0 - centroids[i].0;
+                let dy = centroids[j].1 - centroids[i].1;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let min_dist = (extents[i] + extents[j]) * 0.9;
+                assert!(
+                    dist >= min_dist,
+                    "Communities {i} and {j} overlap: centroid distance {dist} < {min_dist}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_layout_single_community() {
         let assignments = vec![0, 0, 0, 0];
         let config = CommunityLayoutConfig::default();
@@ -916,17 +1020,10 @@ mod tests {
 
         let mut edges = Vec::new();
 
-        // Dense edges within each community
+        // Dense edges within each community: each node connects to the next
+        // ~10 nodes in a ring lattice
         for c in 0..communities {
-            let base = c * per_comm;
-            for i in 0..per_comm {
-                let src = (base + i) as u32;
-                // Connect to ~10 random neighbors within community
-                for j in 1..=10.min(per_comm - 1) {
-                    let tgt = (base + (i + j) % per_comm) as u32;
-                    edges.push((src, tgt));
-                }
-            }
+            ring_lattice_edges(c * per_comm, per_comm, 10.min(per_comm - 1), &mut edges);
         }
 
         // Sparse edges between communities (bridge edges)

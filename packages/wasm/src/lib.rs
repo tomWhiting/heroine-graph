@@ -66,7 +66,9 @@ impl HeroineGraphWasm {
 
     /// Add a node at the specified position.
     ///
-    /// Returns the stable node ID.
+    /// Returns the node ID, which is the node's slot index (shared by CSR,
+    /// degree, position-view, and layout arrays). Slots freed by removeNode
+    /// are reused by later additions.
     #[wasm_bindgen(js_name = addNode)]
     pub fn add_node(&mut self, x: f32, y: f32) -> u32 {
         self.engine.add_node(x, y).0
@@ -680,7 +682,55 @@ impl HeroineGraphWasm {
         )
     }
 
+    /// Compute bubble data (well radii + depths) from explicit containment edges.
+    ///
+    /// Mirrors `computeCodebaseLayout`: only the containment (parent→child)
+    /// edges define the hierarchy, so cross-cutting dependency edges (imports,
+    /// tests) stored in the same graph cannot corrupt well radii or depths.
+    ///
+    /// Returns a `Float32Array` of length `2 * node_bound`:
+    /// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0, ..., depth_{n-1}]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `containment_edges` - Flat array of [parent0, child0, parent1, child1, ...] pairs
+    /// * `root_id` - Root node ID (u32::MAX = auto-detect)
+    /// * `base_radius` - Base bubble radius for leaf nodes (default: 10.0)
+    /// * `padding` - Padding added to internal node radii (default: 5.0)
+    #[wasm_bindgen(js_name = computeBubbleDataFromEdges)]
+    pub fn compute_bubble_data_from_edges(
+        &self,
+        containment_edges: &[u32],
+        root_id: u32,
+        base_radius: f32,
+        padding: f32,
+    ) -> Float32Array {
+        use layout::bubble::{self, BubbleConfig};
+
+        let node_bound = self.engine.node_bound() as usize;
+
+        if node_bound == 0 {
+            return Float32Array::from(&[][..]);
+        }
+
+        let config = BubbleConfig {
+            base_radius,
+            padding,
+            ..BubbleConfig::default()
+        };
+
+        let root = if root_id == u32::MAX { None } else { Some(root_id) };
+
+        let result = bubble::compute_bubble_data(containment_edges, node_bound, root, &config);
+        Float32Array::from(&result[..])
+    }
+
     /// Compute bubble data (well radii + depths) from the graph's containment hierarchy.
+    ///
+    /// **Deprecated:** this derives the hierarchy from ALL graph edges, so any
+    /// non-containment edge (imports, tests, configs) corrupts the tree — a
+    /// file can attach under a module that imports it instead of its directory.
+    /// Use `computeBubbleDataFromEdges` with containment-only edges instead.
     ///
     /// Returns a `Float32Array` of length `2 * node_bound`:
     /// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0, ..., depth_{n-1}]`.
@@ -691,8 +741,6 @@ impl HeroineGraphWasm {
     /// * `padding` - Padding added to internal node radii (default: 5.0)
     #[wasm_bindgen(js_name = computeBubbleData)]
     pub fn compute_bubble_data(&self, base_radius: f32, padding: f32) -> Float32Array {
-        use layout::bubble::{self, BubbleConfig};
-
         let node_bound = self.engine.node_bound() as usize;
 
         if node_bound == 0 {
@@ -704,13 +752,7 @@ impl HeroineGraphWasm {
 
         if csr.len() <= node_bound + 1 {
             // No edges — return defaults
-            let config = BubbleConfig {
-                base_radius,
-                padding,
-                ..BubbleConfig::default()
-            };
-            let result = bubble::compute_bubble_data(&[], node_bound, None, &config);
-            return Float32Array::from(&result[..]);
+            return self.compute_bubble_data_from_edges(&[], u32::MAX, base_radius, padding);
         }
 
         let offsets = &csr[..node_bound + 1];
@@ -727,14 +769,7 @@ impl HeroineGraphWasm {
             }
         }
 
-        let config = BubbleConfig {
-            base_radius,
-            padding,
-            ..BubbleConfig::default()
-        };
-
-        let result = bubble::compute_bubble_data(&edges, node_bound, None, &config);
-        Float32Array::from(&result[..])
+        self.compute_bubble_data_from_edges(&edges, u32::MAX, base_radius, padding)
     }
 }
 
@@ -747,6 +782,54 @@ impl Default for HeroineGraphWasm {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    /// Attach up to 3 children per parent (bounded by `limit` total nodes),
+    /// returning the next BFS level's parents.
+    fn attach_tree_level(
+        engine: &mut GraphEngine,
+        parents: &[u32],
+        next_child: &mut u32,
+        limit: u32,
+    ) -> Vec<u32> {
+        let mut next_queue = Vec::new();
+        for &parent in parents {
+            let children = 3.min(limit.saturating_sub(*next_child));
+            for _ in 0..children {
+                engine.add_edge(NodeId(parent), NodeId(*next_child), 1.0);
+                next_queue.push(*next_child);
+                *next_child += 1;
+            }
+        }
+        next_queue
+    }
+
+    /// Queue edge pairs for one BFS level with varied per-parent branching
+    /// (0-5 children), returning the next level's parents.
+    fn queue_tree_level(
+        edge_pairs: &mut Vec<u32>,
+        parents: &[u32],
+        next_child: &mut u32,
+        limit: u32,
+    ) -> Vec<u32> {
+        let mut next_queue = Vec::new();
+        for &parent in parents {
+            let per_parent: u32 = match parent % 5 {
+                0 => 5, // hubs
+                1 => 3,
+                2 => 2,
+                3 => 1,
+                _ => 0, // leaves
+            };
+            let count = per_parent.min(limit.saturating_sub(*next_child));
+            for _ in 0..count {
+                edge_pairs.push(parent);
+                edge_pairs.push(*next_child);
+                next_queue.push(*next_child);
+                *next_child += 1;
+            }
+        }
+        next_queue
+    }
 
     /// Test the full pipeline: engine → CSR → tidy tree layout
     /// This simulates exactly what computeTreeLayoutFromGraph does,
@@ -842,17 +925,7 @@ mod integration_tests {
         let mut next_child = 1u32;
         let mut queue = vec![0u32];
         while next_child < 100 {
-            let mut next_queue = Vec::new();
-            for &parent in &queue {
-                let children = 3.min(100 - next_child);
-                for _ in 0..children {
-                    if next_child >= 100 { break; }
-                    engine.add_edge(NodeId(parent), NodeId(next_child), 1.0);
-                    next_queue.push(next_child);
-                    next_child += 1;
-                }
-            }
-            queue = next_queue;
+            queue = attach_tree_level(&mut engine, &queue, &mut next_child, 100);
         }
 
         let node_bound = engine.node_bound() as usize;
@@ -919,24 +992,8 @@ mod integration_tests {
         let mut queue = vec![0u32];
 
         while next_child < node_count as u32 {
-            let mut next_queue = Vec::new();
-            for &parent in &queue {
-                // Vary children count: 0-6
-                let children_count = match parent % 5 {
-                    0 => 5, // hubs
-                    1 => 3,
-                    2 => 2,
-                    3 => 1,
-                    _ => 0, // leaves
-                };
-                for _ in 0..children_count {
-                    if next_child >= node_count as u32 { break; }
-                    edge_pairs.push(parent);
-                    edge_pairs.push(next_child);
-                    next_queue.push(next_child);
-                    next_child += 1;
-                }
-            }
+            let next_queue =
+                queue_tree_level(&mut edge_pairs, &queue, &mut next_child, node_count as u32);
             if next_queue.is_empty() { break; }
             queue = next_queue;
         }
@@ -1009,8 +1066,8 @@ mod integration_tests {
 
     /// Test that clear() + reload works correctly.
     /// This replicates the mission control bug: first load 1000 nodes,
-    /// then clear and reload 10000 nodes. Without the fix, next_node_id
-    /// wouldn't reset, causing NodeId mismatch and edge addition failure.
+    /// then clear and reload 10000 nodes. Without the fix, NodeIds didn't
+    /// restart from 0 after clear(), causing edge addition failure.
     #[test]
     fn test_clear_and_reload_preserves_edges() {
         let mut engine = GraphEngine::new();
@@ -1059,7 +1116,7 @@ mod integration_tests {
 
         // THE KEY ASSERTION: all edges should be added after clear+reload
         assert_eq!(added2, 499, "All edges should be added after clear(). Got {}. \
-            This likely means clear() didn't reset next_node_id, causing NodeId mismatch.", added2);
+            This likely means clear() didn't reset the NodeId space, causing NodeId mismatch.", added2);
         assert_eq!(engine.edge_count(), 499);
 
         // Verify CSR extraction works

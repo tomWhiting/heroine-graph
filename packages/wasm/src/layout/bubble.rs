@@ -152,7 +152,7 @@ pub fn compute_bubble_data(
     compute_depths(&mut tree_nodes);
 
     // Bottom-up radius computation
-    compute_radii(0, &mut tree_nodes, config);
+    compute_radii(&mut tree_nodes, config);
 
     // Write results back to per-slot arrays
     for node in &tree_nodes {
@@ -189,52 +189,49 @@ fn count_descendants(node: u32, children_map: &HashMap<u32, Vec<u32>>) -> usize 
 }
 
 /// Build tree nodes via DFS with cycle detection.
+/// Uses an explicit stack so tree depth cannot overflow the call stack
+/// (a fatal, uncatchable trap in WASM).
 fn build_tree(
-    node_id: u32,
+    root: u32,
     node_count: usize,
     children_map: &HashMap<u32, Vec<u32>>,
     tree_nodes: &mut Vec<TreeNode>,
     slot_to_tree: &mut HashMap<u32, usize>,
     visited: &mut HashSet<u32>,
 ) {
-    if !visited.insert(node_id) {
-        return;
-    }
+    // (node_id, parent tree index)
+    let mut stack: Vec<(u32, Option<usize>)> = vec![(root, None)];
 
-    let slot = node_id as usize;
-    if slot >= node_count {
-        return;
-    }
-
-    let tree_idx = tree_nodes.len();
-    slot_to_tree.insert(node_id, tree_idx);
-
-    tree_nodes.push(TreeNode {
-        slot,
-        children: Vec::new(),
-        radius: 0.0,
-        depth: 0,
-    });
-
-    if let Some(children) = children_map.get(&node_id) {
-        let mut child_tree_indices: Vec<usize> = Vec::with_capacity(children.len());
-
-        for &child_id in children {
-            let before_len = tree_nodes.len();
-            build_tree(
-                child_id,
-                node_count,
-                children_map,
-                tree_nodes,
-                slot_to_tree,
-                visited,
-            );
-            if tree_nodes.len() > before_len && slot_to_tree.contains_key(&child_id) {
-                child_tree_indices.push(slot_to_tree[&child_id]);
-            }
+    while let Some((node_id, parent_idx)) = stack.pop() {
+        if !visited.insert(node_id) {
+            continue;
         }
 
-        tree_nodes[tree_idx].children = child_tree_indices;
+        let slot = node_id as usize;
+        if slot >= node_count {
+            continue;
+        }
+
+        let tree_idx = tree_nodes.len();
+        slot_to_tree.insert(node_id, tree_idx);
+
+        tree_nodes.push(TreeNode {
+            slot,
+            children: Vec::new(),
+            radius: 0.0,
+            depth: 0,
+        });
+
+        if let Some(parent_idx) = parent_idx {
+            tree_nodes[parent_idx].children.push(tree_idx);
+        }
+
+        if let Some(children) = children_map.get(&node_id) {
+            // Push in reverse so children pop in insertion order.
+            for &child_id in children.iter().rev() {
+                stack.push((child_id, Some(tree_idx)));
+            }
+        }
     }
 }
 
@@ -262,27 +259,29 @@ fn compute_depths(tree_nodes: &mut [TreeNode]) {
 ///
 /// Leaf nodes get `base_radius`. Internal nodes get a radius that encloses
 /// all children circles: `sqrt(sum_areas / (pi * packing_eff)) + padding`.
-fn compute_radii(idx: usize, nodes: &mut Vec<TreeNode>, config: &BubbleConfig) {
-    let children: Vec<usize> = nodes[idx].children.clone();
-    for &child_idx in &children {
-        compute_radii(child_idx, nodes, config);
-    }
+///
+/// `build_tree` assigns indices in DFS preorder, so every child index is
+/// greater than its parent's; a reverse index sweep is therefore a valid
+/// post-order (children before parents) without recursion.
+fn compute_radii(nodes: &mut [TreeNode], config: &BubbleConfig) {
+    for idx in (0..nodes.len()).rev() {
+        if nodes[idx].children.is_empty() {
+            nodes[idx].radius = config.base_radius;
+        } else {
+            let total_area: f32 = nodes[idx]
+                .children
+                .iter()
+                .map(|&c| {
+                    let r = nodes[c].radius;
+                    std::f32::consts::PI * r * r
+                })
+                .sum();
 
-    if children.is_empty() {
-        nodes[idx].radius = config.base_radius;
-    } else {
-        let total_area: f32 = children
-            .iter()
-            .map(|&c| {
-                let r = nodes[c].radius;
-                std::f32::consts::PI * r * r
-            })
-            .sum();
+            let enclosing_radius =
+                (total_area / (std::f32::consts::PI * config.packing_efficiency)).sqrt();
 
-        let enclosing_radius =
-            (total_area / (std::f32::consts::PI * config.packing_efficiency)).sqrt();
-
-        nodes[idx].radius = enclosing_radius.max(config.base_radius) + config.padding;
+            nodes[idx].radius = enclosing_radius.max(config.base_radius) + config.padding;
+        }
     }
 }
 
@@ -366,8 +365,8 @@ mod tests {
         assert_eq!(radii[4], 5.0);
 
         // Depths should increase
-        for i in 0..5 {
-            assert_eq!(depths[i], i as f32);
+        for (i, &depth) in depths.iter().enumerate() {
+            assert_eq!(depth, i as f32);
         }
     }
 
@@ -408,6 +407,51 @@ mod tests {
         assert_eq!(depths[0], 0.0); // root
         assert_eq!(depths[1], 1.0);
         assert_eq!(depths[2], 1.0);
+    }
+
+    #[test]
+    fn test_deep_chain_no_stack_overflow() {
+        // 100_000-node linked chain: recursive tree walks would overflow the
+        // stack (fatal trap in WASM); all traversals must be iterative.
+        let n: u32 = 100_000;
+        let mut edges = Vec::with_capacity((n as usize - 1) * 2);
+        for i in 0..n - 1 {
+            edges.push(i);
+            edges.push(i + 1);
+        }
+
+        let result = compute_bubble_data(&edges, n as usize, Some(0), &BubbleConfig::default());
+        assert_eq!(result.len(), n as usize * 2);
+
+        let depths = &result[n as usize..];
+        assert_eq!(depths[0], 0.0);
+        assert_eq!(depths[n as usize - 1], (n - 1) as f32);
+        // The tail of the chain is a leaf
+        assert_eq!(result[n as usize - 1], 10.0);
+    }
+
+    #[test]
+    fn test_dependency_edges_corrupt_radii_without_filtering() {
+        // Containment: 0 → {1, 2}, 1 → {3, 4}, 2 → {5, 6}
+        let containment = [0u32, 1, 0, 2, 1, 3, 1, 4, 2, 5, 2, 6];
+        let clean = compute_bubble_data(&containment, 7, Some(0), &BubbleConfig::default());
+
+        // Same hierarchy plus a dependency edge 3 → 5 (e.g. an import). If it
+        // is fed into the tree build, node 5 attaches under 3 instead of its
+        // real parent 2, skewing depths and well radii.
+        let mut mixed = containment.to_vec();
+        mixed.extend_from_slice(&[3, 5]);
+        let corrupted = compute_bubble_data(&mixed, 7, Some(0), &BubbleConfig::default());
+
+        let clean_depths = &clean[7..];
+        let corrupted_depths = &corrupted[7..];
+        assert_eq!(clean_depths[5], 2.0);
+        // Documents why callers must pass containment-only edges: the DFS
+        // attaches 5 under whichever neighbor reaches it first.
+        assert_eq!(corrupted_depths[5], 3.0);
+        // Node 3 is a leaf in the clean tree but an internal node when the
+        // dependency edge is included, inflating its well radius.
+        assert!(corrupted[3] > clean[3]);
     }
 
     #[test]
