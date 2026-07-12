@@ -26,7 +26,21 @@ export default defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright({}),
+            provider: playwright({
+              launchOptions: {
+                // Headless Chromium ships without WebGPU unless explicitly
+                // enabled; without these flags every story falls into the
+                // "WebGPU not supported" error path and the suite silently
+                // stops covering the renderer.
+                args: [
+                  '--enable-unsafe-webgpu',
+                  '--enable-gpu',
+                  // Vulkan backend for Linux CI runners; ignored on macOS
+                  // (which uses Metal via ANGLE) and Windows (D3D).
+                  '--enable-features=Vulkan',
+                ],
+              },
+            }),
             instances: [{ browser: 'chromium' }],
           },
           setupFiles: ['.storybook/vitest.setup.js'],

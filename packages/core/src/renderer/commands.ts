@@ -11,6 +11,7 @@ import type { GPUContext } from "../webgpu/context.ts";
 import type { NodeRenderPipeline } from "./pipelines/nodes.ts";
 import type { EdgeRenderPipeline } from "./pipelines/edges.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
+import { getEdgeVertexCount } from "./edge_tessellation.ts";
 
 /**
  * Clear color configuration
@@ -224,7 +225,9 @@ export function createCommandOrchestrator(
       if (bindGroups.edgeFlowConfig) {
         renderPass.setBindGroup(2, bindGroups.edgeFlowConfig);
       }
-      renderPass.draw(6, edgeCount);
+      // Must match the pipeline's tessellation decision: with curves
+      // enabled the shader expects 6 * segments vertices per edge.
+      renderPass.draw(getEdgeVertexCount(edgePipeline.curveConfig), edgeCount);
       stats.drawCalls++;
     }
 

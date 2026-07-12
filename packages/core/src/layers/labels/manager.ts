@@ -120,8 +120,24 @@ export class LabelManager {
   private gridCols: number = 0;
   private gridRows: number = 0;
 
+  // Monotonic counter: bumped whenever the label set, config, or atlas
+  // changes so the layer can invalidate its cached glyph layout.
+  private version_ = 0;
+
+  // Measured text widths keyed by label text. Widths only depend on
+  // (text, fontSize, atlas); cleared when either of the latter changes.
+  private widthCache: Map<string, number> = new Map();
+
   constructor(config: Partial<LabelManagerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Version counter for cache invalidation: changes whenever the label
+   * set, the manager config, or the font atlas changes.
+   */
+  get version(): number {
+    return this.version_;
   }
 
   /**
@@ -129,6 +145,8 @@ export class LabelManager {
    */
   setFontAtlas(atlas: FontAtlas): void {
     this.fontAtlas = atlas;
+    this.widthCache.clear();
+    this.version_++;
   }
 
   /**
@@ -136,6 +154,8 @@ export class LabelManager {
    */
   setConfig(config: Partial<LabelManagerConfig>): void {
     this.config = { ...this.config, ...config };
+    this.widthCache.clear();
+    this.version_++;
   }
 
   /**
@@ -151,6 +171,7 @@ export class LabelManager {
   setLabels(labels: LabelData[]): void {
     // Sort by priority (descending) for consistent ordering
     this.labels = [...labels].sort((a, b) => b.priority - a.priority);
+    this.version_++;
   }
 
   /**
@@ -159,6 +180,7 @@ export class LabelManager {
   addLabel(label: LabelData): void {
     this.labels.push(label);
     this.labels.sort((a, b) => b.priority - a.priority);
+    this.version_++;
   }
 
   /**
@@ -166,6 +188,7 @@ export class LabelManager {
    */
   removeLabel(nodeId: number): void {
     this.labels = this.labels.filter((l) => l.nodeId !== nodeId);
+    this.version_++;
   }
 
   /**
@@ -173,6 +196,35 @@ export class LabelManager {
    */
   clear(): void {
     this.labels = [];
+    this.version_++;
+  }
+
+  /**
+   * Fingerprint of the node positions feeding the labels.
+   *
+   * Stride-samples up to 64 labels and accumulates an order-weighted sum
+   * of their positions: O(64) per frame instead of touching all labels.
+   * If nothing moved the sums are bit-identical; a force layout that
+   * moves any nodes moves (essentially all) sampled ones too, changing
+   * the fingerprint and invalidating the cached glyph layout.
+   */
+  positionFingerprint(positionProvider?: PositionProvider): number {
+    const n = this.labels.length;
+    if (n === 0) return 0;
+
+    const samples = Math.min(n, 64);
+    const stride = Math.max(1, Math.floor(n / samples));
+
+    let sum = 0;
+    let weight = 1;
+    for (let i = 0; i < n; i += stride) {
+      const label = this.labels[i];
+      const x = positionProvider ? positionProvider.getX(label.nodeId) : label.x;
+      const y = positionProvider ? positionProvider.getY(label.nodeId) : label.y;
+      sum += x * weight + y * (weight + 1);
+      weight += 2;
+    }
+    return sum;
   }
 
   /**
@@ -249,8 +301,13 @@ export class LabelManager {
       const screenX = (nodeX - viewportX) * scale + canvasWidth / 2;
       const screenY = (nodeY - viewportY) * scale + canvasHeight / 2;
 
-      // Measure label dimensions
-      const width = measureText(this.fontAtlas, label.text, fontSize);
+      // Measure label dimensions (cached: width is static per text for a
+      // given fontSize/atlas, so don't re-walk the string every rebuild)
+      let width = this.widthCache.get(label.text);
+      if (width === undefined) {
+        width = measureText(this.fontAtlas, label.text, fontSize);
+        this.widthCache.set(label.text, width);
+      }
       const height = fontSize * 1.2; // Approximate line height
 
       // Center the label horizontally on the node

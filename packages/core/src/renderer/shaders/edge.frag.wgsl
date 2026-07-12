@@ -150,8 +150,11 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     // Layer 1: Apply as brightness boost or color overlay
     if (flow.layer1.enabled > 0.5) {
         if (flow.layer1.has_color > 0.5) {
-            // Blend with custom color
-            final_color = mix(final_color, flow1.rgb, flow1.a);
+            // Blend with custom color. The factor (color_a * intensity *
+            // brightness) can exceed 1 for bright presets, and mix() with
+            // t > 1 EXTRAPOLATES past the flow color (hue inversion,
+            // negative channels) — clamp so the blend saturates instead.
+            final_color = mix(final_color, flow1.rgb, clamp(flow1.a, 0.0, 1.0));
         } else {
             // Just boost brightness
             flow_brightness += flow1.a;

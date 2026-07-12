@@ -251,12 +251,41 @@ export function createRenderLoop(
 
 /**
  * GPU timing helper using timestamp queries (if available)
+ *
+ * Uses the current WebGPU API: timestamps are recorded via the
+ * `timestampWrites` member of a render/compute pass descriptor
+ * (`encoder.writeTimestamp` was removed from the spec). The timer never
+ * finishes or submits the caller's encoder — the caller owns submission.
+ *
+ * Usage:
+ * ```ts
+ * const timer = createGPUTimer(device);
+ * if (timer) {
+ *   const pass = encoder.beginComputePass({ timestampWrites: timer.timestampWrites });
+ *   // ... encode timed work ...
+ *   pass.end();
+ *   timer.resolve(encoder);
+ *   device.queue.submit([encoder.finish()]); // caller submits
+ *   const gpuMs = await timer.read();
+ * }
+ * ```
  */
 export interface GPUTimer {
-  /** Start timing a GPU operation */
-  begin: (encoder: GPUCommandEncoder, label?: string) => void;
-  /** End timing and get result promise */
-  end: (encoder: GPUCommandEncoder) => Promise<number>;
+  /**
+   * Timestamp-writes descriptor to attach to a single render or compute
+   * pass descriptor; records the pass's begin and end times.
+   */
+  readonly timestampWrites: GPUComputePassTimestampWrites & GPURenderPassTimestampWrites;
+  /**
+   * Encode query resolution into the caller's encoder. Call after the
+   * timed pass has ended, before the caller finishes/submits the encoder.
+   */
+  resolve: (encoder: GPUCommandEncoder) => void;
+  /**
+   * Read back the elapsed GPU time in milliseconds. Call after the
+   * caller has submitted the encoder that `resolve` recorded into.
+   */
+  read: () => Promise<number>;
   /** Destroy GPU resources */
   destroy?: () => void;
   /** Check if GPU timing is supported */
@@ -277,7 +306,7 @@ export function createGPUTimer(device: GPUDevice): GPUTimer | null {
     return null;
   }
 
-  // Create query set for timestamps (2 queries: start and end)
+  // Create query set for timestamps (2 queries: pass begin and end)
   const querySet = device.createQuerySet({
     type: "timestamp",
     count: 2,
@@ -297,20 +326,19 @@ export function createGPUTimer(device: GPUDevice): GPUTimer | null {
   return {
     isSupported: true,
 
-    begin(encoder: GPUCommandEncoder, _label?: string): void {
-      encoder.writeTimestamp(querySet, 0);
+    timestampWrites: {
+      querySet,
+      beginningOfPassWriteIndex: 0,
+      endOfPassWriteIndex: 1,
     },
 
-    async end(encoder: GPUCommandEncoder): Promise<number> {
-      encoder.writeTimestamp(querySet, 1);
+    resolve(encoder: GPUCommandEncoder): void {
       encoder.resolveQuerySet(querySet, 0, 2, resolveBuffer, 0);
-
-      // Copy to mappable buffer
+      // Copy to mappable buffer; the caller finishes and submits.
       encoder.copyBufferToBuffer(resolveBuffer, 0, readbackBuffer, 0, 16);
+    },
 
-      // Finish the encoder and submit before mapping
-      device.queue.submit([encoder.finish()]);
-
+    async read(): Promise<number> {
       // Wait for GPU to complete, then read back
       await readbackBuffer.mapAsync(GPUMapMode.READ);
       const data = new BigUint64Array(readbackBuffer.getMappedRange());

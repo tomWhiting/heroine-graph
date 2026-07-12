@@ -109,10 +109,7 @@ export {
 export type { ForceConfigBuilder, FullForceConfig } from "../simulation/config.ts";
 
 // Simulation Controller
-export {
-  calculateAlphaDecay,
-  DEFAULT_SIMULATION_CONFIG,
-} from "../simulation/controller.ts";
+export { calculateAlphaDecay, DEFAULT_SIMULATION_CONFIG } from "../simulation/controller.ts";
 export type { SimulationControllerConfig } from "../simulation/controller.ts";
 
 // Alpha/Convergence

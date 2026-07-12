@@ -9,6 +9,18 @@
 // Children can be internal nodes (positive index) or leaves (negative index).
 //
 // Uses vec2<f32> layout for consolidated position data.
+//
+// Bottom-up aggregation is MULTI-PASS: WGSL atomics are relaxed-only and there
+// is no device-scope fence, so the classic CUDA visit-counter pattern (second
+// child to arrive reads the sibling's plain-stored mass/COM within the same
+// dispatch) is a spec-level data race — a reader can observe the zeros written
+// by clear_tree even though the sibling subtree's thread already stored its
+// values. Instead, aggregate_pass is dispatched repeatedly; a node only
+// consumes child data stamped in an EARLIER dispatch (inter-dispatch ordering
+// guarantees visibility) or data this thread wrote itself (program order).
+// With the in-pass upward walk, ceil(log2(N)) dispatches provably suffice:
+// a node needs a later pass than its children only when both subtrees finish
+// in the same pass, which requires each to hold >= 2^(pass-1) leaves.
 
 struct TreeUniforms {
     node_count: u32,        // Number of particles (N leaves)
@@ -17,7 +29,8 @@ struct TreeUniforms {
     bounds_max_x: f32,
     bounds_max_y: f32,
     root_size: f32,
-    _padding: vec2<u32>,
+    aggregation_pass: u32,  // Current aggregate_pass dispatch (2, 3, ...); leaves are stamped 1
+    _padding: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: TreeUniforms;
@@ -25,7 +38,8 @@ struct TreeUniforms {
 // Sorted Morton codes (from radix sort)
 @group(0) @binding(1) var<storage, read> morton_codes: array<u32>;
 
-// Sorted particle indices (from radix sort)
+// Sorted particle indices (from radix sort). High bit set = dead slot
+// (see morton.comp.wgsl DEAD_INDEX_BIT).
 @group(0) @binding(2) var<storage, read> sorted_indices: array<u32>;
 
 // Original particle positions - vec2<f32> per particle
@@ -44,10 +58,16 @@ struct TreeUniforms {
 @group(0) @binding(8) var<storage, read_write> node_mass: array<f32>;
 @group(0) @binding(9) var<storage, read_write> node_size: array<f32>;
 
-// Atomic counter for bottom-up aggregation
-@group(0) @binding(10) var<storage, read_write> visit_count: array<atomic<u32>>;
+// Aggregation readiness stamps, one per tree node (2N-1). 0 = not aggregated;
+// leaves are stamped 1 by init_leaves; internal nodes are stamped with the
+// aggregate_pass number that computed them. Atomic because stamps are read
+// while other invocations of the same dispatch may store them — the VALUE
+// read is race-free, and node data is only consumed for stamps from earlier
+// dispatches (or this thread's own writes), never same-pass strangers.
+@group(0) @binding(10) var<storage, read_write> agg_ready: array<atomic<u32>>;
 
 const WORKGROUP_SIZE: u32 = 256u;
+const DEAD_INDEX_BIT: u32 = 0x80000000u;
 
 // Count leading zeros in common prefix
 fn clz(x: u32) -> u32 {
@@ -80,6 +100,15 @@ fn delta(i: i32, j: i32, n: i32) -> i32 {
     }
 
     return i32(clz(ki ^ kj));
+}
+
+// Convert child reference to tree node index
+// Negative values are leaves: -(leaf_idx + 1) -> node_idx = N - 1 + leaf_idx
+fn child_to_node_idx(child: i32, n: u32) -> u32 {
+    if (child < 0) {
+        return n - 1u + u32(-(child + 1));
+    }
+    return u32(child);
 }
 
 // Phase 1: Build tree topology using Karras algorithm
@@ -122,20 +151,24 @@ fn build_topology(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     let j = i + l * d;
 
-    // Find split position
+    // Find split position: binary search with t halving from l via ceiling
+    // division and an explicit final t=1 probe (Karras' published loop).
+    // Terminates arithmetically in O(log l) probes — a `while (t >= 1)`
+    // ceiling-division formulation never leaves t < 1 and would only exit
+    // through i32 overflow wraparound after ~31 wasted iterations.
     let delta_node = delta(i, j, n);
     var s = 0;
-    var div = 2;
-    t = (l + div - 1) / div;  // Ceiling division
-    while (t >= 1) {
-        let new_split = i + (s + t) * d;
-        if (new_split >= 0 && new_split < n) {
-            if (delta(i, new_split, n) > delta_node) {
+    if (l > 0) {
+        t = l;
+        loop {
+            t = (t + 1) / 2;  // Ceiling halving: l, ceil(l/2), ..., 2, 1
+            if (delta(i, i + (s + t) * d, n) > delta_node) {
                 s += t;
             }
+            if (t <= 1) {
+                break;
+            }
         }
-        div *= 2;
-        t = (l + div - 1) / div;
     }
     let split = i + s * d + min(d, 0);
 
@@ -168,9 +201,6 @@ fn build_topology(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if (idx == 0u) {
         parent[0] = -1;
     }
-
-    // Initialize visit count for aggregation
-    atomicStore(&visit_count[idx], 0u);
 }
 
 // Phase 2: Initialize leaf nodes with particle data
@@ -187,88 +217,128 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Leaf nodes are stored at indices N-1..2N-2
     let node_idx = n - 1u + leaf_idx;
 
-    // Get original particle index from sorted order
-    let particle_idx = sorted_indices[leaf_idx];
+    // Get original particle index from sorted order; the high bit marks a
+    // dead slot (morton.comp.wgsl), which must not exert repulsion.
+    let particle_ref = sorted_indices[leaf_idx];
+    let is_dead = (particle_ref & DEAD_INDEX_BIT) != 0u;
+    let particle_idx = particle_ref & ~DEAD_INDEX_BIT;
 
     // Get position from consolidated vec2 buffer
     let pos = positions[particle_idx];
 
     // Set leaf properties
     node_com[node_idx] = pos;
-    node_mass[node_idx] = 1.0;  // Each particle has mass 1
+    node_mass[node_idx] = select(1.0, 0.0, is_dead);
 
     // Leaf size: minimum floor to prevent zero-size leaves breaking the
     // theta criterion (size/distance < theta would always pass with size=0).
     node_size[node_idx] = max(1.0, uniforms.root_size / 256.0);
+
+    // Leaves are ready for aggregation from stamp 1 (aggregate passes are 2+)
+    atomicStore(&agg_ready[node_idx], 1u);
 }
 
-// Phase 3: Bottom-up aggregation of centers of mass
-// Each thread processes one leaf, then walks up the tree
-// Using atomic counters to ensure both children are processed before parent
+// Phase 3: Bottom-up aggregation of centers of mass — one of several passes.
+//
+// Each thread owns one internal node. A node is aggregated once both children
+// carry a readiness stamp from an EARLIER dispatch (their plain-stored
+// mass/COM/size are then visible per WebGPU inter-dispatch ordering). After
+// aggregating, the thread walks upward: it may also aggregate ancestors whose
+// other child was stamped in an earlier pass, since its own just-written data
+// is visible to itself in program order. Exactly one thread can aggregate a
+// given node in a given pass (the sibling side stopped in the pass that
+// stamped it, and the node's own thread rejects same-pass stamps), so there
+// are no write conflicts on node data.
 @compute @workgroup_size(256)
-fn aggregate_bottom_up(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let leaf_idx = global_id.x;
+fn aggregate_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
     let n = uniforms.node_count;
 
-    if (leaf_idx >= n) {
+    // Internal nodes are 0..N-2
+    if (n < 2u || idx >= n - 1u) {
         return;
     }
 
-    // Start from leaf node
-    let leaf_node_idx = n - 1u + leaf_idx;
+    let p = uniforms.aggregation_pass;
 
-    // Get parent of this leaf
-    var current_parent = parent[leaf_node_idx];
+    if (atomicLoad(&agg_ready[idx]) != 0u) {
+        // Already aggregated in an earlier pass
+        return;
+    }
 
-    // Walk up the tree
-    // SAFETY: Limit depth to prevent infinite loops from corrupted parent pointers
-    // Binary tree with N leaves has at most log2(N) depth, 64 handles up to 2^64 nodes
-    var depth = 0u;
-    while (current_parent >= 0 && depth < 64u) {
-        depth += 1u;
-        let parent_idx = u32(current_parent);
+    var node = idx;
+    // Tree node index of the child this thread aggregated itself this pass
+    // (its data is program-order visible regardless of stamp); sentinel = none.
+    var own_child = 0xFFFFFFFFu;
 
-        // Increment visit count - returns old value
-        let visit = atomicAdd(&visit_count[parent_idx], 1u);
+    // SAFETY: tree depth is bounded by the 64 distinct delta values, so 64
+    // upward steps cover any well-formed tree; the cap breaks pointer cycles
+    // from corrupted topology.
+    for (var step = 0u; step < 64u; step += 1u) {
+        let left_idx = child_to_node_idx(left_child[node], n);
+        let right_idx = child_to_node_idx(right_child[node], n);
 
-        if (visit == 0u) {
-            // First child to arrive - wait for sibling
+        // A child is consumable if this thread wrote it (own_child) or it was
+        // stamped in an earlier dispatch (0 < stamp < p). Same-pass stamps
+        // (== p) are rejected: their data writes are not yet visible here.
+        var left_ok = left_idx == own_child;
+        if (!left_ok) {
+            let stamp = atomicLoad(&agg_ready[left_idx]);
+            left_ok = stamp != 0u && stamp < p;
+        }
+        var right_ok = right_idx == own_child;
+        if (!right_ok) {
+            let stamp = atomicLoad(&agg_ready[right_idx]);
+            right_ok = stamp != 0u && stamp < p;
+        }
+        if (!left_ok || !right_ok) {
+            // Blocked; a later pass (or the sibling's walker) finishes this node
             return;
         }
 
-        // Second child to arrive - compute parent properties
-        let left = left_child[parent_idx];
-        let right = right_child[parent_idx];
-
-        // Get child indices (convert negative leaf references)
-        let left_idx = select(u32(left), n - 1u + u32(-(left + 1)), left < 0);
-        let right_idx = select(u32(right), n - 1u + u32(-(right + 1)), right < 0);
-
-        // Aggregate mass
         let left_mass = node_mass[left_idx];
         let right_mass = node_mass[right_idx];
-        let total_mass = left_mass + right_mass;
 
-        if (total_mass > 0.0) {
-            // Weighted center of mass
+        if (left_mass <= 0.0) {
+            // Left subtree is all dead slots — inherit the right child so a
+            // dead cluster contributes neither mass nor spurious extent
+            node_com[node] = node_com[right_idx];
+            node_mass[node] = right_mass;
+            node_size[node] = node_size[right_idx];
+        } else if (right_mass <= 0.0) {
+            node_com[node] = node_com[left_idx];
+            node_mass[node] = left_mass;
+            node_size[node] = node_size[left_idx];
+        } else {
             let left_com = node_com[left_idx];
             let right_com = node_com[right_idx];
-            let com = (left_com * left_mass + right_com * right_mass) / total_mass;
-
-            node_com[parent_idx] = com;
-            node_mass[parent_idx] = total_mass;
+            let total_mass = left_mass + right_mass;
+            node_com[node] = (left_com * left_mass + right_com * right_mass) / total_mass;
+            node_mass[node] = total_mass;
 
             // Node size = distance between children's centers + max child extent.
             // This gives a proper geometric measure of the subtree's spatial span
             // without requiring extra AABB buffers (WebGPU limits: 10 storage buffers).
             let child_dist = length(left_com - right_com);
-            let left_size = node_size[left_idx];
-            let right_size = node_size[right_idx];
-            node_size[parent_idx] = child_dist + max(left_size, right_size);
+            node_size[node] = child_dist + max(node_size[left_idx], node_size[right_idx]);
         }
 
-        // Move to next parent
-        current_parent = parent[parent_idx];
+        atomicStore(&agg_ready[node], p);
+
+        // Walk up: this node's data is now program-order visible to this
+        // thread; the parent can be aggregated if its other child is ready
+        // from an earlier pass.
+        let par = parent[node];
+        if (par < 0) {
+            return;
+        }
+        own_child = node;
+        node = u32(par);
+        if (atomicLoad(&agg_ready[node]) != 0u) {
+            // Aggregated in an earlier pass (same-pass duplication is
+            // impossible — see uniqueness argument above)
+            return;
+        }
     }
 }
 
@@ -290,15 +360,17 @@ fn clear_tree(@builtin(global_invocation_id) global_id: vec3<u32>) {
     node_mass[idx] = 0.0;
     node_size[idx] = 0.0;
 
+    // Readiness stamps cover ALL nodes (internal + leaves)
+    atomicStore(&agg_ready[idx], 0u);
+
     // CRITICAL: Initialize parent for ALL nodes (internal + leaves)
-    // Without this, aggregate_bottom_up can follow garbage parent pointers
+    // Without this, aggregation can follow garbage parent pointers
     // and enter an infinite loop. Leaves start at index n-1.
     parent[idx] = -1;
 
-    // Clear internal node structure (children and visit count)
+    // Clear internal node structure (children)
     if (idx < n - 1u) {
         left_child[idx] = 0;
         right_child[idx] = 0;
-        atomicStore(&visit_count[idx], 0u);
     }
 }

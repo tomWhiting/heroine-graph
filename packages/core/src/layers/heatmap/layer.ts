@@ -13,31 +13,17 @@ import type { HeatmapConfig } from "./config.ts";
 import type { DensityTexture } from "./texture.ts";
 import type { ColorScaleName, ColorScaleTexture, ColorStop } from "./colorscale.ts";
 import type { HeatmapPipeline } from "./pipeline.ts";
+import type { Layer } from "../types.ts";
 
 import { mergeHeatmapConfig } from "./config.ts";
 import { clearDensityTexture, createDensityTexture } from "./texture.ts";
 import { createColorScaleTexture, createCustomColorScaleTexture } from "./colorscale.ts";
 import { createHeatmapPipeline } from "./pipeline.ts";
 
-/**
- * Layer interface for the layer system
- */
-export interface Layer {
-  /** Unique layer ID */
-  readonly id: string;
-  /** Layer type */
-  readonly type: string;
-  /** Whether layer is enabled */
-  enabled: boolean;
-  /** Render order (higher = on top) */
-  order: number;
-  /** Render the layer */
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void;
-  /** Resize layer resources */
-  resize(width: number, height: number): void;
-  /** Destroy layer resources */
-  destroy(): void;
-}
+// The Layer interface lives in ../types.ts (free of GPU pipeline/shader
+// imports so CPU-side modules can import it); re-exported here for
+// backwards compatibility.
+export type { Layer } from "../types.ts";
 
 /**
  * Heatmap layer rendering context

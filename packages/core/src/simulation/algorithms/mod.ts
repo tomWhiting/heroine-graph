@@ -56,8 +56,8 @@ export { createTidyTreeAlgorithm, TidyTreeAlgorithm } from "./tidy-tree.ts";
 export type { TidyTreeConfig } from "./tidy-tree.ts";
 export { createLinLogAlgorithm, LinLogAlgorithm } from "./linlog.ts";
 export { createTFdpAlgorithm, TFdpAlgorithm } from "./t-fdp.ts";
-export { createCommunityLayoutAlgorithm, CommunityLayoutAlgorithm } from "./community.ts";
-export { createCodebaseLayoutAlgorithm, CodebaseLayoutAlgorithm } from "./codebase.ts";
+export { CommunityLayoutAlgorithm, createCommunityLayoutAlgorithm } from "./community.ts";
+export { CodebaseLayoutAlgorithm, createCodebaseLayoutAlgorithm } from "./codebase.ts";
 
 /**
  * Initialize the global algorithm registry with built-in algorithms

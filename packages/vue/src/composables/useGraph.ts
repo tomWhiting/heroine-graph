@@ -6,13 +6,13 @@
  * @module
  */
 
-import { ref, shallowRef, onUnmounted, type Ref, type ShallowRef } from "vue";
+import { onUnmounted, type Ref, ref, type ShallowRef, shallowRef } from "vue";
 import type {
+  EdgeId,
   GraphConfig,
   GraphInput,
   HeroineGraph,
   NodeId,
-  EdgeId,
   Vec2,
 } from "@graphmother/core";
 import { createHeroineGraph, isSupported } from "@graphmother/core";

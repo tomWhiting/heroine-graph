@@ -41,12 +41,21 @@ struct ForceUniforms {
 @group(0) @binding(6) var<storage, read> node_mass: array<f32>;
 @group(0) @binding(7) var<storage, read> node_size: array<f32>;
 
+// Node state flags (bit 0 = dead slot from removal) — see pipeline.ts
+@group(0) @binding(8) var<storage, read> node_flags: array<u32>;
+
 // Stack depth for tree traversal. For a binary tree with N nodes, the maximum
 // stack depth needed is log₂(N). For 131K nodes (current limit), ~17 levels suffice.
 // However, Karras trees can be unbalanced. We use 128 to handle extreme cases,
 // supporting trees up to 128 levels deep with massive safety margin.
 const MAX_STACK_DEPTH: u32 = 128u;
 const WORKGROUP_SIZE: u32 = 256u;
+const NODE_FLAG_DEAD: u32 = 1u;
+
+// Bodies closer than sqrt(this) are treated as coincident: the repulsion
+// direction is degenerate, so they get a deterministic golden-angle
+// separation impulse instead (mirrors collision.comp.wgsl's tiebreaker).
+const COINCIDENT_DIST_SQ: f32 = 0.0001;
 
 // Compute repulsive force between a particle and a cell/body
 fn compute_repulsion(delta: vec2<f32>, mass: f32) -> vec2<f32> {
@@ -91,8 +100,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
+    // Dead slots (holes from removals) neither receive forces here nor exert
+    // any (their leaves carry zero mass — see init_leaves)
+    if ((node_flags[particle_idx] & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
+
     let pos = positions[particle_idx];
     var total_force = vec2<f32>(0.0, 0.0);
+    // Mass found at (essentially) this particle's own position, including its
+    // own leaf (mass 1). Any excess is other bodies stacked on this one.
+    var coincident_mass = 0.0;
 
     // Handle degenerate cases
     if (n == 0u) {
@@ -139,12 +157,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let delta = pos - cell_com;
         let dist_sq = dot(delta, delta);
 
-        // Skip if this is essentially the same position
-        // This handles self-interaction (particle in its own leaf)
-        if (dist_sq < 0.0001) {
-            continue;
-        }
-
         // Check if this is a leaf node (stored at index >= N-1)
         let is_leaf = node_idx >= num_internal;
 
@@ -159,8 +171,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let use_approximation = (size_sq < theta_sq * dist_sq) || cell_size <= 0.0 || is_leaf;
 
         if (use_approximation) {
-            // Cell is far enough OR is a leaf - treat as single body
-            total_force += compute_repulsion(delta, cell_mass);
+            if (dist_sq < COINCIDENT_DIST_SQ) {
+                // Same position: repulsion direction is degenerate. This is
+                // either the particle's own leaf (always encountered, mass 1)
+                // or a distinct body stacked on it. Tally the mass; the own
+                // contribution is subtracted after the walk and the excess
+                // gets a deterministic separation impulse.
+                coincident_mass += cell_mass;
+            } else {
+                // Cell is far enough OR is a leaf - treat as single body
+                total_force += compute_repulsion(delta, cell_mass);
+            }
         } else {
             // Cell is too close - examine children (binary tree: 2 children)
             let left = left_child[node_idx];
@@ -189,6 +210,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 total_force += compute_repulsion(delta, cell_mass);
             }
         }
+    }
+
+    // Coincident mass beyond this particle's own leaf (mass 1) belongs to
+    // genuinely distinct bodies at the same position. Without this they would
+    // never repel and stay permanently fused (springs also vanish at zero
+    // distance). Push along a per-index golden-angle direction — the same
+    // deterministic tiebreaker collision.comp.wgsl uses — at min_distance
+    // repulsion strength.
+    let extra_coincident = coincident_mass - 1.0;
+    if (extra_coincident > 0.0) {
+        let angle = f32(particle_idx) * 0.618033988749895 * 6.28318530718;  // Golden ratio
+        let dir = vec2<f32>(cos(angle), sin(angle));
+        let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
+        total_force += dir * (uniforms.repulsion_strength * extra_coincident / min_dist_sq);
     }
 
     // Accumulate force to output

@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html';
 import './heroine-graph.css';
 import { generateRandomGraph, generateSocialNetwork, generateTree, type GraphData } from './graph-generators.ts';
+import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
 interface BasicGraphArgs {
   nodeCount: number;
@@ -18,6 +19,7 @@ interface HeroineGraph {
   fitToView: () => void;
   pan: (dx: number, dy: number) => void;
   zoom: (factor: number) => void;
+  dispose: () => void;
 }
 
 interface HeroineGraphModule {
@@ -131,6 +133,9 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
   const controls = container.querySelector<HTMLElement>('.heroine-graph-controls')!;
 
   try {
+    // Tear down graphs/timers/listeners from previously rendered stories
+    runStoryCleanups();
+
     // Wait for container to be laid out with valid dimensions
     await waitForLayout(container);
 
@@ -165,6 +170,13 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
+    let statsInterval: ReturnType<typeof setInterval> | undefined;
+    registerStoryCleanup(() => {
+      window.removeEventListener('resize', resizeCanvas);
+      if (statsInterval !== undefined) clearInterval(statsInterval);
+      graph.dispose();
+    });
+
     // Load data
     loadingText.textContent = 'Loading graph data...';
     await graph.load(graphData);
@@ -180,7 +192,7 @@ async function initGraph(container: HTMLElement, graphData: GraphData): Promise<
     const edgesEl = container.querySelector<HTMLElement>('[data-stat="edges"]');
 
     if (fpsEl) {
-      setInterval(() => {
+      statsInterval = setInterval(() => {
         const stats = graph.frameStats;
         if (stats) {
           fpsEl.textContent = stats.fps?.toFixed(0) || '--';

@@ -7,11 +7,11 @@
  */
 
 import type {
+  EdgeId,
   GraphConfig,
   GraphInput,
   HeroineGraph,
   NodeId,
-  EdgeId,
   Vec2,
 } from "@graphmother/core";
 import { createHeroineGraph, isSupported } from "@graphmother/core";
@@ -172,11 +172,21 @@ export function createGraphStore(options: GraphStoreOptions = {}) {
 
   return {
     // State (use getter functions for reactivity)
-    get graph() { return graph; },
-    get isReady() { return isReady; },
-    get isLoading() { return isLoading; },
-    get error() { return error; },
-    get isSupported() { return supported; },
+    get graph() {
+      return graph;
+    },
+    get isReady() {
+      return isReady;
+    },
+    get isLoading() {
+      return isLoading;
+    },
+    get error() {
+      return error;
+    },
+    get isSupported() {
+      return supported;
+    },
 
     // Methods
     initialize,

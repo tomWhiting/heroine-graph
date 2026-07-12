@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html';
 import './heroine-graph.css';
 import { generateClusteredGraph, generateSpiralGraph, type GraphData } from './graph-generators.ts';
+import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
 interface LabelConfig {
   fontSize: number;
@@ -24,6 +25,7 @@ interface HeroineGraph {
   disableLabels?: () => void;
   setLabelsConfig?: (config: Partial<LabelConfig>) => void;
   setLabels?: (labels: LabelData[]) => void;
+  dispose: () => void;
 }
 
 interface LabelData {
@@ -197,6 +199,9 @@ async function initLabelsGraph(
   const labelsControls = container.querySelector<HTMLElement>('.heroine-graph-labels-controls')!;
 
   try {
+    // Tear down graphs/timers/listeners from previously rendered stories
+    runStoryCleanups();
+
     await waitForLayout(container);
 
     const rect = container.getBoundingClientRect();
@@ -225,6 +230,13 @@ async function initLabelsGraph(
     };
     window.addEventListener('resize', resizeCanvas);
 
+    let statsInterval: ReturnType<typeof setInterval> | undefined;
+    registerStoryCleanup(() => {
+      window.removeEventListener('resize', resizeCanvas);
+      if (statsInterval !== undefined) clearInterval(statsInterval);
+      graph.dispose();
+    });
+
     // Load data
     loadingText.textContent = 'Loading graph data...';
     await graph.load(graphData);
@@ -249,7 +261,7 @@ async function initLabelsGraph(
     const nodesEl = container.querySelector<HTMLElement>('[data-stat="nodes"]');
 
     if (fpsEl) {
-      setInterval(() => {
+      statsInterval = setInterval(() => {
         const stats = graph.frameStats;
         if (stats) {
           fpsEl.textContent = stats.fps?.toFixed(0) || '--';

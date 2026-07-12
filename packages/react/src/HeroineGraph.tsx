@@ -7,15 +7,12 @@
  * @module
  */
 
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type {
+  BackgroundClickEvent,
+  EdgeClickEvent,
+  EdgeHoverEnterEvent,
+  EdgeHoverLeaveEvent,
   GraphConfig,
   GraphInput,
   HeroineGraph as HeroineGraphCore,
@@ -26,14 +23,10 @@ import type {
   NodeDragStartEvent,
   NodeHoverEnterEvent,
   NodeHoverLeaveEvent,
-  EdgeClickEvent,
-  EdgeHoverEnterEvent,
-  EdgeHoverLeaveEvent,
   SelectionChangeEvent,
-  ViewportChangeEvent,
-  SimulationTickEvent,
   SimulationEndEvent,
-  BackgroundClickEvent,
+  SimulationTickEvent,
+  ViewportChangeEvent,
 } from "@graphmother/core";
 import { createHeroineGraph, isSupported } from "@graphmother/core";
 
@@ -173,12 +166,12 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
 
       let mounted = true;
 
-      async function init() {
+      async function init(canvas: HTMLCanvasElement) {
         try {
           // Check WebGPU support
           if (!isSupported()) {
             throw new Error(
-              "WebGPU is not supported in this browser. Please use a browser with WebGPU support."
+              "WebGPU is not supported in this browser. Please use a browser with WebGPU support.",
             );
           }
 
@@ -204,7 +197,7 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
         }
       }
 
-      init();
+      init(canvas);
 
       return () => {
         mounted = false;
@@ -227,16 +220,28 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
         handlers.push({ event: "node:click", handler: onNodeClick as (e: unknown) => void });
       }
       if (onNodeDoubleClick) {
-        handlers.push({ event: "node:doubleclick", handler: onNodeDoubleClick as (e: unknown) => void });
+        handlers.push({
+          event: "node:dblclick",
+          handler: onNodeDoubleClick as (e: unknown) => void,
+        });
       }
       if (onNodeHoverEnter) {
-        handlers.push({ event: "node:hoverenter", handler: onNodeHoverEnter as (e: unknown) => void });
+        handlers.push({
+          event: "node:hoverenter",
+          handler: onNodeHoverEnter as (e: unknown) => void,
+        });
       }
       if (onNodeHoverLeave) {
-        handlers.push({ event: "node:hoverleave", handler: onNodeHoverLeave as (e: unknown) => void });
+        handlers.push({
+          event: "node:hoverleave",
+          handler: onNodeHoverLeave as (e: unknown) => void,
+        });
       }
       if (onNodeDragStart) {
-        handlers.push({ event: "node:dragstart", handler: onNodeDragStart as (e: unknown) => void });
+        handlers.push({
+          event: "node:dragstart",
+          handler: onNodeDragStart as (e: unknown) => void,
+        });
       }
       if (onNodeDragMove) {
         handlers.push({ event: "node:dragmove", handler: onNodeDragMove as (e: unknown) => void });
@@ -248,36 +253,63 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
         handlers.push({ event: "edge:click", handler: onEdgeClick as (e: unknown) => void });
       }
       if (onEdgeHoverEnter) {
-        handlers.push({ event: "edge:hoverenter", handler: onEdgeHoverEnter as (e: unknown) => void });
+        handlers.push({
+          event: "edge:hoverenter",
+          handler: onEdgeHoverEnter as (e: unknown) => void,
+        });
       }
       if (onEdgeHoverLeave) {
-        handlers.push({ event: "edge:hoverleave", handler: onEdgeHoverLeave as (e: unknown) => void });
+        handlers.push({
+          event: "edge:hoverleave",
+          handler: onEdgeHoverLeave as (e: unknown) => void,
+        });
       }
       if (onSelectionChange) {
-        handlers.push({ event: "selection:change", handler: onSelectionChange as (e: unknown) => void });
+        handlers.push({
+          event: "selection:change",
+          handler: onSelectionChange as (e: unknown) => void,
+        });
       }
       if (onViewportChange) {
-        handlers.push({ event: "viewport:change", handler: onViewportChange as (e: unknown) => void });
+        handlers.push({
+          event: "viewport:change",
+          handler: onViewportChange as (e: unknown) => void,
+        });
       }
       if (onSimulationTick) {
-        handlers.push({ event: "simulation:tick", handler: onSimulationTick as (e: unknown) => void });
+        handlers.push({
+          event: "simulation:tick",
+          handler: onSimulationTick as (e: unknown) => void,
+        });
       }
       if (onSimulationEnd) {
-        handlers.push({ event: "simulation:end", handler: onSimulationEnd as (e: unknown) => void });
+        handlers.push({
+          event: "simulation:end",
+          handler: onSimulationEnd as (e: unknown) => void,
+        });
       }
       if (onBackgroundClick) {
-        handlers.push({ event: "background:click", handler: onBackgroundClick as (e: unknown) => void });
+        handlers.push({
+          event: "background:click",
+          handler: onBackgroundClick as (e: unknown) => void,
+        });
       }
 
       // Register all handlers
       for (const { event, handler } of handlers) {
-        graph.on(event as Parameters<typeof graph.on>[0], handler as Parameters<typeof graph.on>[1]);
+        graph.on(
+          event as Parameters<typeof graph.on>[0],
+          handler as Parameters<typeof graph.on>[1],
+        );
       }
 
       // Cleanup
       return () => {
         for (const { event, handler } of handlers) {
-          graph.off(event as Parameters<typeof graph.off>[0], handler as Parameters<typeof graph.off>[1]);
+          graph.off(
+            event as Parameters<typeof graph.off>[0],
+            handler as Parameters<typeof graph.off>[1],
+          );
         }
       };
     }, [
@@ -377,7 +409,7 @@ export const HeroineGraph = forwardRef<HeroineGraphRef, HeroineGraphProps>(
         />
       </div>
     );
-  }
+  },
 );
 
 export default HeroineGraph;

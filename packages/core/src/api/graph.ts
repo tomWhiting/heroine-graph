@@ -26,7 +26,7 @@ import type {
 import type { GPUContext } from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { ErrorCode, HeroineGraphError } from "../errors.ts";
-import { createEventEmitter, Events, type EventEmitter } from "../events/emitter.ts";
+import { createEventEmitter, type EventEmitter, Events } from "../events/emitter.ts";
 import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
 import { type ParsedGraph, parseGraphInput } from "../graph/parser.ts";
@@ -52,8 +52,8 @@ import {
 } from "../renderer/pipelines/edges.ts";
 import {
   DEFAULT_EDGE_FLOW_CONFIG,
-  type EdgeFlowPreset,
   EDGE_FLOW_PRESETS,
+  type EdgeFlowPreset,
 } from "../renderer/edge_flow.ts";
 import { parseColorToRGB } from "../utils/color.ts";
 import {
@@ -84,25 +84,25 @@ import {
   type SimulationBindGroups,
   type SimulationBuffers,
   type SimulationPipeline,
+  startSettlingTelemetry,
   swapSimulationBuffers,
   updateSimulationUniforms,
-  startSettlingTelemetry,
 } from "../simulation/pipeline.ts";
 import {
   type CollisionBindGroup,
   type CollisionBuffers,
   type CollisionPipeline,
-  type GridCollisionPipeline,
-  type GridCollisionBuffers,
-  type GridCollisionBindGroups,
   createCollisionBindGroup,
   createCollisionBuffers,
   createCollisionPipeline,
-  createGridCollisionPipeline,
-  createGridCollisionBuffers,
   createGridCollisionBindGroups,
+  createGridCollisionBuffers,
+  createGridCollisionPipeline,
   destroyCollisionBuffers,
   destroyGridCollisionBuffers,
+  type GridCollisionBindGroups,
+  type GridCollisionBuffers,
+  type GridCollisionPipeline,
   recordCollisionPass,
   recordGridCollisionPass,
   updateCollisionUniforms,
@@ -144,6 +144,8 @@ import {
   type AlgorithmBuffers,
   type AlgorithmPipelines,
   type AlgorithmRenderContext,
+  CodebaseLayoutAlgorithm,
+  CommunityLayoutAlgorithm,
   type ForceAlgorithm,
   type ForceAlgorithmType,
   getAlgorithmRegistry,
@@ -151,8 +153,6 @@ import {
   RelativityAtlasAlgorithm,
   RelativityAtlasBuffers,
   TidyTreeAlgorithm,
-  CommunityLayoutAlgorithm,
-  CodebaseLayoutAlgorithm,
   uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
 import {
@@ -169,8 +169,8 @@ import {
   type NodeTypeStyleMap,
   type TypeStyleManager,
 } from "../styling/mod.ts";
-import { initialCapacity, growCapacity } from "./buffer_capacity.ts";
-import { MutableGraphState, NODE_ATTR_FLOATS, NODE_ATTR_BYTES } from "./graph_state.ts";
+import { growCapacity, initialCapacity } from "./buffer_capacity.ts";
+import { MutableGraphState, NODE_ATTR_BYTES, NODE_ATTR_FLOATS } from "./graph_state.ts";
 
 // Default well radius for non-bubble mode (matches density field default splat in grid cells)
 const DEFAULT_WELL_RADIUS = 0.0;
@@ -384,14 +384,21 @@ export class HeroineGraph {
 
   // Birth pulse animation configuration
   private birthPulseConfig = {
-    enabled: true, duration: 0.5, intensity: 0.5,
+    enabled: true,
+    duration: 0.5,
+    intensity: 0.5,
     pulseColor: [1, 1, 1] as [number, number, number],
   };
   /** Animation time of the most recent birth pulse (for render loop dirty tracking) */
   private lastBirthTime = 0;
 
   // Background color (RGBA 0-1)
-  private backgroundColor: { r: number; g: number; b: number; a: number } = { r: 0.04, g: 0.04, b: 0.06, a: 1.0 };
+  private backgroundColor: { r: number; g: number; b: number; a: number } = {
+    r: 0.04,
+    g: 0.04,
+    b: 0.06,
+    a: 1.0,
+  };
 
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
@@ -425,6 +432,7 @@ export class HeroineGraph {
   private draggedNode: NodeId | null = null;
   private lastDragPosition: Vec2 | null = null;
   private dragStartScreenPosition: Vec2 | null = null;
+  private lastClick: { nodeId: NodeId; timestamp: number } | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
 
   // Viewport panning state
@@ -721,9 +729,7 @@ export class HeroineGraph {
     // Birth pulse animation (12-15)
     floatView[12] = 0.0; // time (updated per-frame in renderFrame)
     floatView[13] = this.birthPulseConfig.duration; // birth_pulse_duration
-    floatView[14] = this.birthPulseConfig.enabled
-      ? this.birthPulseConfig.intensity
-      : 0.0; // birth_pulse_intensity (0 when disabled)
+    floatView[14] = this.birthPulseConfig.enabled ? this.birthPulseConfig.intensity : 0.0; // birth_pulse_intensity (0 when disabled)
     floatView[15] = 0.0; // _pad3
 
     // Pulse color for looping pulses (16-18), _pad4 (19)
@@ -777,6 +783,7 @@ export class HeroineGraph {
       this.state.edgeCount,
       alpha,
       effectiveForceConfig,
+      this.currentAlgorithm?.prefersAdaptiveSpeed,
     );
 
     // Compute bounds once per frame for all consumers (algorithm context, collision grid).
@@ -784,10 +791,10 @@ export class HeroineGraph {
     // may be slightly stale. The computeBoundsFromPositions function adds a margin for drift.
     this.frameBounds = this.state.parsedGraph
       ? computeBoundsFromPositions(
-          this.state.parsedGraph.positionsX,
-          this.state.parsedGraph.positionsY,
-          simNodeCount,
-        )
+        this.state.parsedGraph.positionsX,
+        this.state.parsedGraph.positionsY,
+        simNodeCount,
+      )
       : undefined;
 
     // Update algorithm uniforms if using custom algorithm
@@ -801,7 +808,7 @@ export class HeroineGraph {
       const requiresBounds = algorithmId === "barnes-hut" || algorithmId === "density";
       if (requiresBounds && !bounds) {
         console.error(
-          "CRITICAL: Position data corrupted (all NaN/Infinity). Stopping simulation."
+          "CRITICAL: Position data corrupted (all NaN/Infinity). Stopping simulation.",
         );
         this.simulationController.stop();
         return;
@@ -819,6 +826,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
         edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
+        nodeFlags: this.simBuffers.nodeFlags,
       };
       this.currentAlgorithm.updateUniforms(device, this.algorithmBuffers, context);
     }
@@ -884,16 +892,23 @@ export class HeroineGraph {
           // Bounds unavailable — fall back to tiled collision
           updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
           recordCollisionPass(
-            encoder, this.collisionPipeline, this.collisionBindGroup,
-            nodeCount, this.forceConfig.collisionIterations, true,
+            encoder,
+            this.collisionPipeline,
+            this.collisionBindGroup,
+            nodeCount,
+            this.forceConfig.collisionIterations,
+            true,
           );
         }
       } else {
         // Tiled/simple collision: O(n^2) for small graphs (<=5000 nodes)
         updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
         recordCollisionPass(
-          encoder, this.collisionPipeline, this.collisionBindGroup,
-          nodeCount, this.forceConfig.collisionIterations,
+          encoder,
+          this.collisionPipeline,
+          this.collisionBindGroup,
+          nodeCount,
+          this.forceConfig.collisionIterations,
           nodeCount > 1000,
         );
       }
@@ -956,6 +971,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
         edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
+        nodeFlags: this.simBuffers.nodeFlags,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -975,6 +991,7 @@ export class HeroineGraph {
         this.collisionPipeline,
         this.collisionBuffers,
         this.simBuffers.positionsOut,
+        this.simBuffers.nodeFlags,
       );
     }
 
@@ -986,6 +1003,7 @@ export class HeroineGraph {
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
         this.simBuffers.positionsOut,
+        this.simBuffers.nodeFlags,
       );
     }
 
@@ -1126,7 +1144,8 @@ export class HeroineGraph {
     if (this.renderConfigBuffer && this.lastBirthTime !== 0) {
       const animTime = this.getAnimationTime();
       device.queue.writeBuffer(
-        this.renderConfigBuffer, 48,
+        this.renderConfigBuffer,
+        48,
         new Float32Array([animTime]),
       );
     }
@@ -1230,7 +1249,10 @@ export class HeroineGraph {
     const posY = pg.positionsY;
 
     // First sync — just store positions, can't compare yet
-    if (!this.prevSyncPositionsX || !this.prevSyncPositionsY || this.prevSyncPositionsX.length < nodeCount) {
+    if (
+      !this.prevSyncPositionsX || !this.prevSyncPositionsY ||
+      this.prevSyncPositionsX.length < nodeCount
+    ) {
       this.prevSyncPositionsX = new Float32Array(posX.subarray(0, nodeCount));
       this.prevSyncPositionsY = new Float32Array(posY.subarray(0, nodeCount));
       this.convergenceCheckCount = 0;
@@ -1494,6 +1516,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: parsed.edgeSources,
         edgeTargetsData: parsed.edgeTargets,
+        nodeFlags: this.simBuffers.nodeFlags,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -1552,6 +1575,7 @@ export class HeroineGraph {
       this.collisionPipeline,
       this.collisionBuffers,
       this.simBuffers.positionsOut,
+      this.simBuffers.nodeFlags,
     );
 
     // Update collision uniforms
@@ -1569,6 +1593,7 @@ export class HeroineGraph {
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
         this.simBuffers.positionsOut,
+        this.simBuffers.nodeFlags,
       );
     }
 
@@ -1642,33 +1667,70 @@ export class HeroineGraph {
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
-      // Compute BFS depths from CSR data (parents settle before children).
-      // This is O(V+E) and runs once per graph load — no WASM needed.
+      // Hierarchy = containment edges only. When the graph carries typed
+      // edges and any is "contains", cross-cutting dependency edges
+      // (imports, tests, configs) are excluded — they corrupt BFS depths
+      // and bubble radii (a file attaches under a module that imports it
+      // instead of its directory). Untyped graphs keep every edge.
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
       const nodeCount = gs.nodeHighWater;
+      const edgeTypes = gs.edgeTypes;
+      let hasContainsType = false;
+      for (let i = 0; i < gs.edgeCount; i++) {
+        if (edgeTypes[i] === "contains") {
+          hasContainsType = true;
+          break;
+        }
+      }
+      const containmentBuf = new Uint32Array(gs.edgeCount * 2);
+      let containmentCount = 0;
+      for (let i = 0; i < gs.edgeCount; i++) {
+        if (hasContainsType && edgeTypes[i] !== "contains") continue;
+        containmentBuf[containmentCount * 2] = gs.edgeSources[i];
+        containmentBuf[containmentCount * 2 + 1] = gs.edgeTargets[i];
+        containmentCount++;
+      }
+      const containmentEdges = containmentBuf.subarray(0, containmentCount * 2);
+
+      // Compute BFS depths over the containment tree (parents settle before
+      // children). This is O(V+E) and runs once per graph load — no WASM needed.
       const depths = new Float32Array(nodeCount);
       {
+        // Containment-only forward adjacency + indegree (counting sort)
+        const offsets = new Uint32Array(nodeCount + 1);
+        const indegree = new Uint32Array(nodeCount);
+        for (let e = 0; e < containmentCount; e++) {
+          offsets[containmentEdges[e * 2] + 1]++;
+          indegree[containmentEdges[e * 2 + 1]]++;
+        }
+        for (let i = 0; i < nodeCount; i++) {
+          offsets[i + 1] += offsets[i];
+        }
+        const children = new Uint32Array(containmentCount);
+        const cursor = offsets.slice(0, nodeCount);
+        for (let e = 0; e < containmentCount; e++) {
+          children[cursor[containmentEdges[e * 2]]++] = containmentEdges[e * 2 + 1];
+        }
+
         const visited = new Uint8Array(nodeCount);
         const queue = new Uint32Array(nodeCount);
         let qHead = 0;
         let qTail = 0;
 
-        // Roots = nodes with no incoming edges (inverse CSR has empty range)
+        // Roots = nodes with no incoming containment edges
         for (let i = 0; i < nodeCount; i++) {
-          if (inverse.offsets[i] === inverse.offsets[i + 1]) {
+          if (indegree[i] === 0) {
             depths[i] = 0;
             visited[i] = 1;
             queue[qTail++] = i;
           }
         }
 
-        // BFS using forward CSR (parent → children)
+        // BFS parent → children
         while (qHead < qTail) {
           const node = queue[qHead++];
-          const childStart = forward.offsets[node];
-          const childEnd = forward.offsets[node + 1];
-          for (let j = childStart; j < childEnd; j++) {
-            const child = forward.targets[j];
+          for (let j = offsets[node]; j < offsets[node + 1]; j++) {
+            const child = children[j];
             if (!visited[child]) {
               visited[child] = 1;
               depths[child] = depths[node] + 1;
@@ -1682,16 +1744,22 @@ export class HeroineGraph {
       device.queue.writeBuffer(b.nodeDepth, 0, depths);
       device.queue.writeBuffer(this.simBuffers!.nodeDepth, 0, depths);
 
-      // Upload well radii (bubble mode uses WASM if available, otherwise defaults)
+      // Upload well radii (bubble mode uses WASM if available, otherwise defaults).
+      // computeBubbleDataFromEdges takes the same containment-only edges as the
+      // BFS above; the deprecated computeBubbleData derived the hierarchy from
+      // ALL engine edges and was corrupted by dependency edges.
       // deno-lint-ignore no-explicit-any
+      const wasmAny = this.wasmEngine as any;
       const hasComputeBubble = this.forceConfig.relativityBubbleMode &&
         this.wasmEngine &&
-        typeof (this.wasmEngine as any).computeBubbleData === "function";
+        typeof wasmAny.computeBubbleDataFromEdges === "function";
       if (hasComputeBubble) {
-        const bubbleData = this.wasmEngine!.computeBubbleData(
+        const bubbleData = wasmAny.computeBubbleDataFromEdges(
+          containmentEdges,
+          0xFFFFFFFF, // root auto-detect
           this.forceConfig.relativityBubbleBaseRadius,
           this.forceConfig.relativityBubblePadding,
-        );
+        ) as Float32Array;
         if (bubbleData.length >= nodeCount * 2) {
           const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
           device.queue.writeBuffer(b.wellRadius, 0, toArrayBuffer(wellRadii));
@@ -1705,7 +1773,7 @@ export class HeroineGraph {
       if (this.debug) {
         console.log(
           `Relativity Atlas: uploaded CSR (${gs.nodeHighWater} nodes, ${gs.edgeCount} edges)` +
-          (this.forceConfig.relativityBubbleMode ? " [bubble mode]" : ""),
+            (this.forceConfig.relativityBubbleMode ? " [bubble mode]" : ""),
         );
       }
     }
@@ -1840,7 +1908,10 @@ export class HeroineGraph {
    */
   async addNode(node: NodeInput): Promise<NodeId> {
     if (!this.graphState || !this.buffers || !this.simBuffers) {
-      throw new HeroineGraphError(ErrorCode.INVALID_GRAPH_DATA, "Cannot add node: graph not loaded");
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot add node: graph not loaded",
+      );
     }
 
     const gs = this.graphState;
@@ -2026,7 +2097,8 @@ export class HeroineGraph {
 
     // Allocate slot — edgeIdMap adopts the dense slot from allocateEdgeSlot
     const slot = gs.allocateEdgeSlot();
-    const edgeId = (edge as Record<string, unknown>)["id"] as string | number | undefined ?? `edge_${slot}`;
+    const edgeId = (edge as Record<string, unknown>)["id"] as string | number | undefined ??
+      `edge_${slot}`;
     gs.edgeIdMap.set(edgeId, slot);
 
     // Parse attributes
@@ -2139,7 +2211,11 @@ export class HeroineGraph {
       const tgtData = new Uint32Array([gs.edgeTargets[index]]);
 
       device.queue.writeBuffer(this.buffers.edgeIndices, index * 8, edgeIndicesData);
-      device.queue.writeBuffer(this.buffers.edgeAttributes, index * 32, new Float32Array(edgeAttrData));
+      device.queue.writeBuffer(
+        this.buffers.edgeAttributes,
+        index * 32,
+        new Float32Array(edgeAttrData),
+      );
       device.queue.writeBuffer(this.simBuffers.edgeSources, index * 4, srcData);
       device.queue.writeBuffer(this.simBuffers.edgeTargets, index * 4, tgtData);
     }
@@ -2178,7 +2254,10 @@ export class HeroineGraph {
    */
   async addNodes(nodes: NodeInput[]): Promise<NodeId[]> {
     if (!this.graphState || !this.buffers || !this.simBuffers) {
-      throw new HeroineGraphError(ErrorCode.INVALID_GRAPH_DATA, "Cannot add nodes: graph not loaded");
+      throw new HeroineGraphError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "Cannot add nodes: graph not loaded",
+      );
     }
 
     const gs = this.graphState;
@@ -2319,10 +2398,7 @@ export class HeroineGraph {
     // 1. Resolve all IDs to valid slot indices
     const slotsToRemove = new Set<number>();
     for (const id of ids) {
-      const slot =
-        typeof id === "number" && id < gs.nodeHighWater
-          ? id
-          : gs.nodeIdMap.get(id);
+      const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
       if (slot !== undefined && !gs.nodeFreeSet.has(slot)) {
         slotsToRemove.add(slot);
       }
@@ -2595,8 +2671,7 @@ export class HeroineGraph {
       }
 
       const slot = gs.allocateEdgeSlot();
-      const edgeId =
-        ((edge as Record<string, unknown>)["id"] as string | number | undefined) ??
+      const edgeId = ((edge as Record<string, unknown>)["id"] as string | number | undefined) ??
         `edge_${slot}`;
       gs.edgeIdMap.set(edgeId, slot);
 
@@ -2992,7 +3067,10 @@ export class HeroineGraph {
    * Recreates algorithm buffers/bind groups if nodeHighWater exceeds their maxNodes.
    */
   private ensureAlgorithmCapacity(): void {
-    if (!this.currentAlgorithm || !this.algorithmPipelines || !this.algorithmBuffers || !this.simBuffers || !this.graphState) return;
+    if (
+      !this.currentAlgorithm || !this.algorithmPipelines || !this.algorithmBuffers ||
+      !this.simBuffers || !this.graphState
+    ) return;
 
     const gs = this.graphState;
     const algMaxNodes = (this.algorithmBuffers as unknown as { maxNodes?: number }).maxNodes;
@@ -3018,6 +3096,7 @@ export class HeroineGraph {
       edgeTargets: this.simBuffers.edgeTargets,
       edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
       edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
+      nodeFlags: this.simBuffers.nodeFlags,
     };
 
     this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -3103,6 +3182,7 @@ export class HeroineGraph {
     this.simBuffers.velocities.destroy();
     this.simBuffers.velocitiesOut.destroy();
     this.simBuffers.forces.destroy();
+    this.simBuffers.prevForces.destroy();
     this.simBuffers.nodeFlags.destroy();
     this.simBuffers.nodeDepth.destroy();
     this.simBuffers.readback.destroy();
@@ -3136,6 +3216,11 @@ export class HeroineGraph {
       size: nodeVec2Bytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.simBuffers.prevForces = device.createBuffer({
+      label: "Sim Prev Forces",
+      size: nodeVec2Bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     this.simBuffers.nodeFlags = device.createBuffer({
       label: "Sim Node Flags",
       size: nodeFlagBytes,
@@ -3162,6 +3247,7 @@ export class HeroineGraph {
     device.queue.writeBuffer(this.simBuffers.velocities, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.velocitiesOut, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
+    device.queue.writeBuffer(this.simBuffers.prevForces, 0, zeros);
 
     // === Rebuild all affected bind groups ===
     this.rebuildAllBindGroups();
@@ -3184,6 +3270,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
         edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
+        nodeFlags: this.simBuffers.nodeFlags,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -3274,8 +3361,16 @@ export class HeroineGraph {
 
     // Upload edge source/target data
     if (ec > 0) {
-      device.queue.writeBuffer(this.simBuffers.edgeSources, 0, toArrayBuffer(gs.edgeSources.subarray(0, ec)));
-      device.queue.writeBuffer(this.simBuffers.edgeTargets, 0, toArrayBuffer(gs.edgeTargets.subarray(0, ec)));
+      device.queue.writeBuffer(
+        this.simBuffers.edgeSources,
+        0,
+        toArrayBuffer(gs.edgeSources.subarray(0, ec)),
+      );
+      device.queue.writeBuffer(
+        this.simBuffers.edgeTargets,
+        0,
+        toArrayBuffer(gs.edgeTargets.subarray(0, ec)),
+      );
     }
 
     // Rebuild bind groups that reference edge buffers
@@ -3346,6 +3441,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
         edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
+        nodeFlags: this.simBuffers.nodeFlags,
       };
 
       this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
@@ -3363,6 +3459,7 @@ export class HeroineGraph {
         this.collisionPipeline,
         this.collisionBuffers,
         this.simBuffers.positionsOut,
+        this.simBuffers.nodeFlags,
       );
     }
 
@@ -3374,6 +3471,7 @@ export class HeroineGraph {
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
         this.simBuffers.positionsOut,
+        this.simBuffers.nodeFlags,
       );
     }
   }
@@ -3573,7 +3671,9 @@ export class HeroineGraph {
    *
    * @returns Array of available algorithm info
    */
-  getAvailableAlgorithms(): Array<{ id: string; name: string; description: string; complexity: string }> {
+  getAvailableAlgorithms(): Array<
+    { id: string; name: string; description: string; complexity: string }
+  > {
     const registry = getAlgorithmRegistry();
     return registry.listInfo().map((info) => ({
       id: info.id,
@@ -3608,7 +3708,9 @@ export class HeroineGraph {
     if (!algorithm) {
       throw new HeroineGraphError(
         ErrorCode.INVALID_GRAPH_DATA,
-        `Unknown force algorithm: ${type}. Available: ${registry.listInfo().map((i) => i.id).join(", ")}`,
+        `Unknown force algorithm: ${type}. Available: ${
+          registry.listInfo().map((i) => i.id).join(", ")
+        }`,
       );
     }
 
@@ -3640,10 +3742,10 @@ export class HeroineGraph {
       const algNodeCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
       const bounds = this.state.parsedGraph
         ? computeBoundsFromPositions(
-            this.state.parsedGraph.positionsX,
-            this.state.parsedGraph.positionsY,
-            algNodeCount,
-          )
+          this.state.parsedGraph.positionsX,
+          this.state.parsedGraph.positionsY,
+          algNodeCount,
+        )
         : undefined;
 
       // Create bind groups
@@ -3659,6 +3761,7 @@ export class HeroineGraph {
         edgeTargets: this.simBuffers.edgeTargets,
         edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
         edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
+        nodeFlags: this.simBuffers.nodeFlags,
       };
 
       this.algorithmBindGroups = algorithm.createBindGroups(
@@ -3771,7 +3874,7 @@ export class HeroineGraph {
     const sizes = [...commDistribution.values()].sort((a, b) => b - a);
     console.log(
       `[Community] Detected ${communityCount} communities from ${assignments.length} nodes. ` +
-      `Largest: ${sizes.slice(0, 5).join(", ")}`,
+        `Largest: ${sizes.slice(0, 5).join(", ")}`,
     );
 
     this.currentAlgorithm.uploadCommunityIds(
@@ -3834,7 +3937,7 @@ export class HeroineGraph {
     const sizes2 = [...commDist.values()].sort((a, b) => b - a);
     console.log(
       `[Codebase] Detected ${communityCount} communities from ${assignments.length} nodes. ` +
-      `Largest: ${sizes2.slice(0, 5).join(", ")}`,
+        `Largest: ${sizes2.slice(0, 5).join(", ")}`,
     );
 
     this.currentAlgorithm.uploadCommunityIds(
@@ -3969,7 +4072,9 @@ export class HeroineGraph {
     this.setHeatmapLayerColorScale("heatmap", name);
   }
 
-  setCustomHeatmapColorScale(stops: Array<{ position: number; color: [number, number, number, number] }>): void {
+  setCustomHeatmapColorScale(
+    stops: Array<{ position: number; color: [number, number, number, number] }>,
+  ): void {
     this.setCustomHeatmapLayerColorScale("heatmap", stops);
   }
 
@@ -4610,7 +4715,9 @@ export class HeroineGraph {
 
     const byteOffset = idx * NODE_ATTR_BYTES + 6 * 4;
     this.gpuContext.device.queue.writeBuffer(
-      this.buffers.nodeAttributes, byteOffset, new Float32Array([time]),
+      this.buffers.nodeAttributes,
+      byteOffset,
+      new Float32Array([time]),
     );
     // Only update dirty tracking when starting/continuing a pulse, not when clearing one.
     // Clearing a single node (time=0) must not kill dirty tracking for other active pulses.
@@ -5296,7 +5403,10 @@ export class HeroineGraph {
    * @param streamId - Stream ID
    * @param blendMode - Blend mode ('additive', 'multiply', 'max', 'replace')
    */
-  setStreamBlendMode(streamId: string, blendMode: "additive" | "multiply" | "max" | "replace"): void {
+  setStreamBlendMode(
+    streamId: string,
+    blendMode: "additive" | "multiply" | "max" | "replace",
+  ): void {
     const stream = this.streamManager.getStream(streamId);
     if (stream) {
       stream.setBlendMode(blendMode);
@@ -5592,12 +5702,9 @@ export class HeroineGraph {
         edgeAttributes[baseOffset + 3] = style.color[2]; // b
         // Preserve interaction state and per-edge curvature (setEdgeCurvatures
         // writes the shadow) — type styles only own width/color/opacity
-        edgeAttributes[baseOffset + 4] =
-          parsed.edgeAttributes[baseOffset + 4] ?? 0; // selected
-        edgeAttributes[baseOffset + 5] =
-          parsed.edgeAttributes[baseOffset + 5] ?? 0; // hovered
-        edgeAttributes[baseOffset + 6] =
-          parsed.edgeAttributes[baseOffset + 6] ?? 0; // curvature
+        edgeAttributes[baseOffset + 4] = parsed.edgeAttributes[baseOffset + 4] ?? 0; // selected
+        edgeAttributes[baseOffset + 5] = parsed.edgeAttributes[baseOffset + 5] ?? 0; // hovered
+        edgeAttributes[baseOffset + 6] = parsed.edgeAttributes[baseOffset + 6] ?? 0; // curvature
         edgeAttributes[baseOffset + 7] = style.color[3]; // opacity from resolved alpha (0.0 = hidden)
 
         // Sync type-styled values to the CPU shadow so later shadow-based
@@ -5657,7 +5764,7 @@ export class HeroineGraph {
         }
 
         // Node attrs layout: [radius, r, g, b, selected, hovered, birth_time, tex_index]
-        nodeAttrs[attrBase + 1] = colors[colorBase] ?? 0;     // R
+        nodeAttrs[attrBase + 1] = colors[colorBase] ?? 0; // R
         nodeAttrs[attrBase + 2] = colors[colorBase + 1] ?? 0; // G
         nodeAttrs[attrBase + 3] = colors[colorBase + 2] ?? 0; // B
         currentlyColored.add(i);
@@ -6119,6 +6226,26 @@ export class HeroineGraph {
           this.events.emit(
             Events.nodeClick(nodeId, e.graphPosition, e.originalEvent as PointerEvent),
           );
+
+          // Two clicks on the same node within the interval form a double-click
+          const DBLCLICK_INTERVAL_MS = 350;
+          const now = Date.now();
+          if (
+            this.lastClick !== null &&
+            this.lastClick.nodeId === nodeId &&
+            now - this.lastClick.timestamp <= DBLCLICK_INTERVAL_MS
+          ) {
+            this.events.emit(
+              Events.nodeDoubleClick(
+                nodeId,
+                e.graphPosition,
+                e.originalEvent as PointerEvent,
+              ),
+            );
+            this.lastClick = null;
+          } else {
+            this.lastClick = { nodeId, timestamp: now };
+          }
         } else {
           // Optionally unpin after drag (could be configurable)
           // this.setNodePinnedState(nodeId, false);
@@ -6477,6 +6604,8 @@ export class HeroineGraph {
       this.simBuffers.velocities.destroy();
       this.simBuffers.velocitiesOut.destroy();
       this.simBuffers.forces.destroy();
+      this.simBuffers.prevForces.destroy();
+      this.simBuffers.nodeFlags.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
       this.simBuffers.clearUniforms.destroy();

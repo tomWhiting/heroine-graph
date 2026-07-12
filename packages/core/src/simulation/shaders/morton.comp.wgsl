@@ -18,10 +18,18 @@ struct SimulationUniforms {
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> morton_codes: array<u32>;
 @group(0) @binding(3) var<storage, read_write> node_indices: array<u32>;
+// Node state flags (bit 0 = dead slot from removal) — see pipeline.ts
+@group(0) @binding(4) var<storage, read> node_flags: array<u32>;
 
 // Number of bits for each coordinate (16 bits each = 32-bit Morton code)
 const MORTON_BITS: u32 = 16u;
 const MORTON_SCALE: f32 = 65535.0;  // 2^16 - 1
+
+const NODE_FLAG_DEAD: u32 = 1u;
+// High bit tags a dead slot's index so downstream tree construction
+// (karras_tree.comp.wgsl init_leaves) can zero its mass. Node counts are
+// capped far below 2^31, so the bit never collides with a real index.
+const DEAD_INDEX_BIT: u32 = 0x80000000u;
 
 // Expand bits by inserting zeros between each bit
 // 0000 0000 0000 0000 abcd efgh ijkl mnop
@@ -46,6 +54,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
 
     if (idx >= uniforms.node_count) {
+        return;
+    }
+
+    // Dead slots (holes from removals) must not act as phantom bodies at the
+    // origin: give them the maximum Morton code so they cluster at the end of
+    // the sorted order, and tag their index so init_leaves assigns zero mass.
+    if ((node_flags[idx] & NODE_FLAG_DEAD) != 0u) {
+        morton_codes[idx] = 0xFFFFFFFFu;
+        node_indices[idx] = idx | DEAD_INDEX_BIT;
         return;
     }
 

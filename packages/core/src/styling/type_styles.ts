@@ -120,9 +120,7 @@ export class TypeStyleManager {
     // Copy the default color — never alias the shared constant into a
     // resolved style, or later mutation would corrupt every default-styled item
     const resolved: ResolvedNodeStyle = {
-      color: typeStyle.color
-        ? parseColor(typeStyle.color)
-        : [...DEFAULT_NODE_STYLE.color],
+      color: typeStyle.color ? parseColor(typeStyle.color) : [...DEFAULT_NODE_STYLE.color],
       size: typeStyle.size ?? DEFAULT_NODE_STYLE.size,
     };
 
@@ -151,9 +149,7 @@ export class TypeStyleManager {
     // shared DEFAULT_EDGE_STYLE constant (that would dim every default-styled
     // edge library-wide, persisting even across clear())
     const resolved: ResolvedEdgeStyle = {
-      color: typeStyle.color
-        ? parseColor(typeStyle.color)
-        : [...DEFAULT_EDGE_STYLE.color],
+      color: typeStyle.color ? parseColor(typeStyle.color) : [...DEFAULT_EDGE_STYLE.color],
       width: typeStyle.width ?? DEFAULT_EDGE_STYLE.width,
     };
 

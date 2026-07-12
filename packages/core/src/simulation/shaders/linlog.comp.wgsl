@@ -31,6 +31,10 @@ const FLAG_STRONG_GRAVITY: u32 = 1u;
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read> degrees: array<u32>;
+// Node state flags (bit 0 = dead slot from removal)
+@group(0) @binding(4) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
 
 // ForceAtlas2 repulsion: F = kr * (deg(i)+1) * (deg(j)+1) / distance
 // Linear falloff (1/r), degree-weighted mass.
@@ -43,14 +47,23 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
+    // Dead slots (holes from removals, zeroed to the origin) neither
+    // receive nor exert forces
+    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
+
     let node_pos = positions[node_idx];
     let node_degree = degrees[node_idx];
     let mass_i = f32(node_degree + 1u);
     var total_force = vec2<f32>(0.0, 0.0);
 
-    // N² repulsion
+    // N² repulsion over live slots
     for (var i = 0u; i < uniforms.node_count; i++) {
         if (i == node_idx) {
+            continue;
+        }
+        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
             continue;
         }
 

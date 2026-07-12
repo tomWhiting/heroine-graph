@@ -29,10 +29,37 @@ const FLAG_LINLOG: u32 = 1u;
 
 @group(0) @binding(0) var<uniform> uniforms: FA2AttractionUniforms;
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
-@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
+// Force accumulators — the shared vec2<f32> buffer viewed as f32 bit patterns
+// behind atomic<u32> (node i -> [2i]=x, [2i+1]=y) so per-edge threads can
+// accumulate without lost updates on hub nodes. Same buffer, same bytes —
+// other passes keep their array<vec2<f32>> view.
+@group(0) @binding(2) var<storage, read_write> forces: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
 @group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
 @group(0) @binding(5) var<storage, read> edge_weights: array<f32>;
+// Node state flags (bit 0 = dead slot from removal)
+@group(0) @binding(6) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
+
+// Race-free float accumulation: CAS loop on the f32 bit pattern. WGSL has no
+// native f32 atomics; plain `forces[i] += f` dropped a degree-proportional
+// fraction of hub attraction (a hub's contiguous edges execute in one SIMD
+// wave, all reading the same stale value; only one lane's write survived).
+fn atomic_add_f32(index: u32, value: f32) {
+    var old = atomicLoad(&forces[index]);
+    loop {
+        let new_bits = bitcast<u32>(bitcast<f32>(old) + value);
+        let result = atomicCompareExchangeWeak(&forces[index], old, new_bits);
+        if (result.exchanged) { return; }
+        old = result.old_value;
+    }
+}
+
+fn accumulate_force(node_idx: u32, force: vec2<f32>) {
+    atomic_add_f32(node_idx * 2u, force.x);
+    atomic_add_f32(node_idx * 2u + 1u, force.y);
+}
 
 // FA2 attraction: F = w^delta * d * direction (standard)
 //             or: F = w^delta * log(1 + d) * direction (linlog)
@@ -48,6 +75,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let src = edge_sources[edge_idx];
     let tgt = edge_targets[edge_idx];
+
+    // Edges touching dead slots (holes from removals) exert no force
+    if (((node_flags[src] | node_flags[tgt]) & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
 
     let src_pos = positions[src];
     let tgt_pos = positions[tgt];
@@ -82,10 +114,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dir = delta / dist;
     let force = dir * force_magnitude;
 
-    // Apply equal-and-opposite forces
-    // Note: WGSL storage buffers don't have true atomics for f32,
-    // so there's a potential race condition on concurrent writes.
-    // In practice, the integration step smooths out frame-to-frame noise.
-    forces[src] += force;
-    forces[tgt] -= force;
+    // Apply equal-and-opposite forces (race-free, see atomic_add_f32)
+    accumulate_force(src, force);
+    accumulate_force(tgt, -force);
 }

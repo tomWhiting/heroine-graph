@@ -15,6 +15,11 @@
 // The paper recommends alpha=0.1, beta=8.0, and the constraint alpha*(1+beta) < 1
 // must hold for proper force balance (repulsion dominates at zero distance).
 //
+// Distances are normalized by dist_scale — the SAME normalization the t_fdp
+// repulsion shader applies — so attraction and repulsion balance at the
+// normalized equilibrium the paper derives (d ≈ O(1)) instead of at raw
+// world-unit distances.
+//
 // This shader operates per-edge: each thread processes one edge and applies
 // equal-and-opposite forces to the source and target nodes.
 //
@@ -24,16 +29,39 @@ struct TFdpAttractionUniforms {
     edge_count: u32,
     alpha: f32,          // Linear spring weight (paper default: 0.1)
     beta: f32,           // Attractive t-force weight (paper default: 8.0)
-    _padding: u32,
+    dist_scale: f32,     // world units per t-kernel unit (matches t_fdp)
 }
 
 const MIN_DISTANCE: f32 = 0.0001;
 
 @group(0) @binding(0) var<uniform> uniforms: TFdpAttractionUniforms;
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
-@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
+// Force accumulators — the shared vec2<f32> buffer viewed as f32 bit patterns
+// behind atomic<u32> (node i -> [2i]=x, [2i+1]=y) so per-edge threads can
+// accumulate without lost updates on hub nodes. Same buffer, same bytes —
+// other passes keep their array<vec2<f32>> view.
+@group(0) @binding(2) var<storage, read_write> forces: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
 @group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
+
+// Race-free float accumulation: CAS loop on the f32 bit pattern. WGSL has no
+// native f32 atomics; plain `forces[i] += f` dropped a degree-proportional
+// fraction of hub attraction (a hub's contiguous edges execute in one SIMD
+// wave, all reading the same stale value; only one lane's write survived).
+fn atomic_add_f32(index: u32, value: f32) {
+    var old = atomicLoad(&forces[index]);
+    loop {
+        let new_bits = bitcast<u32>(bitcast<f32>(old) + value);
+        let result = atomicCompareExchangeWeak(&forces[index], old, new_bits);
+        if (result.exchanged) { return; }
+        old = result.old_value;
+    }
+}
+
+fn accumulate_force(node_idx: u32, force: vec2<f32>) {
+    atomic_add_f32(node_idx * 2u, force.x);
+    atomic_add_f32(node_idx * 2u + 1u, force.y);
+}
 
 // t-FDP attraction: F = [ alpha * d + beta * d / (1 + d^2) ] * direction
 //
@@ -61,23 +89,22 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let dir = delta / dist;
 
+    // Normalized distance (same scale as the repulsion kernel)
+    let d = dist / uniforms.dist_scale;
+
     // Component 1: Linear spring (rest length = 0)
     //   F_spring = alpha * d * direction
-    let spring_force = uniforms.alpha * dist;
+    let spring_force = uniforms.alpha * d;
 
     // Component 2: Attractive t-force (phi = 1 per paper)
     //   F_tforce = beta * d / (1 + d^2) * direction
-    let t_force = uniforms.beta * dist / (1.0 + dist_sq);
+    let t_force = uniforms.beta * d / (1.0 + d * d);
 
     // Combined attractive force magnitude
     let force_magnitude = spring_force + t_force;
     let force = dir * force_magnitude;
 
-    // Apply equal-and-opposite forces
-    // Note: WGSL storage buffers don't have true atomics for f32,
-    // so there's a potential race condition on concurrent writes.
-    // In practice, the integration step smooths out frame-to-frame noise,
-    // and this is the same approach used by existing LinLog/FA2 shaders.
-    forces[src] += force;
-    forces[tgt] -= force;
+    // Apply equal-and-opposite forces (race-free, see atomic_add_f32)
+    accumulate_force(src, force);
+    accumulate_force(tgt, -force);
 }

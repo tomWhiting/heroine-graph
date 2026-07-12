@@ -1,15 +1,15 @@
 // Simplified Spring Force Compute Shader
 // Computes attractive forces along edges using Hooke's law
 //
-// Uses vec2<f32> layout for consolidated position/force data.
-//
-// NOTE: Non-atomic float accumulation (forces[idx] += force) is an intentional
-// design decision. WGSL has no float atomics, so edge-processing shaders that
-// write to shared node indices have a read-modify-write race condition. The
-// resulting small random perturbations (<1% of force magnitude) actually help
-// prevent stuck states and are standard practice in GPU physics simulations.
-// Converting to fixed-point i32 atomics would require splitting vec2 force
-// buffers into separate atomic<i32> x/y buffers with significant rearchitecture.
+// Force accumulation: WGSL has no native f32 atomics, and a plain
+// `forces[idx] += force` read-modify-write loses updates catastrophically for
+// hub nodes — a node's edges are contiguous in the edge buffer, so the whole
+// SIMD wave reads the same stale value and only one lane's write survives
+// (~1/k of a k-child hub's attraction). Instead the shared vec2<f32> force
+// buffer is bound here as array<atomic<u32>> over the raw f32 bit patterns
+// (node i -> components [2i]=x, [2i+1]=y) and accumulated with a
+// compare-exchange loop. Same buffer, same bytes — other passes keep their
+// array<vec2<f32>> view.
 
 struct SpringUniforms {
     edge_count: u32,
@@ -23,8 +23,9 @@ struct SpringUniforms {
 // Node positions (read only) - vec2<f32> per node
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
-// Force accumulators (read-write for atomic-like accumulation) - vec2<f32> per node
-@group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
+// Force accumulators — the shared vec2<f32> buffer viewed as f32 bit patterns
+// behind atomic<u32> for race-free accumulation (see header comment)
+@group(0) @binding(2) var<storage, read_write> forces: array<atomic<u32>>;
 
 // Edge data (source, target pairs)
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
@@ -34,6 +35,23 @@ struct SpringUniforms {
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+
+// Race-free float accumulation: CAS loop on the f32 bit pattern.
+fn atomic_add_f32(index: u32, value: f32) {
+    var old = atomicLoad(&forces[index]);
+    loop {
+        let new_bits = bitcast<u32>(bitcast<f32>(old) + value);
+        let result = atomicCompareExchangeWeak(&forces[index], old, new_bits);
+        if (result.exchanged) { return; }
+        old = result.old_value;
+    }
+}
+
+// Add a vec2 force to node `node_idx`'s accumulator.
+fn accumulate_force(node_idx: u32, force: vec2<f32>) {
+    atomic_add_f32(node_idx * 2u, force.x);
+    atomic_add_f32(node_idx * 2u + 1u, force.y);
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -75,7 +93,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Add force to source (attractive toward target)
     // Subtract from target (attractive toward source)
-    // Note: This has race conditions but acceptable for approximate physics
-    forces[source_idx] += force;
-    forces[target_idx] -= force;
+    accumulate_force(source_idx, force);
+    accumulate_force(target_idx, -force);
 }

@@ -12,7 +12,17 @@ import type { FullForceConfig } from "../config.ts";
 /**
  * Available force algorithm types
  */
-export type ForceAlgorithmType = "n2" | "barnes-hut" | "force-atlas2" | "density" | "relativity-atlas" | "tidy-tree" | "linlog" | "t-fdp" | "community" | "codebase";
+export type ForceAlgorithmType =
+  | "n2"
+  | "barnes-hut"
+  | "force-atlas2"
+  | "density"
+  | "relativity-atlas"
+  | "tidy-tree"
+  | "linlog"
+  | "t-fdp"
+  | "community"
+  | "codebase";
 
 /**
  * Algorithm metadata for display
@@ -98,6 +108,17 @@ export interface AlgorithmRenderContext {
   edgeSourcesData?: Uint32Array | undefined;
   /** CPU-side edge target indices (for degree computation without GPU readback) */
   edgeTargetsData?: Uint32Array | undefined;
+  /**
+   * Node state flags buffer (u32 per slot; bit 0 = NODE_FLAG_DEAD, bit 1 =
+   * NODE_FLAG_PINNED — see pipeline.ts). nodeCount is the slot high-water
+   * mark, so slots of removed nodes remain in range with their positions
+   * zeroed to the origin. Any algorithm shader that iterates node slots
+   * (repulsion, gravity, mass aggregation, ...) MUST bind this buffer and
+   * skip slots with NODE_FLAG_DEAD set — otherwise dead slots act as phantom
+   * force sources at (0,0). See repulsion_n2.comp.wgsl `main_masked` for the
+   * reference pattern.
+   */
+  nodeFlags?: GPUBuffer | undefined;
 }
 
 /**
@@ -124,6 +145,16 @@ export interface ForceAlgorithm {
    * that compute exact target positions rather than using force-directed springs.
    */
   readonly handlesSprings?: boolean;
+
+  /**
+   * Whether this algorithm wants FA2-style per-node adaptive speed
+   * (swing/traction velocity scaling in the integrate pass). Forwarded to
+   * updateSimulationUniforms as adaptiveSpeedOverride; when undefined the
+   * forceConfig.adaptiveSpeed setting applies. Algorithms with unbounded
+   * attraction (F = d) such as ForceAtlas2 and Relativity Atlas should set
+   * this to true to suppress overshoot oscillation.
+   */
+  readonly prefersAdaptiveSpeed?: boolean;
 
   /**
    * Create GPU pipelines for this algorithm

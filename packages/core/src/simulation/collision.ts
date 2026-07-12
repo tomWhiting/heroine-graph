@@ -42,6 +42,13 @@ export interface CollisionBuffers {
   uniforms: GPUBuffer;
   /** Node sizes/radii buffer */
   nodeSizes: GPUBuffer;
+  /**
+   * Zeroed fallback for the node_flags binding, used when the caller does
+   * not pass the simulation's nodeFlags buffer (all slots treated as live
+   * and unpinned). Pass SimulationBuffers.nodeFlags to createCollisionBindGroup
+   * so collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
+   */
+  fallbackNodeFlags: GPUBuffer;
   /** Maximum nodes this buffer set supports */
   maxNodes: number;
 }
@@ -69,13 +76,14 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
   });
 
   // Bind group layout for collision pass
-  // Bindings: uniforms, positions (vec2, read-write), node_sizes
+  // Bindings: uniforms, positions (vec2, read-write), node_sizes, node_flags
   const bindGroupLayout = device.createBindGroupLayout({
     label: "Collision Bind Group Layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ],
   });
 
@@ -131,9 +139,18 @@ export function createCollisionBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Zeroed fallback flags (all live/unpinned) for callers without a
+  // simulation nodeFlags buffer
+  const fallbackNodeFlags = device.createBuffer({
+    label: "Collision Fallback Node Flags",
+    size: nodeBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
   return {
     uniforms,
     nodeSizes,
+    fallbackNodeFlags,
     maxNodes: safeMaxNodes,
   };
 }
@@ -145,6 +162,10 @@ export function createCollisionBuffers(
  * @param pipeline - Collision pipeline
  * @param collisionBuffers - Collision-specific buffers
  * @param positions - Position buffer (vec2, read-write)
+ * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
+ *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so collision skips dead
+ *   slots and never displaces pinned nodes. Falls back to an all-zero buffer
+ *   (all live/unpinned) when omitted.
  * @returns Collision bind group
  */
 export function createCollisionBindGroup(
@@ -152,6 +173,7 @@ export function createCollisionBindGroup(
   pipeline: CollisionPipeline,
   collisionBuffers: CollisionBuffers,
   positions: GPUBuffer,
+  nodeFlags?: GPUBuffer,
 ): CollisionBindGroup {
   const bindGroup = device.createBindGroup({
     label: "Collision Bind Group",
@@ -160,6 +182,7 @@ export function createCollisionBindGroup(
       { binding: 0, resource: { buffer: collisionBuffers.uniforms } },
       { binding: 1, resource: { buffer: positions } },
       { binding: 2, resource: { buffer: collisionBuffers.nodeSizes } },
+      { binding: 3, resource: { buffer: nodeFlags ?? collisionBuffers.fallbackNodeFlags } },
     ],
   });
 
@@ -190,9 +213,9 @@ export function updateCollisionUniforms(
   view.setFloat32(8, forceConfig.collisionRadiusMultiplier, true);
   view.setUint32(12, forceConfig.collisionIterations, true);
   view.setFloat32(16, DEFAULT_RADIUS, true);
-  view.setFloat32(20, 0.0, true);  // _pad0
-  view.setFloat32(24, 0.0, true);  // _pad1
-  view.setFloat32(28, 0.0, true);  // _pad2
+  view.setFloat32(20, 0.0, true); // _pad0
+  view.setFloat32(24, 0.0, true); // _pad1
+  view.setFloat32(28, 0.0, true); // _pad2
   device.queue.writeBuffer(collisionBuffers.uniforms, 0, data);
 }
 
@@ -254,6 +277,7 @@ export function recordCollisionPass(
 export function destroyCollisionBuffers(buffers: CollisionBuffers): void {
   buffers.uniforms.destroy();
   buffers.nodeSizes.destroy();
+  buffers.fallbackNodeFlags.destroy();
 }
 
 // ============================================================================
@@ -290,6 +314,12 @@ export interface GridCollisionBuffers {
   nodeNext: GPUBuffer;
   /** Per-node cell hash (maxNodes u32 entries, avoids recomputing in resolve) */
   nodeCell: GPUBuffer;
+  /**
+   * Zeroed fallback for the node_flags binding (all live/unpinned). Pass
+   * SimulationBuffers.nodeFlags to createGridCollisionBindGroups so grid
+   * collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
+   */
+  fallbackNodeFlags: GPUBuffer;
   /** Maximum node count this buffer set supports */
   maxNodes: number;
   /** Maximum cell count (MAX_GRID_DIM^2) */
@@ -325,11 +355,12 @@ export function createGridCollisionPipeline(
     label: "Grid Collision Layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },           // positions (rw)
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // positions (rw)
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_sizes
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },           // cell_head (atomic rw)
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },           // node_next (rw)
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },           // node_cell (rw)
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // cell_head (atomic rw)
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // node_next (rw)
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // node_cell (rw)
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
     ],
   });
 
@@ -404,11 +435,20 @@ export function createGridCollisionBuffers(
     usage: GPUBufferUsage.STORAGE,
   });
 
+  // Zeroed fallback flags (all live/unpinned) for callers without a
+  // simulation nodeFlags buffer
+  const fallbackNodeFlags = device.createBuffer({
+    label: "Grid Collision Fallback Node Flags",
+    size: nodeBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
   return {
     gridUniforms,
     cellHead,
     nodeNext,
     nodeCell,
+    fallbackNodeFlags,
     maxNodes: safeMaxNodes,
     maxCells,
   };
@@ -422,6 +462,10 @@ export function createGridCollisionBuffers(
  * @param gridBuffers - Grid collision buffers
  * @param nodeSizes - Node sizes buffer (from CollisionBuffers)
  * @param positions - Position buffer (positionsOut for ping-pong consistency)
+ * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
+ *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so grid collision skips
+ *   dead slots and never displaces pinned nodes. Falls back to an all-zero
+ *   buffer (all live/unpinned) when omitted.
  * @returns Grid collision bind groups
  */
 export function createGridCollisionBindGroups(
@@ -430,6 +474,7 @@ export function createGridCollisionBindGroups(
   gridBuffers: GridCollisionBuffers,
   nodeSizes: GPUBuffer,
   positions: GPUBuffer,
+  nodeFlags?: GPUBuffer,
 ): GridCollisionBindGroups {
   const grid = device.createBindGroup({
     label: "Grid Collision Bind Group",
@@ -441,6 +486,7 @@ export function createGridCollisionBindGroups(
       { binding: 3, resource: { buffer: gridBuffers.cellHead } },
       { binding: 4, resource: { buffer: gridBuffers.nodeNext } },
       { binding: 5, resource: { buffer: gridBuffers.nodeCell } },
+      { binding: 6, resource: { buffer: nodeFlags ?? gridBuffers.fallbackNodeFlags } },
     ],
   });
 
@@ -498,30 +544,32 @@ export function updateGridCollisionUniforms(
 ): void {
   if (nodeCount > gridBuffers.maxNodes) {
     throw new Error(
-      `Grid collision buffer overflow: nodeCount (${nodeCount}) exceeds capacity (${gridBuffers.maxNodes}).`
+      `Grid collision buffer overflow: nodeCount (${nodeCount}) exceeds capacity (${gridBuffers.maxNodes}).`,
     );
   }
 
   const { gridWidth, gridHeight, cellSize } = computeGridDimensions(
-    bounds, maxRadius, forceConfig.collisionRadiusMultiplier,
+    bounds,
+    maxRadius,
+    forceConfig.collisionRadiusMultiplier,
   );
   const totalCells = gridWidth * gridHeight;
 
   // GridCollisionUniforms (48 bytes, 16-byte aligned)
   const data = new ArrayBuffer(48);
   const view = new DataView(data);
-  view.setUint32(0, nodeCount, true);                               // node_count
-  view.setUint32(4, gridWidth, true);                                // grid_width
-  view.setUint32(8, gridHeight, true);                               // grid_height
-  view.setFloat32(12, cellSize, true);                               // cell_size
-  view.setFloat32(16, bounds.minX, true);                            // bounds_min_x
-  view.setFloat32(20, bounds.minY, true);                            // bounds_min_y
-  view.setFloat32(24, forceConfig.collisionStrength, true);          // collision_strength
-  view.setFloat32(28, forceConfig.collisionRadiusMultiplier, true);  // radius_multiplier
-  view.setFloat32(32, DEFAULT_RADIUS, true);                         // default_radius
-  view.setUint32(36, totalCells, true);                              // total_cells
-  view.setUint32(40, 0, true);                                      // _pad0
-  view.setUint32(44, 0, true);                                      // _pad1
+  view.setUint32(0, nodeCount, true); // node_count
+  view.setUint32(4, gridWidth, true); // grid_width
+  view.setUint32(8, gridHeight, true); // grid_height
+  view.setFloat32(12, cellSize, true); // cell_size
+  view.setFloat32(16, bounds.minX, true); // bounds_min_x
+  view.setFloat32(20, bounds.minY, true); // bounds_min_y
+  view.setFloat32(24, forceConfig.collisionStrength, true); // collision_strength
+  view.setFloat32(28, forceConfig.collisionRadiusMultiplier, true); // radius_multiplier
+  view.setFloat32(32, DEFAULT_RADIUS, true); // default_radius
+  view.setUint32(36, totalCells, true); // total_cells
+  view.setUint32(40, 0, true); // _pad0
+  view.setUint32(44, 0, true); // _pad1
   device.queue.writeBuffer(gridBuffers.gridUniforms, 0, data);
 }
 
@@ -606,4 +654,5 @@ export function destroyGridCollisionBuffers(
   buffers.cellHead.destroy();
   buffers.nodeNext.destroy();
   buffers.nodeCell.destroy();
+  buffers.fallbackNodeFlags.destroy();
 }

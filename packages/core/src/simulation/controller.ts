@@ -84,17 +84,31 @@ export interface SimulationControllerConfig {
 /**
  * Default simulation configuration
  *
- * alphaTarget = 0: simulation cools to rest after ~300 ticks (~5s at 60fps).
+ * alphaTarget = 0: simulation cools to rest after ~300 ticks (~5s at 60fps),
+ * matching the d3-force convention (decay = 1 - 0.001^(1/300) ~= 0.0228).
  * Mutations and dragging call bumpSimulationAlpha() to reheat as needed.
+ * For minutes-long high-quality settles use LONG_SETTLE_SIMULATION_CONFIG.
  */
 export const DEFAULT_SIMULATION_CONFIG: Required<SimulationControllerConfig> = {
   alpha: 1.0,
   alphaTarget: 0.0, // Cool to rest; bumpSimulationAlpha() reheats on interaction
   alphaMin: 0.001,
-  alphaDecay: 0.0002, // ~34,500 iterations to cool down (long settle for quality layouts)
+  alphaDecay: 0.0228, // ~300 iterations to cool down (d3 convention)
   velocityDecay: 0.4,
   maxIterationsPerTick: 1,
   warmUpTicks: 0,
+};
+
+/**
+ * Long-settle preset: keeps the simulation hot for ~34,500 iterations
+ * (~10 min at 60fps) for maximum-quality layouts of large graphs.
+ * This was the library default before v-next; opt in explicitly via
+ * createSimulationController(LONG_SETTLE_SIMULATION_CONFIG) or
+ * setConfig({ alphaDecay: LONG_SETTLE_SIMULATION_CONFIG.alphaDecay }).
+ */
+export const LONG_SETTLE_SIMULATION_CONFIG: Required<SimulationControllerConfig> = {
+  ...DEFAULT_SIMULATION_CONFIG,
+  alphaDecay: 0.0002, // ~34,500 iterations to cool down (long settle for quality layouts)
 };
 
 /**

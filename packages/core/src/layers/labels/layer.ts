@@ -14,12 +14,13 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
-import type { Layer } from "../heatmap/layer.ts";
+import type { Layer } from "../types.ts";
 import type { FontAtlas } from "./atlas.ts";
 import { loadDefaultFontAtlas } from "./atlas.ts";
 import { type LabelData, LabelManager } from "./manager.ts";
 import type { PositionProvider } from "./manager.ts";
 import { DEFAULT_LABEL_CONFIG, type LabelConfig, parseColor } from "./config.ts";
+import { type LabelViewState, shouldRebuildLabels } from "./cache.ts";
 
 // Import shaders as strings
 import labelVertexShader from "./shaders/label.vert.wgsl?raw";
@@ -75,6 +76,12 @@ export class LabelsLayer implements Layer {
   private needsRebuild: boolean = true;
   private _order: number = 100; // Labels render on top
   private isInitialized: boolean = false;
+
+  // View state the cached glyph instances were generated for. Culling,
+  // text measurement and glyph generation only re-run when this goes
+  // stale (camera moved beyond a threshold, labels/config changed, or
+  // node positions moved) — not every rendered frame.
+  private cachedViewState: LabelViewState | null = null;
 
   constructor(
     id: string,
@@ -390,61 +397,31 @@ export class LabelsLayer implements Layer {
     const { viewportX, viewportY, scale, canvasWidth, canvasHeight, positionProvider } =
       this.renderContext;
 
-    // Get visible labels with culling (use position provider for dynamic positions)
-    const visibleLabels = this.manager.getVisibleLabels(
+    // Re-run culling/measurement/glyph generation only when the cached
+    // layout went stale (labels/config changed, node positions moved, or
+    // the camera moved beyond the rebuild thresholds).
+    const viewState: LabelViewState = {
       viewportX,
       viewportY,
       scale,
       canvasWidth,
       canvasHeight,
-      positionProvider,
-    );
+      labelsVersion: this.manager.version,
+      positionFingerprint: this.manager.positionFingerprint(positionProvider),
+    };
 
-    if (visibleLabels.length === 0) {
+    if (shouldRebuildLabels(this.cachedViewState, viewState)) {
+      this.rebuildGlyphs(viewState);
+    }
+
+    if (this._currentGlyphCount === 0) {
       return;
     }
 
-    // Generate glyph instances
-    const { instances, count } = this.manager.generateGlyphInstances(
-      visibleLabels,
-      viewportX,
-      viewportY,
-      scale,
-      canvasWidth,
-      canvasHeight,
-    );
-
-    if (count === 0) {
-      return;
-    }
-
-    // Resize storage buffer if needed
-    if (count > this.maxGlyphCapacity) {
-      this.maxGlyphCapacity = Math.ceil(count * 1.5);
-      this.glyphStorageBuffer?.destroy();
-      this.glyphStorageBuffer = device.createBuffer({
-        label: "Glyph Instance Storage",
-        size: this.maxGlyphCapacity * 12 * 4, // 12 floats per glyph (48 bytes)
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-
-      // Recreate bind group with new buffer
-      const bindGroupLayout1 = this.pipeline.getBindGroupLayout(1);
-      this.bindGroup1 = device.createBindGroup({
-        label: "Glyph Storage Bind Group",
-        layout: bindGroupLayout1,
-        entries: [
-          { binding: 0, resource: { buffer: this.glyphStorageBuffer } },
-        ],
-      });
-    }
-
-    // Upload glyph data - create new Float32Array to ensure proper ArrayBuffer type
-    const glyphData = new Float32Array(instances);
-    device.queue.writeBuffer(this.glyphStorageBuffer!, 0, glyphData);
-
-    // Update viewport uniforms (48 bytes = 12 floats)
-    // Layout matches ViewportUniforms struct in shader
+    // Update viewport uniforms every frame (48 bytes — cheap). Glyph
+    // instances live in graph space, so the per-frame viewport transform
+    // keeps cached glyphs glued to their nodes under pan/zoom between
+    // rebuilds. Layout matches ViewportUniforms struct in shader.
     const viewportData = new Float32Array([
       viewportX, // offset.x at byte 0
       viewportY, // offset.y at byte 4
@@ -460,25 +437,6 @@ export class LabelsLayer implements Layer {
       0, // final padding at byte 44-47
     ]);
     device.queue.writeBuffer(this.viewportUniformBuffer!, 0, viewportData);
-
-    // Update label uniforms
-    const [r, g, b, a] = parseColor(this.config.fontColor);
-    const atlasFontSize = this.fontAtlas.info?.size ?? 42;
-    const labelData = new Float32Array([
-      r,
-      g,
-      b,
-      a, // color
-      this.config.fontSize,
-      this.fontAtlas.distanceRange,
-      this.fontAtlas.common.scaleW,
-      this.fontAtlas.common.scaleH,
-      atlasFontSize, // atlas_font_size
-      0, // _pad0
-      0, // _pad1
-      0, // _pad2
-    ]);
-    device.queue.writeBuffer(this.labelUniformBuffer!, 0, labelData);
 
     // Create render pass
     const renderPass = encoder.beginRenderPass({
@@ -498,11 +456,95 @@ export class LabelsLayer implements Layer {
     renderPass.setBindGroup(2, this.bindGroup2!);
 
     // Draw instanced quads (6 vertices per quad, one instance per glyph)
-    renderPass.draw(6, count);
+    renderPass.draw(6, this._currentGlyphCount);
 
     renderPass.end();
+  }
+
+  /**
+   * Re-run label culling, glyph generation, and the associated GPU
+   * uploads, then record the view state the result is valid for.
+   */
+  private rebuildGlyphs(viewState: LabelViewState): void {
+    const { device } = this.context;
+    const { viewportX, viewportY, scale, canvasWidth, canvasHeight } = viewState;
+    const positionProvider = this.renderContext?.positionProvider;
+
+    this.cachedViewState = viewState;
+
+    // Get visible labels with culling (use position provider for dynamic positions)
+    const visibleLabels = this.manager.getVisibleLabels(
+      viewportX,
+      viewportY,
+      scale,
+      canvasWidth,
+      canvasHeight,
+      positionProvider,
+    );
+
+    if (visibleLabels.length === 0) {
+      this._currentGlyphCount = 0;
+      return;
+    }
+
+    // Generate glyph instances
+    const { instances, count } = this.manager.generateGlyphInstances(
+      visibleLabels,
+      viewportX,
+      viewportY,
+      scale,
+      canvasWidth,
+      canvasHeight,
+    );
 
     this._currentGlyphCount = count;
+    if (count === 0) {
+      return;
+    }
+
+    // Resize storage buffer if needed
+    if (count > this.maxGlyphCapacity) {
+      this.maxGlyphCapacity = Math.ceil(count * 1.5);
+      this.glyphStorageBuffer?.destroy();
+      this.glyphStorageBuffer = device.createBuffer({
+        label: "Glyph Instance Storage",
+        size: this.maxGlyphCapacity * 12 * 4, // 12 floats per glyph (48 bytes)
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+
+      // Recreate bind group with new buffer
+      const bindGroupLayout1 = this.pipeline!.getBindGroupLayout(1);
+      this.bindGroup1 = device.createBindGroup({
+        label: "Glyph Storage Bind Group",
+        layout: bindGroupLayout1,
+        entries: [
+          { binding: 0, resource: { buffer: this.glyphStorageBuffer } },
+        ],
+      });
+    }
+
+    // Upload glyph data (only on rebuild — cached frames skip the upload)
+    device.queue.writeBuffer(this.glyphStorageBuffer!, 0, instances);
+
+    // Update label uniforms (constant unless config/atlas changed, which
+    // bumps the manager version and forces a rebuild)
+    const [r, g, b, a] = parseColor(this.config.fontColor);
+    const atlasFontSize = this.fontAtlas!.info?.size ?? 42;
+    const labelData = new Float32Array([
+      r,
+      g,
+      b,
+      a, // color
+      this.config.fontSize,
+      this.fontAtlas!.distanceRange,
+      this.fontAtlas!.common.scaleW,
+      this.fontAtlas!.common.scaleH,
+      atlasFontSize, // atlas_font_size
+      0, // _pad0
+      0, // _pad1
+      0, // _pad2
+    ]);
+    device.queue.writeBuffer(this.labelUniformBuffer!, 0, labelData);
   }
 
   /**

@@ -81,15 +81,22 @@ class LinLogBuffers implements AlgorithmBuffers {
 /**
  * LinLog force algorithm implementation.
  *
- * handlesSprings = false: LinLog now delegates to standard Hooke's law springs
- * for attraction. The original LinLog logarithmic attraction created patterns
- * inconsistent with other algorithms. Standard springs produce better layouts.
- * The LinLog attraction shader is preserved but not dispatched.
+ * handlesSprings = true: LinLog dispatches its native logarithmic attraction
+ * (F = w^delta * log(1 + d), the (0, -1) energy model). The repulsion
+ * calibration (kr = linlogScaling * |repulsionStrength|) assumes that
+ * attraction; an earlier substitution of the shared Hooke spring pass left
+ * the 1/d repulsion unopposed and inflated every graph into a structureless
+ * uniform disc. Per-node adaptive speed (prefersAdaptiveSpeed) keeps the
+ * rest-length-free attraction from oscillating under fixed-step integration.
  */
 export class LinLogAlgorithm implements ForceAlgorithm {
   readonly info = LINLOG_ALGORITHM_INFO;
   readonly handlesGravity = true;
-  readonly handlesSprings = false;
+  readonly handlesSprings = true;
+  readonly prefersAdaptiveSpeed = true;
+
+  /** Cached edge count from last updateUniforms for attraction dispatch sizing */
+  private lastEdgeCount = 0;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -105,7 +112,7 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       code: LINLOG_ATTRACTION_WGSL,
     });
 
-    // Repulsion pipeline: uniforms, positions, forces, degrees
+    // Repulsion pipeline: uniforms, positions, forces, degrees, node_flags
     const repulsionLayout = device.createBindGroupLayout({
       label: "LinLog Repulsion Layout",
       entries: [
@@ -113,6 +120,7 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -125,7 +133,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       },
     });
 
-    // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
+    // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets,
+    // edge_weights, node_flags
     const attractionLayout = device.createBindGroupLayout({
       label: "LinLog Attraction Layout",
       entries: [
@@ -135,6 +144,7 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -192,7 +202,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
     const buffers = algorithmBuffers as LinLogBuffers;
     const llPipelines = pipelines as LinLogPipelines;
 
-    // Repulsion bind group: uniforms, positions, forces, degrees
+    if (!context.nodeFlags) {
+      throw new Error(
+        "LinLog requires the nodeFlags buffer in AlgorithmRenderContext. " +
+          "Ensure graph.ts populates nodeFlags.",
+      );
+    }
+
+    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags
     const repulsion = device.createBindGroup({
       label: "LinLog Repulsion Bind Group",
       layout: pipelines.repulsion.getBindGroupLayout(0),
@@ -201,14 +218,16 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: buffers.degreesBuffer } },
+        { binding: 4, resource: { buffer: context.nodeFlags } },
       ],
     });
 
-    // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
+    // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets,
+    // edge_weights, node_flags
     if (!context.edgeSources || !context.edgeTargets) {
       throw new Error(
         "LinLog requires edge source/target buffers in AlgorithmRenderContext. " +
-        "Ensure graph.ts populates edgeSources and edgeTargets.",
+          "Ensure graph.ts populates edgeSources and edgeTargets.",
       );
     }
 
@@ -222,6 +241,7 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 3, resource: { buffer: context.edgeSources } },
         { binding: 4, resource: { buffer: context.edgeTargets } },
         { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
+        { binding: 6, resource: { buffer: context.nodeFlags } },
       ],
     });
 
@@ -236,10 +256,13 @@ export class LinLogAlgorithm implements ForceAlgorithm {
   ): void {
     const buffers = algorithmBuffers as LinLogBuffers;
 
+    // Cache edge count for attraction dispatch sizing in recordRepulsionPass
+    this.lastEdgeCount = context.edgeCount;
+
     if (context.nodeCount > buffers.maxNodes) {
       throw new Error(
         `LinLog buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${buffers.maxNodes}). ` +
-        `Buffers must be recreated with createBuffers() when node count increases.`,
+          `Buffers must be recreated with createBuffers() when node count increases.`,
       );
     }
 
@@ -322,9 +345,21 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       pass.end();
     }
 
-    // LinLog attraction pass disabled — handlesSprings=false delegates to standard
-    // Hooke's law springs for consistent behavior across algorithms.
-    // The attraction shader and pipeline are preserved for potential future use.
+    // Pass 2: Native LinLog logarithmic attraction (per-edge, F = w^delta * log(1 + d)).
+    // Balances the FA2-calibrated 1/d repulsion — see class doc.
+    if (this.lastEdgeCount > 0) {
+      const edgeWorkgroups = calculateWorkgroups(this.lastEdgeCount, 256);
+      const pass = encoder.beginComputePass({ label: "LinLog Attraction" });
+      pass.setPipeline(llPipelines.attraction);
+      pass.setBindGroup(0, llBindGroups.attraction);
+      pass.dispatchWorkgroups(edgeWorkgroups);
+      pass.end();
+    }
+  }
+
+  destroy(): void {
+    // Buffers are destroyed via AlgorithmBuffers.destroy()
+    this.lastEdgeCount = 0;
   }
 }
 

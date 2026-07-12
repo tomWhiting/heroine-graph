@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html';
 import './heroine-graph.css';
 import { generateClusteredGraph, generateSpiralGraph, type GraphData } from './graph-generators.ts';
+import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
 interface MetaballConfig {
   threshold: number;
@@ -26,6 +27,7 @@ interface HeroineGraph {
   enableMetaball?: (config?: Partial<MetaballConfig>) => void;
   disableMetaball?: () => void;
   setMetaballConfig?: (config: Partial<MetaballConfig>) => void;
+  dispose: () => void;
 }
 
 interface HeroineGraphModule {
@@ -189,6 +191,9 @@ async function initMetaballGraph(
   const metaballControls = container.querySelector<HTMLElement>('.heroine-graph-metaball-controls')!;
 
   try {
+    // Tear down graphs/timers/listeners from previously rendered stories
+    runStoryCleanups();
+
     await waitForLayout(container);
 
     const rect = container.getBoundingClientRect();
@@ -216,6 +221,13 @@ async function initMetaballGraph(
     };
     window.addEventListener('resize', resizeCanvas);
 
+    let statsInterval: ReturnType<typeof setInterval> | undefined;
+    registerStoryCleanup(() => {
+      window.removeEventListener('resize', resizeCanvas);
+      if (statsInterval !== undefined) clearInterval(statsInterval);
+      graph.dispose();
+    });
+
     loadingText.textContent = 'Loading graph data...';
     await graph.load(graphData);
 
@@ -233,7 +245,7 @@ async function initMetaballGraph(
     const nodesEl = container.querySelector<HTMLElement>('[data-stat="nodes"]');
 
     if (fpsEl) {
-      setInterval(() => {
+      statsInterval = setInterval(() => {
         const stats = graph.frameStats;
         if (stats) {
           fpsEl.textContent = stats.fps?.toFixed(0) || '--';

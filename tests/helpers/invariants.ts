@@ -128,3 +128,102 @@ export function radialOrderingScore(
   }
   return count > 0 ? ordered / count : 1;
 }
+
+/**
+ * Mean pairwise distance within clusters (same label) and across clusters
+ * (different labels), plus their ratio.
+ *
+ * When labels are uncorrelated with position (the uniform-disc failure
+ * mode) intra ~= inter and the ratio is ~1. A layout with real spatial
+ * cluster separation drives the ratio well below 1. O(N^2) — intended for
+ * fixture-sized graphs.
+ */
+export function clusterSeparation(
+  xs: Float32Array,
+  ys: Float32Array,
+  labels: Uint32Array,
+): { intra: number; inter: number; ratio: number } {
+  let intraSum = 0;
+  let intraCount = 0;
+  let interSum = 0;
+  let interCount = 0;
+  for (let i = 0; i < xs.length; i++) {
+    for (let j = i + 1; j < xs.length; j++) {
+      const d = Math.hypot(xs[i] - xs[j], ys[i] - ys[j]);
+      if (labels[i] === labels[j]) {
+        intraSum += d;
+        intraCount++;
+      } else {
+        interSum += d;
+        interCount++;
+      }
+    }
+  }
+  const intra = intraCount > 0 ? intraSum / intraCount : 0;
+  const inter = interCount > 0 ? interSum / interCount : 0;
+  return { intra, inter, ratio: inter > 0 ? intra / inter : 1 };
+}
+
+/**
+ * Index of dispersion (variance / mean) of node counts over equal-size
+ * grid cells inside the layout's bounding disc.
+ *
+ * Cells are sized so a uniform layout puts ~`targetPerCell` nodes in each,
+ * and only cells whose center lies inside the disc (centroid, radius = max
+ * node radius) are counted, so empty space outside a circular layout does
+ * not inflate the statistic. A uniform disc scores ~1 (Poisson); a layout
+ * with dense clusters and empty gaps scores far above 1.
+ */
+export function densityDispersionIndex(
+  xs: Float32Array,
+  ys: Float32Array,
+  targetPerCell = 4,
+): number {
+  const n = xs.length;
+  if (n === 0) return 0;
+
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < n; i++) {
+    cx += xs[i];
+    cy += ys[i];
+  }
+  cx /= n;
+  cy /= n;
+
+  const radius = maxRadius(xs, ys, cx, cy);
+  if (radius === 0) return 0;
+
+  // Cell edge such that a uniform disc yields ~targetPerCell nodes per cell
+  const cell = radius * Math.sqrt((Math.PI * targetPerCell) / n);
+  const gridSize = Math.ceil((2 * radius) / cell);
+
+  const counts = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const gx = Math.min(gridSize - 1, Math.floor((xs[i] - (cx - radius)) / cell));
+    const gy = Math.min(gridSize - 1, Math.floor((ys[i] - (cy - radius)) / cell));
+    const key = gy * gridSize + gx;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  // Enumerate all cells inside the disc, including empty ones
+  let cellCount = 0;
+  let sum = 0;
+  let sumSq = 0;
+  for (let gy = 0; gy < gridSize; gy++) {
+    for (let gx = 0; gx < gridSize; gx++) {
+      const centerX = (gx + 0.5) * cell - radius;
+      const centerY = (gy + 0.5) * cell - radius;
+      if (centerX * centerX + centerY * centerY > radius * radius) continue;
+      const c = counts.get(gy * gridSize + gx) ?? 0;
+      cellCount++;
+      sum += c;
+      sumSq += c * c;
+    }
+  }
+  if (cellCount === 0 || sum === 0) return 0;
+
+  const mean = sum / cellCount;
+  const variance = sumSq / cellCount - mean * mean;
+  return variance / mean;
+}

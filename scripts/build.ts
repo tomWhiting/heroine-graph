@@ -1,21 +1,25 @@
-#!/usr/bin/env -S deno run --allow-run --allow-read --allow-write
+#!/usr/bin/env -S deno run --allow-run --allow-read --allow-write --allow-env
 /**
  * Heroine Graph - Build Script
  *
  * Orchestrates the build process for all packages:
- * 1. Build WASM module
- * 2. Type-check TypeScript packages
- * 3. Build framework wrappers
+ * 1. Install the lockfile-pinned toolchain (deno install)
+ * 2. Build WASM module
+ * 3. Type-check TypeScript packages
+ * 4. Bundle core for browser
+ * 5. Build framework wrappers (react only — see note below)
+ *
+ * All tools (esbuild, tsc, tsup) resolve from node_modules, pinned by
+ * deno.lock, so the build is reproducible in a clean checkout.
  */
 
 import { join } from "jsr:@std/path";
+import { buildCoreTypes } from "./build_core_types.ts";
 
 const ROOT_DIR = new URL("..", import.meta.url).pathname;
 const WASM_DIR = join(ROOT_DIR, "packages/wasm");
 const CORE_DIR = join(ROOT_DIR, "packages/core");
 const REACT_DIR = join(ROOT_DIR, "packages/react");
-const VUE_DIR = join(ROOT_DIR, "packages/vue");
-const SVELTE_DIR = join(ROOT_DIR, "packages/svelte");
 
 interface BuildOptions {
   release: boolean;
@@ -37,7 +41,7 @@ function parseArgs(): BuildOptions {
 async function runCommand(
   cmd: string[],
   cwd: string,
-  description: string
+  description: string,
 ): Promise<void> {
   console.log(`\n[BUILD] ${description}...`);
   console.log(`        Running: ${cmd.join(" ")}`);
@@ -58,6 +62,14 @@ async function runCommand(
   console.log(`        Done!`);
 }
 
+async function installToolchain(): Promise<void> {
+  await runCommand(
+    ["deno", "install"],
+    ROOT_DIR,
+    "Installing lockfile-pinned toolchain",
+  );
+}
+
 async function buildWasm(options: BuildOptions): Promise<void> {
   const args = ["./build.sh"];
   if (!options.release) {
@@ -74,31 +86,16 @@ async function typeCheckCore(): Promise<void> {
   await runCommand(
     ["deno", "check", "mod.ts"],
     CORE_DIR,
-    "Type-checking @graphmother/core"
+    "Type-checking @graphmother/core",
   );
 }
 
 async function buildReact(): Promise<void> {
+  // tsup config lives in packages/react/package.json ("tsup" key)
   await runCommand(
-    ["bun", "run", "build"],
+    ["deno", "run", "-A", "npm:tsup@^8.3.0/tsup"],
     REACT_DIR,
-    "Building @graphmother/react"
-  );
-}
-
-async function buildVue(): Promise<void> {
-  await runCommand(
-    ["bun", "run", "build"],
-    VUE_DIR,
-    "Building @graphmother/vue"
-  );
-}
-
-async function buildSvelte(): Promise<void> {
-  await runCommand(
-    ["bun", "run", "build"],
-    SVELTE_DIR,
-    "Building @graphmother/svelte"
+    "Building @graphmother/react",
   );
 }
 
@@ -112,12 +109,14 @@ async function bundleCore(): Promise<void> {
     // Directory exists
   }
 
-  // Bundle core for browser using esbuild
+  // Bundle core for browser using esbuild (pinned via deno.lock)
   // This handles .wgsl imports properly
   await runCommand(
     [
-      "bunx",
-      "esbuild",
+      "deno",
+      "run",
+      "-A",
+      "npm:esbuild@^0.24.0/esbuild",
       join(CORE_DIR, "mod.ts"),
       "--bundle",
       "--format=esm",
@@ -128,7 +127,7 @@ async function bundleCore(): Promise<void> {
       "--external:@graphmother/wasm",
     ],
     ROOT_DIR,
-    "Bundling @graphmother/core for browser"
+    "Bundling @graphmother/core for browser",
   );
 }
 
@@ -146,20 +145,29 @@ async function main(): Promise<void> {
   const startTime = performance.now();
 
   try {
-    // Step 1: Build WASM
+    // Step 1: Install pinned toolchain
+    await installToolchain();
+
+    // Step 2: Build WASM
     if (!options.skipWasm) {
       await buildWasm(options);
     }
 
-    // Step 2: Type-check core
+    // Step 3: Type-check core
     await typeCheckCore();
 
-    // Step 3: Bundle core for browser
+    // Step 4: Bundle core for browser
     await bundleCore();
 
-    // Step 4: Build framework wrappers
+    // Step 5: Generate core .d.ts
+    console.log("\n[BUILD] Generating @graphmother/core declarations...");
+    await buildCoreTypes();
+
+    // Step 6: Build framework wrappers.
+    // vue/svelte are skipped: their dts builds fail at the source level
+    // (vue needs a .vue-aware bundler + shim; svelte needs a tsconfig.json).
     if (!options.skipFrameworks) {
-      await Promise.all([buildReact(), buildVue(), buildSvelte()]);
+      await buildReact();
     }
 
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);

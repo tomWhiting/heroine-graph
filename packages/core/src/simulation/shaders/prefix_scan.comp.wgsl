@@ -8,8 +8,12 @@
 // This approach handles arbitrary histogram sizes efficiently without sequential
 // bottlenecks that would cause GPU watchdog timeouts on large datasets (100K+ nodes).
 //
-// Histogram layout: [wg0_b0, wg0_b1, ..., wg0_b15, wg1_b0, ..., wg1_b15, ...]
-// Each workgroup has RADIX_SIZE (16) buckets.
+// Histogram layout is DIGIT-MAJOR: [d0_wg0, d0_wg1, ..., d0_wgN, d1_wg0, ...]
+// (see radix_sort.comp.wgsl). The scan itself is a plain linear exclusive scan
+// over element_count = workgroup_count * RADIX_SIZE values, so with the
+// digit-major input each output entry is the global scatter base for its
+// (digit, workgroup) pair. The 16-element "chunks" the three phases operate
+// on are an arbitrary partition of the linear array, not per-digit groups.
 
 struct ScanUniforms {
     element_count: u32,     // Total number of histogram elements
@@ -20,8 +24,8 @@ struct ScanUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: ScanUniforms;
 
-// Input: per-workgroup histograms from radix sort
-// Layout: [wg0_bucket0, wg0_bucket1, ..., wg0_bucket15, wg1_bucket0, ...]
+// Input: digit-major histogram from radix sort
+// Layout: [digit0_wg0, digit0_wg1, ..., digit1_wg0, ...]
 @group(0) @binding(1) var<storage, read> histogram: array<u32>;
 
 // Output: prefix sums for scatter phase

@@ -8,11 +8,11 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
-import type { Layer } from "../heatmap/layer.ts";
+import type { Layer } from "../types.ts";
 import type { MetaballConfig } from "./config.ts";
 import type { MetaballPipeline } from "./pipeline.ts";
 
-import { mergeMetaballConfig, parseMetaballColor } from "./config.ts";
+import { MAX_METABALL_NODES, mergeMetaballConfig, parseMetaballColor } from "./config.ts";
 import { createMetaballPipeline } from "./pipeline.ts";
 
 /**
@@ -47,6 +47,9 @@ export class MetaballLayer implements Layer {
   // Cached bind group
   private bindGroup: GPUBindGroup | null = null;
   private bindGroupDirty = true;
+
+  // Warn only once when the node-count guard trips
+  private nodeCountWarned = false;
 
   // Screen dimensions
   private screenWidth = 800;
@@ -123,6 +126,21 @@ export class MetaballLayer implements Layer {
 
     const { nodeCount, viewportOffset, viewportScale } = this.renderContext;
     if (nodeCount === 0) {
+      return;
+    }
+
+    // Hard guard: the SDF shader is O(nodeCount * pixels); a fullscreen
+    // pass over tens of thousands of nodes triggers GPU watchdog timeouts
+    // (device loss). Skip rather than kill the device.
+    if (nodeCount > MAX_METABALL_NODES) {
+      if (!this.nodeCountWarned) {
+        console.warn(
+          `[HeroineGraph] Metaball layer "${this.id}" skipped: ${nodeCount} nodes exceeds ` +
+            `MAX_METABALL_NODES (${MAX_METABALL_NODES}). The metaball SDF shader evaluates every ` +
+            `node per pixel and risks a GPU timeout (device loss) at this scale.`,
+        );
+        this.nodeCountWarned = true;
+      }
       return;
     }
 

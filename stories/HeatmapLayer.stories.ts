@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html';
 import './heroine-graph.css';
 import { generateClusteredGraph, generateSpiralGraph, type GraphData } from './graph-generators.ts';
+import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
 interface HeatmapConfig {
   colorScale: 'viridis' | 'plasma' | 'inferno' | 'magma' | 'turbo';
@@ -23,6 +24,7 @@ interface HeroineGraph {
   enableHeatmap?: (config?: Partial<HeatmapConfig>) => void;
   disableHeatmap?: () => void;
   setHeatmapConfig?: (config: Partial<HeatmapConfig>) => void;
+  dispose: () => void;
 }
 
 interface HeroineGraphModule {
@@ -171,6 +173,9 @@ async function initHeatmapGraph(
   const heatmapControls = container.querySelector<HTMLElement>('.heroine-graph-heatmap-controls')!;
 
   try {
+    // Tear down graphs/timers/listeners from previously rendered stories
+    runStoryCleanups();
+
     // Wait for container to be laid out with valid dimensions
     await waitForLayout(container);
 
@@ -201,6 +206,13 @@ async function initHeatmapGraph(
     };
     window.addEventListener('resize', resizeCanvas);
 
+    let statsInterval: ReturnType<typeof setInterval> | undefined;
+    registerStoryCleanup(() => {
+      window.removeEventListener('resize', resizeCanvas);
+      if (statsInterval !== undefined) clearInterval(statsInterval);
+      graph.dispose();
+    });
+
     // Load data
     loadingText.textContent = 'Loading graph data...';
     await graph.load(graphData);
@@ -220,7 +232,7 @@ async function initHeatmapGraph(
     const nodesEl = container.querySelector<HTMLElement>('[data-stat="nodes"]');
 
     if (fpsEl) {
-      setInterval(() => {
+      statsInterval = setInterval(() => {
         const stats = graph.frameStats;
         if (stats) {
           fpsEl.textContent = stats.fps?.toFixed(0) || '--';

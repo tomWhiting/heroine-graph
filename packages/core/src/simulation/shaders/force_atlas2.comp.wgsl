@@ -29,10 +29,14 @@ struct ForceAtlas2Uniforms {
 // Node degrees (for degree-weighted repulsion)
 @group(0) @binding(3) var<storage, read> degrees: array<u32>;
 
+// Node state flags (bit 0 = dead slot from removal)
+@group(0) @binding(4) var<storage, read> node_flags: array<u32>;
+
 const MIN_DISTANCE: f32 = 0.01;
 const FLAG_LINLOG: u32 = 1u;
 const FLAG_STRONG_GRAVITY: u32 = 2u;
 const FLAG_PREVENT_OVERLAP: u32 = 4u;
+const NODE_FLAG_DEAD: u32 = 1u;
 
 // ForceAtlas2 repulsion: F = kr * (degree(i) + 1) * (degree(j) + 1) / distance
 // This is different from Coulomb repulsion which uses distance^2
@@ -62,13 +66,22 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
+    // Dead slots (holes from removals, zeroed to the origin) neither
+    // receive nor exert forces
+    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
+
     let node_pos = positions[node_idx];
     let node_degree = degrees[node_idx];
     var total_force = vec2<f32>(0.0, 0.0);
 
-    // Repulsion from all other nodes
+    // Repulsion from all other live nodes
     for (var i = 0u; i < uniforms.node_count; i++) {
         if (i == node_idx) {
+            continue;
+        }
+        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
             continue;
         }
 

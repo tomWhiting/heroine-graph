@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { Layer } from "./heatmap/layer.ts";
+import type { Layer } from "./types.ts";
 
 /**
  * Layer manager configuration
@@ -195,16 +195,20 @@ export class LayerManager {
   }
 
   /**
-   * Get layers sorted by render order
+   * Get enabled layers sorted by render order
+   *
+   * Only the sort order is cached; the enabled filter is applied per call.
+   * Layers can be re-enabled by mutating `layer.enabled` directly (bypassing
+   * the manager's enableLayer/setLayerVisible), so caching the filtered list
+   * would leave such layers permanently missing from the render list.
    */
   getSortedLayers(): Layer[] {
     if (this.orderDirty) {
       this.sortedLayers = Array.from(this.layers.values())
-        .filter((layer) => layer.enabled)
         .sort((a, b) => a.order - b.order);
       this.orderDirty = false;
     }
-    return this.sortedLayers;
+    return this.sortedLayers.filter((layer) => layer.enabled);
   }
 
   /**

@@ -2,7 +2,7 @@
 
 High-performance graph visualization library powered by WebGPU.
 
-HeroineGraph renders large graphs (100K+ nodes) at 60fps using GPU-accelerated force simulation and rendering. It provides interactive exploration with pan, zoom, drag, and selection, plus visualization layers for heatmaps, contours, metaballs, and text labels.
+HeroineGraph renders large graphs using GPU-accelerated force simulation and rendering (measure your own workload with `deno task bench`). It provides interactive exploration with pan, zoom, drag, and selection, plus visualization layers for heatmaps, contours, metaballs, and text labels.
 
 ## Features
 
@@ -28,9 +28,11 @@ Check support with `getSupportInfo()` before initializing.
 ```bash
 # npm
 npm install @graphmother/core
+```
 
-# Deno
-import { createHeroineGraph } from "jsr:@graphmother/core";
+```typescript
+// Deno (resolves the same npm package; there is no JSR publication)
+import { createHeroineGraph } from "npm:@graphmother/core";
 ```
 
 ## Quick Start
@@ -103,16 +105,30 @@ For large graphs, use typed arrays for better performance:
 ```typescript
 interface GraphTypedInput {
   nodeCount: number;
-  edgeCount: number;
-  positionsX: Float32Array;
-  positionsY: Float32Array;
-  radii: Float32Array;
-  colors: Float32Array;         // RGBA, 4 values per node
-  edgeSources: Uint32Array;
-  edgeTargets: Uint32Array;
-  edgeWidths?: Float32Array;
-  edgeColors?: Float32Array;    // RGBA, 4 values per edge
+  edgeCount?: number;
+  positions?: Float32Array;     // Interleaved [x0, y0, x1, y1, ...]
+  edgePairs?: Uint32Array;      // Interleaved [src0, tgt0, src1, tgt1, ...]
+  edges?: Uint32Array;          // Alias for edgePairs
+  nodeIds?: (string | number)[];
+  edgeIds?: (string | number)[];
+  nodeRadii?: Float32Array;     // 1 value per node
+  nodeColors?: Float32Array;    // RGB, 3 values per node (0-1 range)
+  edgeWidths?: Float32Array;    // 1 value per edge
+  edgeColors?: Float32Array;    // RGB, 3 values per edge (0-1 range)
+  nodeMetadata?: NodeMetadata[];
+  edgeMetadata?: EdgeMetadata[];
 }
+```
+
+Example:
+
+```typescript
+await graph.load({
+  nodeCount: 3,
+  positions: new Float32Array([0, 0, 100, 0, 50, 80]),
+  edgePairs: new Uint32Array([0, 1, 1, 2]),
+  nodeColors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), // RGB per node
+});
 ```
 
 ## Interaction
@@ -131,13 +147,13 @@ interface GraphTypedInput {
 // Viewport
 graph.pan(dx, dy);              // Pan by delta
 graph.zoom(factor);             // Zoom by factor
-graph.fitToView();              // Fit all content in view
-graph.centerOn(x, y);           // Center on coordinates
+graph.fitToView();              // Fit all content in view (optional padding)
+const viewport = graph.getViewportState();
 
 // Selection
 graph.selectNodes([id1, id2]);
 graph.clearSelection();
-const selected = graph.selectedNodes;
+const selected = graph.getSelectedNodes();
 
 // Node manipulation
 graph.pinNode(id);              // Fix node position
@@ -146,9 +162,9 @@ graph.setNodePosition(id, x, y); // Set position directly
 
 // Simulation
 graph.startSimulation();
-graph.stopSimulation();
 graph.pauseSimulation();
-graph.resumeSimulation();
+graph.stopSimulation();
+graph.restartSimulation();      // Re-heat and resume
 ```
 
 ## Events
@@ -159,11 +175,11 @@ graph.on("node:click", (event) => {
   console.log("Clicked node:", event.nodeId);
 });
 
-graph.on("node:hover:enter", (event) => {
+graph.on("node:hoverenter", (event) => {
   console.log("Hover enter:", event.nodeId);
 });
 
-graph.on("node:hover:leave", (event) => {
+graph.on("node:hoverleave", (event) => {
   console.log("Hover leave:", event.nodeId);
 });
 
@@ -173,13 +189,13 @@ graph.on("node:dragend", (event) => { /* ... */ });
 
 // Edge events
 graph.on("edge:click", (event) => { /* ... */ });
-graph.on("edge:hover:enter", (event) => { /* ... */ });
-graph.on("edge:hover:leave", (event) => { /* ... */ });
+graph.on("edge:hoverenter", (event) => { /* ... */ });
+graph.on("edge:hoverleave", (event) => { /* ... */ });
 
 // Viewport events
 graph.on("viewport:change", (event) => {
-  console.log("Zoom:", event.state.scale);
-  console.log("Pan:", event.state.x, event.state.y);
+  console.log("Zoom:", event.viewport.scale);
+  console.log("Pan:", event.viewport.x, event.viewport.y);
 });
 
 // Selection events
@@ -240,8 +256,9 @@ Organic blob visualization around dense regions:
 
 ```typescript
 graph.enableMetaball({
-  threshold: 0.5,               // Iso-surface threshold
-  colorScale: "viridis",
+  threshold: 0.5,               // SDF boundary threshold (0-1)
+  blendRadius: 20,              // Smooth union blend radius in pixels
+  fillColor: "#4285f4",
   opacity: 0.6,
 });
 
@@ -253,56 +270,52 @@ graph.disableMetaball();
 Display text labels on nodes:
 
 ```typescript
-graph.enableLabels({
+await graph.enableLabels({
   fontSize: 14,
-  color: "#333333",
+  fontColor: "#333333",
   maxLabels: 100,               // Maximum visible labels
-  priorityField: "importance",  // Metadata field for priority
+  priority: "importance",       // "importance" (node field) or "degree"
 });
 
 graph.disableLabels();
 ```
 
+The labels layer loads an MSDF font atlas at runtime by fetching
+`./assets/fonts/roboto-msdf.json` and `./assets/fonts/roboto-msdf.png`
+relative to the page. These files ship in the npm package under
+`node_modules/@graphmother/core/assets/fonts/`; make sure your bundler or
+static file setup serves them at `assets/fonts/` next to your page (e.g.
+copy them into your public directory).
+
 ## Configuration Options
 
 ```typescript
 const graph = await createHeroineGraph({
-  canvas,
+  canvas,                        // HTMLCanvasElement or CSS selector
   config: {
-    // Node defaults
-    defaultNodeRadius: 5,
-    defaultNodeColor: "#666666",
-
-    // Edge defaults
-    defaultEdgeWidth: 1,
-    defaultEdgeColor: "#999999",
-
-    // Simulation
-    simulation: {
-      alpha: 1.0,               // Initial temperature
-      alphaMin: 0.001,          // Stop threshold
-      alphaDecay: 0.0228,       // Cooling rate
-      velocityDecay: 0.4,       // Friction
-    },
-
-    // Forces
-    forces: {
-      charge: -30,              // Node repulsion
-      linkDistance: 30,         // Ideal edge length
-      linkStrength: 1.0,        // Edge stiffness
-      centerStrength: 0.1,      // Pull toward center
-    },
-
-    // Viewport
-    viewport: {
-      minScale: 0.01,
-      maxScale: 100,
-      panSpeed: 1,
-      zoomSpeed: 0.002,
-    },
+    // Visual defaults (GraphConfig)
+    nodeDefaultRadius: 5,
+    nodeDefaultColor: "#666666",
+    edgeDefaultWidth: 1,
+    edgeDefaultColor: "#999999",
+    backgroundColor: "#ffffff",
   },
-  debug: false,                 // Enable debug logging
+  debug: false,                  // Enable debug logging
 });
+```
+
+Simulation forces are configured on the instance after creation:
+
+```typescript
+graph.setForceConfig({
+  repulsionStrength: -50,        // Node repulsion (negative = repel)
+  springStrength: 0.1,           // Edge stiffness
+  springLength: 30,              // Ideal edge length
+  centerStrength: 0.01,          // Pull toward center
+  collisionEnabled: true,        // Node overlap resolution
+});
+
+graph.setAlphaDecay(0.0228);     // Cooling rate (~300 ticks to rest)
 ```
 
 ## Cleanup

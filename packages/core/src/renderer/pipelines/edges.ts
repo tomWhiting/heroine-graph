@@ -15,6 +15,7 @@ import {
   EDGE_FLOW_UNIFORM_SIZE,
   writeEdgeFlowUniforms,
 } from "../edge_flow.ts";
+import { getEdgeVertexCount } from "../edge_tessellation.ts";
 
 // Import shader source (bundled as text by esbuild)
 import EDGE_VERT_WGSL from "../shaders/edge.vert.wgsl";
@@ -386,12 +387,9 @@ export function renderEdges(
   pass.setBindGroup(2, pipeline.flowBindGroup);
 
   // For curved edges, we need more vertices per edge to tessellate the curve
-  // 6 vertices per segment, segments per edge
-  const verticesPerEdge = pipeline.curveConfig.enabled
-    ? 6 * pipeline.curveConfig.segments
-    : 6;
-
-  pass.draw(verticesPerEdge, edgeCount);
+  // (6 vertices per segment). Shared with CommandOrchestrator so both draw
+  // paths make the same tessellation decision.
+  pass.draw(getEdgeVertexCount(pipeline.curveConfig), edgeCount);
 }
 
 /**

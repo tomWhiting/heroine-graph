@@ -55,10 +55,9 @@ interface CommunityLayoutBindGroups extends AlgorithmBindGroups {
 }
 
 const COMMUNITY_LAYOUT_INFO: ForceAlgorithmInfo = {
-  id: "community" as "community",
+  id: "community" as const,
   name: "Community Layout",
-  description:
-    "Louvain community detection with cluster-aware force simulation. " +
+  description: "Louvain community detection with cluster-aware force simulation. " +
     "Same-community nodes attract, producing natural visual clusters.",
   minNodes: 0,
   maxNodes: -1,
@@ -337,7 +336,12 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       ],
     });
 
-    const bindGroups: CommunityLayoutBindGroups = { repulsion, clearCentroids, accumulate, attract };
+    const bindGroups: CommunityLayoutBindGroups = {
+      repulsion,
+      clearCentroids,
+      accumulate,
+      attract,
+    };
     return bindGroups;
   }
 
@@ -358,9 +362,9 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       view.setUint32(0, context.nodeCount, true);
       view.setFloat32(4, Math.abs(cfg.repulsionStrength) * cfg.communitySpreadFactor, true);
       view.setFloat32(8, cfg.repulsionDistanceMin, true);
-      view.setFloat32(12, cfg.communityNodeSpacing * 0.1, true);  // Node Spacing slider: 10 → 1.0
-      view.setFloat32(16, cfg.communitySpacing * 0.02, true);     // Cluster Spacing slider: 50 → 1.0
-      view.setFloat32(20, cfg.centerStrength * 100, true);        // Center Gravity slider: 0.01 → 1.0
+      view.setFloat32(12, cfg.communityNodeSpacing * 0.1, true); // Node Spacing slider: 10 → 1.0
+      view.setFloat32(16, cfg.communitySpacing * 0.02, true); // Cluster Spacing slider: 50 → 1.0
+      view.setFloat32(20, cfg.centerStrength * 100, true); // Center Gravity slider: 0.01 → 1.0
       view.setFloat32(24, 0.0, true);
       view.setFloat32(28, 0.0, true);
       device.queue.writeBuffer(this.repulsionUniforms, 0, data);

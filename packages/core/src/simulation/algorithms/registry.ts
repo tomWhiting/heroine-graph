@@ -84,9 +84,9 @@ export class ForceAlgorithmRegistry {
     // Large graphs
     return (
       this.get("density") ??
-      this.get("barnes-hut") ??
-      this.get("n2") ??
-      this.getAnyAvailable()
+        this.get("barnes-hut") ??
+        this.get("n2") ??
+        this.getAnyAvailable()
     );
   }
 

@@ -8,8 +8,8 @@
 
 import {
   createHeroineGraph,
-  getSupportInfo,
   type EdgeInput,
+  getSupportInfo,
   type GraphInput,
   type HeroineGraph,
   type NodeInput,
@@ -129,8 +129,6 @@ function hexToRgba(hex: string): [number, number, number, number] {
   return [r, g, b, 1.0];
 }
 
-
-
 /** Compact vertical fader component */
 function fader(
   parent: HTMLElement,
@@ -210,8 +208,12 @@ function fader(
   setPosition(initial, false);
 
   return {
-    setValue(v: number) { setPosition(v, false); },
-    getValue() { return current; },
+    setValue(v: number) {
+      setPosition(v, false);
+    },
+    getValue() {
+      return current;
+    },
     el: container,
   };
 }
@@ -232,8 +234,12 @@ function toggle(
   input.addEventListener("change", () => onChange(input.checked));
   return {
     el: label,
-    set(v: boolean) { input.checked = v; },
-    get() { return input.checked; },
+    set(v: boolean) {
+      input.checked = v;
+    },
+    get() {
+      return input.checked;
+    },
   };
 }
 
@@ -254,7 +260,15 @@ function dropdown(
   sel.value = initial;
   parent.appendChild(sel);
   sel.addEventListener("change", () => onChange(sel.value));
-  return { el: sel, set(v) { sel.value = v; }, get() { return sel.value; } };
+  return {
+    el: sel,
+    set(v) {
+      sel.value = v;
+    },
+    get() {
+      return sel.value;
+    },
+  };
 }
 
 /** Color picker */
@@ -269,7 +283,12 @@ function colorPicker(
   input.value = initial;
   parent.appendChild(input);
   input.addEventListener("input", () => onChange(input.value));
-  return { el: input, set(v) { input.value = v; } };
+  return {
+    el: input,
+    set(v) {
+      input.value = v;
+    },
+  };
 }
 
 /** Inline range slider for layer cards */
@@ -288,7 +307,8 @@ function miniSlider(
   const row = el("div", "ctrl-row");
   const lbl = el("span", "ctrl-label", label);
   const val = el("span", undefined, fmt(initial));
-  val.style.cssText = "font-size:10px;font-variant-numeric:tabular-nums;min-width:30px;text-align:right";
+  val.style.cssText =
+    "font-size:10px;font-variant-numeric:tabular-nums;min-width:30px;text-align:right";
   row.append(lbl, val);
   container.appendChild(row);
 
@@ -310,8 +330,14 @@ function miniSlider(
   });
 
   return {
-    setValue(v) { current = v; input.value = String(v); val.textContent = fmt(v); },
-    getValue() { return current; },
+    setValue(v) {
+      current = v;
+      input.value = String(v);
+      val.textContent = fmt(v);
+    },
+    getValue() {
+      return current;
+    },
     el: container,
   };
 }
@@ -365,15 +391,25 @@ function generateHierarchicalGraph(
   crossTalk: number = 0,
 ): GraphInput {
   const nodes: Array<{
-    id: string; x: number; y: number; radius: number;
-    color: string; metadata: Record<string, unknown>;
+    id: string;
+    x: number;
+    y: number;
+    radius: number;
+    color: string;
+    metadata: Record<string, unknown>;
   }> = [];
   const edges: Array<{ source: string; target: string; width: number; color: string }> = [];
   const edgeSet = new Set<string>();
 
   const depthColors = [
-    "#ff6b6b", "#feca57", "#48dbfb", "#1dd1a1",
-    "#5f27cd", "#ff9ff3", "#54a0ff", "#00d2d3",
+    "#ff6b6b",
+    "#feca57",
+    "#48dbfb",
+    "#1dd1a1",
+    "#5f27cd",
+    "#ff9ff3",
+    "#54a0ff",
+    "#00d2d3",
   ];
   const TREE_EDGE_COLOR = "#4facfe44";
   const CROSS_EDGE_COLOR = "#ff6b6b33";
@@ -391,7 +427,10 @@ function generateHierarchicalGraph(
 
   // Root
   nodes.push({
-    id: "node-0", x: 0, y: 0, radius: 15,
+    id: "node-0",
+    x: 0,
+    y: 0,
+    radius: 15,
     color: depthColors[0],
     metadata: { type: "root", depth: 0, name: "Root" },
   });
@@ -422,10 +461,17 @@ function generateHierarchicalGraph(
         const y = (parentNode.y ?? 0) + Math.sin(angle) * dist;
 
         nodes.push({
-          id: `node-${currentIdx}`, x, y,
+          id: `node-${currentIdx}`,
+          x,
+          y,
           radius: Math.max(4, 12 - depth),
           color: depthColors[depth % depthColors.length],
-          metadata: { type: `level-${depth}`, depth, parent: parentIdx, name: `Node ${currentIdx}` },
+          metadata: {
+            type: `level-${depth}`,
+            depth,
+            parent: parentIdx,
+            name: `Node ${currentIdx}`,
+          },
         });
         nodeParents.push(parentIdx);
         addEdge(`node-${parentIdx}`, `node-${currentIdx}`, TREE_EDGE_COLOR, 1.5);
@@ -458,11 +504,15 @@ function generateHierarchicalGraph(
 function addCrossTalkEdges(
   graphData: GraphInput,
   count: number,
-): { newEdges: Array<{ source: string; target: string; width: number; color: string }>; totalAdded: number } {
+): {
+  newEdges: Array<{ source: string; target: string; width: number; color: string }>;
+  totalAdded: number;
+} {
   const existing = new Set<string>();
   for (const edge of graphData.edges) {
     const key = String(edge.source) < String(edge.target)
-      ? `${edge.source}-${edge.target}` : `${edge.target}-${edge.source}`;
+      ? `${edge.source}-${edge.target}`
+      : `${edge.target}-${edge.source}`;
     existing.add(key);
   }
 
@@ -493,11 +543,17 @@ function addCrossTalkEdges(
 
 async function main(): Promise<void> {
   const state: AppState = {
-    graph: null, graphData: null,
-    nodeCount: 0, edgeCount: 0,
+    graph: null,
+    graphData: null,
+    nodeCount: 0,
+    edgeCount: 0,
     drawerOpen: false,
-    lastFrameTime: performance.now(), frameCount: 0, fps: 0,
-    codebaseData: null, codebaseMetrics: null, currentEdgeColors: null,
+    lastFrameTime: performance.now(),
+    frameCount: 0,
+    fps: 0,
+    codebaseData: null,
+    codebaseMetrics: null,
+    currentEdgeColors: null,
   };
 
   // ---- WebGPU Init ----
@@ -527,7 +583,7 @@ async function main(): Promise<void> {
   $("loading-overlay").classList.add("hidden");
 
   // Resize
-  window.addEventListener("resize", () => {
+  globalThis.addEventListener("resize", () => {
     const r = container.getBoundingClientRect();
     canvas.width = r.width * devicePixelRatio;
     canvas.height = r.height * devicePixelRatio;
@@ -535,9 +591,9 @@ async function main(): Promise<void> {
   });
 
   // ---- Stats elements (populated later by header builder) ----
-  let statNodes: HTMLElement;
-  let statEdges: HTMLElement;
-  let statFps: HTMLElement;
+  let statNodes: HTMLElement | null = null;
+  let statEdges: HTMLElement | null = null;
+  let statFps: HTMLElement | null = null;
 
   function updateStats() {
     if (statNodes) statNodes.textContent = formatNum(state.nodeCount);
@@ -605,7 +661,9 @@ async function main(): Promise<void> {
       const r = Math.round((rgba[0] || 0) * 255);
       const g = Math.round((rgba[1] || 0) * 255);
       const b = Math.round((rgba[2] || 0) * 255);
-      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${
+        b.toString(16).padStart(2, "0")
+      }`;
     };
 
     const graphData: GraphInput = {
@@ -614,7 +672,9 @@ async function main(): Promise<void> {
         return { id: node.id, label: node.label, type: node.type };
       }),
       edges: codebase.edges.map((edge) => ({
-        source: edge.source, target: edge.target, type: edge.type,
+        source: edge.source,
+        target: edge.target,
+        type: edge.type,
       })),
     };
 
@@ -655,7 +715,9 @@ async function main(): Promise<void> {
     state.edgeCount = edgeCount;
     updateStats();
     if (T["labels"]?.get()) updateLabels();
-    console.log(`Loaded codebase: ${codebase.name} (${state.nodeCount} nodes, ${state.edgeCount} edges)`);
+    console.log(
+      `Loaded codebase: ${codebase.name} (${state.nodeCount} nodes, ${state.edgeCount} edges)`,
+    );
   }
 
   async function loadJSONFile(file: File) {
@@ -717,7 +779,9 @@ async function main(): Promise<void> {
     const graphData: GraphInput = { nodes: keptNodes, edges: keptEdges };
 
     if (droppedCount > 0 || droppedEdges > 0) {
-      console.log(`Loaded: ${keptNodes.length} nodes, ${keptEdges.length} edges (dropped ${droppedCount} duplicate nodes, ${droppedEdges} duplicate/orphaned edges)`);
+      console.log(
+        `Loaded: ${keptNodes.length} nodes, ${keptEdges.length} edges (dropped ${droppedCount} duplicate nodes, ${droppedEdges} duplicate/orphaned edges)`,
+      );
     }
 
     await state.graph.load(graphData);
@@ -738,7 +802,9 @@ async function main(): Promise<void> {
     }
 
     // Auto-assign type colors for edges
-    const edgeTypes = new Set(graphData.edges.map((e) => (e as Record<string, unknown>).type as string));
+    const edgeTypes = new Set(
+      graphData.edges.map((e) => (e as Record<string, unknown>).type as string),
+    );
     const edgeStyles: Record<string, { color: string; opacity?: number }> = {};
     const edgePalette = ["#feca5733", "#54a0ff33", "#ff6b6b33", "#1dd1a133", "#ff9ff333"];
     let ei = 0;
@@ -769,7 +835,10 @@ async function main(): Promise<void> {
   async function loadIndexData(filename = "index-data.json") {
     try {
       const resp = await fetch(`./${filename}?t=${Date.now()}`, { cache: "no-store" });
-      if (!resp.ok) { console.warn(`${filename} not found, falling back to generated tree`); return false; }
+      if (!resp.ok) {
+        console.warn(`${filename} not found, falling back to generated tree`);
+        return false;
+      }
       const data = await resp.json();
       await loadGraphJSON(data);
       return true;
@@ -805,14 +874,22 @@ async function main(): Promise<void> {
 
   // Buttons
   const fitBtn = el("button", "header-btn", "Fit");
-  fitBtn.addEventListener("click", (e) => { e.stopPropagation(); state.graph?.fitToView(); });
+  fitBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.graph?.fitToView();
+  });
 
   const playBtn = el("button", "header-btn", "||");
   let simRunning = true;
   playBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (simRunning) { state.graph?.stopSimulation(); playBtn.textContent = ">"; }
-    else { state.graph?.startSimulation(); playBtn.textContent = "||"; }
+    if (simRunning) {
+      state.graph?.stopSimulation();
+      playBtn.textContent = ">";
+    } else {
+      state.graph?.startSimulation();
+      playBtn.textContent = "||";
+    }
     simRunning = !simRunning;
   });
 
@@ -866,7 +943,9 @@ async function main(): Promise<void> {
         const categories = buildCodebaseCategories();
         state.graph?.computeCodebaseLayout(categories);
       }
-    } catch (e) { console.error("Algorithm switch failed:", e); }
+    } catch (e) {
+      console.error("Algorithm switch failed:", e);
+    }
   });
 
   function buildCodebaseCategories(): Uint8Array | undefined {
@@ -876,12 +955,26 @@ async function main(): Promise<void> {
     for (const node of state.codebaseData.nodes) {
       if (node.id < nodeBound) {
         switch (node.type) {
-          case "repository": categories[node.id] = 0; break;
-          case "directory": categories[node.id] = 1; break;
-          case "file": categories[node.id] = 2; break;
-          case "function": case "class": case "method": case "variable": case "interface": case "type":
-            categories[node.id] = 3; break;
-          default: categories[node.id] = 4; break;
+          case "repository":
+            categories[node.id] = 0;
+            break;
+          case "directory":
+            categories[node.id] = 1;
+            break;
+          case "file":
+            categories[node.id] = 2;
+            break;
+          case "function":
+          case "class":
+          case "method":
+          case "variable":
+          case "interface":
+          case "type":
+            categories[node.id] = 3;
+            break;
+          default:
+            categories[node.id] = 4;
+            break;
         }
       }
     }
@@ -944,7 +1037,10 @@ async function main(): Promise<void> {
     fileInput.style.display = "none";
 
     dropZone.addEventListener("click", () => fileInput.click());
-    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+    dropZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropZone.classList.add("dragover");
+    });
     dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
     dropZone.addEventListener("drop", (e) => {
       e.preventDefault();
@@ -994,7 +1090,8 @@ async function main(): Promise<void> {
       if (state.graphData.nodes.length > 0) {
         const edgesToAdd: EdgeInput[] = newNodes.map((n) => ({
           source: n.id,
-          target: state.graphData!.nodes[Math.floor(Math.random() * state.graphData!.nodes.length)].id,
+          target:
+            state.graphData!.nodes[Math.floor(Math.random() * state.graphData!.nodes.length)].id,
         }));
         const results = await state.graph.addEdges(edgesToAdd);
         const addedEdges = edgesToAdd.filter((_, i) => results[i] !== undefined);
@@ -1044,7 +1141,9 @@ async function main(): Promise<void> {
       const removedSet = new Set(toRemove);
       state.graphData = {
         nodes: state.graphData.nodes.filter((n) => !removedSet.has(n.id)),
-        edges: state.graphData.edges.filter((e) => !removedSet.has(e.source) && !removedSet.has(e.target)),
+        edges: state.graphData.edges.filter((e) =>
+          !removedSet.has(e.source) && !removedSet.has(e.target)
+        ),
       };
       state.edgeCount = state.graphData.edges.length;
       state.currentEdgeColors = null;
@@ -1078,28 +1177,80 @@ async function main(): Promise<void> {
     panel.appendChild(commonLabel);
 
     const commonRow = el("div", "fader-row");
-    F["rep"] = fader(commonRow, "Rep", 1, 1000, 50, 1,
-      (v) => state.graph?.setForceConfig({ repulsionStrength: -v }));
-    F["spring"] = fader(commonRow, "Spring", 0.01, 1, 0.1, 0.01,
-      (v) => state.graph?.setForceConfig({ springStrength: v }));
-    F["length"] = fader(commonRow, "Length", 1, 500, 30, 1,
-      (v) => state.graph?.setForceConfig({ springLength: v }));
-    F["gravity"] = fader(commonRow, "Gravity", 0, 0.5, 0.01, 0.01,
-      (v) => state.graph?.setForceConfig({ centerStrength: v }));
-    F["damping"] = fader(commonRow, "Damp", 0.1, 0.9, 0.4, 0.05,
-      (v) => state.graph?.setForceConfig({ velocityDecay: v }));
-    F["theta"] = fader(commonRow, "Theta", 0.3, 1.5, 0.8, 0.1,
-      (v) => state.graph?.setForceConfig({ theta: v }));
-    F["maxvel"] = fader(commonRow, "MaxVel", 10, 200, 50, 10,
-      (v) => state.graph?.setForceConfig({ maxVelocity: v }));
+    F["rep"] = fader(
+      commonRow,
+      "Rep",
+      1,
+      1000,
+      50,
+      1,
+      (v) => state.graph?.setForceConfig({ repulsionStrength: -v }),
+    );
+    F["spring"] = fader(
+      commonRow,
+      "Spring",
+      0.01,
+      1,
+      0.1,
+      0.01,
+      (v) => state.graph?.setForceConfig({ springStrength: v }),
+    );
+    F["length"] = fader(
+      commonRow,
+      "Length",
+      1,
+      500,
+      30,
+      1,
+      (v) => state.graph?.setForceConfig({ springLength: v }),
+    );
+    F["gravity"] = fader(
+      commonRow,
+      "Gravity",
+      0,
+      0.5,
+      0.01,
+      0.01,
+      (v) => state.graph?.setForceConfig({ centerStrength: v }),
+    );
+    F["damping"] = fader(
+      commonRow,
+      "Damp",
+      0.1,
+      0.9,
+      0.4,
+      0.05,
+      (v) => state.graph?.setForceConfig({ velocityDecay: v }),
+    );
+    F["theta"] = fader(
+      commonRow,
+      "Theta",
+      0.3,
+      1.5,
+      0.8,
+      0.1,
+      (v) => state.graph?.setForceConfig({ theta: v }),
+    );
+    F["maxvel"] = fader(
+      commonRow,
+      "MaxVel",
+      10,
+      200,
+      50,
+      10,
+      (v) => state.graph?.setForceConfig({ maxVelocity: v }),
+    );
     panel.appendChild(commonRow);
 
     // Pin root toggle
     const pinRow = el("div", "ctrl-row");
     const pinLabel = el("span", "ctrl-label", "Pin Root");
     pinRow.appendChild(pinLabel);
-    T["pinRoot"] = toggle(pinRow, true,
-      (v) => state.graph?.setForceConfig({ pinnedNode: v ? 0 : 0xFFFFFFFF }));
+    T["pinRoot"] = toggle(
+      pinRow,
+      true,
+      (v) => state.graph?.setForceConfig({ pinnedNode: v ? 0 : 0xFFFFFFFF }),
+    );
     panel.appendChild(pinRow);
 
     // ---- Algorithm-specific panels ----
@@ -1112,24 +1263,92 @@ async function main(): Promise<void> {
     const raLabel = el("div", "section-label", "Relativity Atlas");
     raPanel.appendChild(raLabel);
     const raRow = el("div", "fader-row");
-    F["ra-baseMass"] = fader(raRow, "Mass", 0.1, 10, 1.0, 0.1,
-      (v) => state.graph?.setForceConfig({ relativityBaseMass: v }), (v) => v.toFixed(1));
-    F["ra-childFactor"] = fader(raRow, "Child", 0, 1, 0.5, 0.05,
-      (v) => state.graph?.setForceConfig({ relativityChildMassFactor: v }));
-    F["ra-massExp"] = fader(raRow, "MExp", 0, 2, 0.5, 0.1,
-      (v) => state.graph?.setForceConfig({ relativityMassExponent: v }));
-    F["ra-maxSib"] = fader(raRow, "MaxSib", 10, 500, 100, 10,
-      (v) => state.graph?.setForceConfig({ relativityMaxSiblings: Math.floor(v) }), (v) => v.toFixed(0));
-    F["ra-parentChild"] = fader(raRow, "P-C", 0, 1, 0.15, 0.05,
-      (v) => state.graph?.setForceConfig({ relativityParentChildMultiplier: v }));
-    F["ra-density"] = fader(raRow, "DenRep", 0, 2, 0.5, 0.05,
-      (v) => state.graph?.setForceConfig({ relativityDensityRepulsion: v }));
-    F["ra-orbit"] = fader(raRow, "Orbit", 0, 20, 1.0, 0.5,
-      (v) => state.graph?.setForceConfig({ relativityOrbitStrength: v }), (v) => v.toFixed(1));
-    F["ra-tang"] = fader(raRow, "Tang", 1, 20, 2.0, 0.5,
-      (v) => state.graph?.setForceConfig({ relativityTangentialMultiplier: v }), (v) => v.toFixed(1));
-    F["ra-orbitRad"] = fader(raRow, "OrbRad", 1, 200, 25, 1,
-      (v) => state.graph?.setForceConfig({ relativityOrbitRadius: v }), (v) => v.toFixed(0));
+    F["ra-baseMass"] = fader(
+      raRow,
+      "Mass",
+      0.1,
+      10,
+      1.0,
+      0.1,
+      (v) => state.graph?.setForceConfig({ relativityBaseMass: v }),
+      (v) => v.toFixed(1),
+    );
+    F["ra-childFactor"] = fader(
+      raRow,
+      "Child",
+      0,
+      1,
+      0.5,
+      0.05,
+      (v) => state.graph?.setForceConfig({ relativityChildMassFactor: v }),
+    );
+    F["ra-massExp"] = fader(
+      raRow,
+      "MExp",
+      0,
+      2,
+      0.5,
+      0.1,
+      (v) => state.graph?.setForceConfig({ relativityMassExponent: v }),
+    );
+    F["ra-maxSib"] = fader(
+      raRow,
+      "MaxSib",
+      10,
+      500,
+      100,
+      10,
+      (v) => state.graph?.setForceConfig({ relativityMaxSiblings: Math.floor(v) }),
+      (v) => v.toFixed(0),
+    );
+    F["ra-parentChild"] = fader(
+      raRow,
+      "P-C",
+      0,
+      1,
+      0.15,
+      0.05,
+      (v) => state.graph?.setForceConfig({ relativityParentChildMultiplier: v }),
+    );
+    F["ra-density"] = fader(
+      raRow,
+      "DenRep",
+      0,
+      2,
+      0.5,
+      0.05,
+      (v) => state.graph?.setForceConfig({ relativityDensityRepulsion: v }),
+    );
+    F["ra-orbit"] = fader(
+      raRow,
+      "Orbit",
+      0,
+      20,
+      1.0,
+      0.5,
+      (v) => state.graph?.setForceConfig({ relativityOrbitStrength: v }),
+      (v) => v.toFixed(1),
+    );
+    F["ra-tang"] = fader(
+      raRow,
+      "Tang",
+      1,
+      20,
+      2.0,
+      0.5,
+      (v) => state.graph?.setForceConfig({ relativityTangentialMultiplier: v }),
+      (v) => v.toFixed(1),
+    );
+    F["ra-orbitRad"] = fader(
+      raRow,
+      "OrbRad",
+      1,
+      200,
+      25,
+      1,
+      (v) => state.graph?.setForceConfig({ relativityOrbitRadius: v }),
+      (v) => v.toFixed(0),
+    );
     raPanel.appendChild(raRow);
 
     // Toggles: Cousin, Phantom
@@ -1138,13 +1357,19 @@ async function main(): Promise<void> {
     const cousRow = el("div", "ctrl-row");
     cousRow.style.fontSize = "10px";
     cousRow.appendChild(el("span", "ctrl-label", "Cousin"));
-    T["ra-cousin"] = toggle(cousRow, false,
-      (v) => state.graph?.setForceConfig({ relativityCousinRepulsion: v }));
+    T["ra-cousin"] = toggle(
+      cousRow,
+      false,
+      (v) => state.graph?.setForceConfig({ relativityCousinRepulsion: v }),
+    );
     const phantRow = el("div", "ctrl-row");
     phantRow.style.fontSize = "10px";
     phantRow.appendChild(el("span", "ctrl-label", "Phantom"));
-    T["ra-phantom"] = toggle(phantRow, false,
-      (v) => state.graph?.setForceConfig({ relativityPhantomZone: v }));
+    T["ra-phantom"] = toggle(
+      phantRow,
+      false,
+      (v) => state.graph?.setForceConfig({ relativityPhantomZone: v }),
+    );
     raToggles.append(cousRow, phantRow);
     raPanel.appendChild(raToggles);
 
@@ -1156,18 +1381,52 @@ async function main(): Promise<void> {
     const bubbleTxt = el("span", "ctrl-label", "Enable");
     bubbleTxt.style.fontSize = "10px";
     bubbleRow.appendChild(bubbleTxt);
-    T["ra-bubble"] = toggle(bubbleRow, false,
-      (v) => state.graph?.setForceConfig({ relativityBubbleMode: v }));
+    T["ra-bubble"] = toggle(
+      bubbleRow,
+      false,
+      (v) => state.graph?.setForceConfig({ relativityBubbleMode: v }),
+    );
     raPanel.appendChild(bubbleRow);
     const bubbleFaders = el("div", "fader-row");
-    F["ra-bubbleRad"] = fader(bubbleFaders, "BaseR", 1, 100, 10, 1,
-      (v) => state.graph?.setForceConfig({ relativityBubbleBaseRadius: v }), (v) => v.toFixed(0));
-    F["ra-bubblePad"] = fader(bubbleFaders, "Pad", 0, 50, 5, 1,
-      (v) => state.graph?.setForceConfig({ relativityBubblePadding: v }), (v) => v.toFixed(0));
-    F["ra-depthDecay"] = fader(bubbleFaders, "Decay", 0, 1, 0.7, 0.05,
-      (v) => state.graph?.setForceConfig({ relativityDepthDecay: v }));
-    F["ra-bubbleOrbit"] = fader(bubbleFaders, "OrbScl", 0.1, 2, 0.6, 0.1,
-      (v) => state.graph?.setForceConfig({ relativityBubbleOrbitScale: v }), (v) => v.toFixed(1));
+    F["ra-bubbleRad"] = fader(
+      bubbleFaders,
+      "BaseR",
+      1,
+      100,
+      10,
+      1,
+      (v) => state.graph?.setForceConfig({ relativityBubbleBaseRadius: v }),
+      (v) => v.toFixed(0),
+    );
+    F["ra-bubblePad"] = fader(
+      bubbleFaders,
+      "Pad",
+      0,
+      50,
+      5,
+      1,
+      (v) => state.graph?.setForceConfig({ relativityBubblePadding: v }),
+      (v) => v.toFixed(0),
+    );
+    F["ra-depthDecay"] = fader(
+      bubbleFaders,
+      "Decay",
+      0,
+      1,
+      0.7,
+      0.05,
+      (v) => state.graph?.setForceConfig({ relativityDepthDecay: v }),
+    );
+    F["ra-bubbleOrbit"] = fader(
+      bubbleFaders,
+      "OrbScl",
+      0.1,
+      2,
+      0.6,
+      0.1,
+      (v) => state.graph?.setForceConfig({ relativityBubbleOrbitScale: v }),
+      (v) => v.toFixed(1),
+    );
     raPanel.appendChild(bubbleFaders);
     panel.appendChild(raPanel);
 
@@ -1177,22 +1436,61 @@ async function main(): Promise<void> {
     algoPanels["tidy-tree"] = ttPanel;
     ttPanel.appendChild(el("div", "section-label", "Tidy Tree"));
     const ttRow = el("div", "fader-row");
-    F["tt-levelSep"] = fader(ttRow, "LvlSep", 20, 300, 80, 5,
-      (v) => state.graph?.setForceConfig({ tidyTreeLevelSeparation: v }), (v) => v.toFixed(0));
-    F["tt-sibSep"] = fader(ttRow, "SibSep", 0.1, 5, 1.0, 0.1,
-      (v) => state.graph?.setForceConfig({ tidyTreeSiblingSeparation: v }));
-    F["tt-subSep"] = fader(ttRow, "SubSep", 0.5, 10, 2.0, 0.5,
-      (v) => state.graph?.setForceConfig({ tidyTreeSubtreeSeparation: v }));
-    F["tt-stiff"] = fader(ttRow, "Stiff", 0.01, 1, 0.3, 0.01,
-      (v) => state.graph?.setForceConfig({ tidyTreeStiffness: v }));
-    F["tt-damp"] = fader(ttRow, "Damp", 0.01, 2, 0.5, 0.01,
-      (v) => state.graph?.setForceConfig({ tidyTreeDamping: v }));
+    F["tt-levelSep"] = fader(
+      ttRow,
+      "LvlSep",
+      20,
+      300,
+      80,
+      5,
+      (v) => state.graph?.setForceConfig({ tidyTreeLevelSeparation: v }),
+      (v) => v.toFixed(0),
+    );
+    F["tt-sibSep"] = fader(
+      ttRow,
+      "SibSep",
+      0.1,
+      5,
+      1.0,
+      0.1,
+      (v) => state.graph?.setForceConfig({ tidyTreeSiblingSeparation: v }),
+    );
+    F["tt-subSep"] = fader(
+      ttRow,
+      "SubSep",
+      0.5,
+      10,
+      2.0,
+      0.5,
+      (v) => state.graph?.setForceConfig({ tidyTreeSubtreeSeparation: v }),
+    );
+    F["tt-stiff"] = fader(
+      ttRow,
+      "Stiff",
+      0.01,
+      1,
+      0.3,
+      0.01,
+      (v) => state.graph?.setForceConfig({ tidyTreeStiffness: v }),
+    );
+    F["tt-damp"] = fader(
+      ttRow,
+      "Damp",
+      0.01,
+      2,
+      0.5,
+      0.01,
+      (v) => state.graph?.setForceConfig({ tidyTreeDamping: v }),
+    );
     ttPanel.appendChild(ttRow);
     const ttBtns = el("div", "ctrl-row");
     const ttRadialRow = el("div", "ctrl-row");
     ttRadialRow.appendChild(el("span", "ctrl-label", "Radial"));
-    T["tt-radial"] = toggle(ttRadialRow, true,
-      (v) => state.graph?.setForceConfig({ tidyTreeRadial: v }));
+    T["tt-radial"] = toggle(
+      ttRadialRow,
+      true,
+      (v) => state.graph?.setForceConfig({ tidyTreeRadial: v }),
+    );
     const ttCompute = el("button", "btn primary", "Recompute");
     ttCompute.addEventListener("click", () => state.graph?.computeTreeLayout());
     ttBtns.append(ttRadialRow, ttCompute);
@@ -1205,14 +1503,44 @@ async function main(): Promise<void> {
     algoPanels["community"] = commPanel;
     commPanel.appendChild(el("div", "section-label", "Community Layout"));
     const commRow = el("div", "fader-row");
-    F["comm-res"] = fader(commRow, "Res", 0.1, 5, 1.0, 0.1,
-      (v) => state.graph?.setForceConfig({ communityResolution: v }));
-    F["comm-space"] = fader(commRow, "Space", 5, 500, 50, 5,
-      (v) => state.graph?.setForceConfig({ communitySpacing: v }), (v) => v.toFixed(0));
-    F["comm-nodeSpace"] = fader(commRow, "NdSpc", 1, 100, 10, 1,
-      (v) => state.graph?.setForceConfig({ communityNodeSpacing: v }), (v) => v.toFixed(0));
-    F["comm-spread"] = fader(commRow, "Spread", 0.1, 5, 1.5, 0.1,
-      (v) => state.graph?.setForceConfig({ communitySpreadFactor: v }));
+    F["comm-res"] = fader(
+      commRow,
+      "Res",
+      0.1,
+      5,
+      1.0,
+      0.1,
+      (v) => state.graph?.setForceConfig({ communityResolution: v }),
+    );
+    F["comm-space"] = fader(
+      commRow,
+      "Space",
+      5,
+      500,
+      50,
+      5,
+      (v) => state.graph?.setForceConfig({ communitySpacing: v }),
+      (v) => v.toFixed(0),
+    );
+    F["comm-nodeSpace"] = fader(
+      commRow,
+      "NdSpc",
+      1,
+      100,
+      10,
+      1,
+      (v) => state.graph?.setForceConfig({ communityNodeSpacing: v }),
+      (v) => v.toFixed(0),
+    );
+    F["comm-spread"] = fader(
+      commRow,
+      "Spread",
+      0.1,
+      5,
+      1.5,
+      0.1,
+      (v) => state.graph?.setForceConfig({ communitySpreadFactor: v }),
+    );
     commPanel.appendChild(commRow);
     const commCompute = el("button", "btn primary", "Recompute Communities");
     commCompute.addEventListener("click", () => state.graph?.computeCommunityLayout());
@@ -1225,12 +1553,35 @@ async function main(): Promise<void> {
     algoPanels["codebase"] = cbPanel;
     cbPanel.appendChild(el("div", "section-label", "Codebase Layout"));
     const cbRow = el("div", "fader-row");
-    F["cb-dirPad"] = fader(cbRow, "DirPad", 1, 100, 15, 1,
-      (v) => state.graph?.setForceConfig({ codebaseDirectoryPadding: v }), (v) => v.toFixed(0));
-    F["cb-filePad"] = fader(cbRow, "FilePd", 1, 50, 8, 1,
-      (v) => state.graph?.setForceConfig({ codebaseFilePadding: v }), (v) => v.toFixed(0));
-    F["cb-spread"] = fader(cbRow, "Spread", 0.1, 5, 1.5, 0.1,
-      (v) => state.graph?.setForceConfig({ codebaseSpreadFactor: v }));
+    F["cb-dirPad"] = fader(
+      cbRow,
+      "DirPad",
+      1,
+      100,
+      15,
+      1,
+      (v) => state.graph?.setForceConfig({ codebaseDirectoryPadding: v }),
+      (v) => v.toFixed(0),
+    );
+    F["cb-filePad"] = fader(
+      cbRow,
+      "FilePd",
+      1,
+      50,
+      8,
+      1,
+      (v) => state.graph?.setForceConfig({ codebaseFilePadding: v }),
+      (v) => v.toFixed(0),
+    );
+    F["cb-spread"] = fader(
+      cbRow,
+      "Spread",
+      0.1,
+      5,
+      1.5,
+      0.1,
+      (v) => state.graph?.setForceConfig({ codebaseSpreadFactor: v }),
+    );
     cbPanel.appendChild(cbRow);
     const cbCompute = el("button", "btn primary", "Recompute Layout");
     cbCompute.addEventListener("click", () => {
@@ -1246,17 +1597,43 @@ async function main(): Promise<void> {
     algoPanels["linlog"] = llPanel;
     llPanel.appendChild(el("div", "section-label", "LinLog"));
     const llRow = el("div", "fader-row");
-    F["ll-scaling"] = fader(llRow, "Scale", 0.1, 100, 10, 0.1,
-      (v) => state.graph?.setForceConfig({ linlogScaling: v }), (v) => v.toFixed(1));
-    F["ll-gravity"] = fader(llRow, "Grav", 0, 10, 1, 0.1,
-      (v) => state.graph?.setForceConfig({ linlogGravity: v }), (v) => v.toFixed(1));
-    F["ll-weight"] = fader(llRow, "EdgeW", 0, 2, 1, 0.05,
-      (v) => state.graph?.setForceConfig({ linlogEdgeWeightInfluence: v }));
+    F["ll-scaling"] = fader(
+      llRow,
+      "Scale",
+      0.1,
+      100,
+      10,
+      0.1,
+      (v) => state.graph?.setForceConfig({ linlogScaling: v }),
+      (v) => v.toFixed(1),
+    );
+    F["ll-gravity"] = fader(
+      llRow,
+      "Grav",
+      0,
+      10,
+      1,
+      0.1,
+      (v) => state.graph?.setForceConfig({ linlogGravity: v }),
+      (v) => v.toFixed(1),
+    );
+    F["ll-weight"] = fader(
+      llRow,
+      "EdgeW",
+      0,
+      2,
+      1,
+      0.05,
+      (v) => state.graph?.setForceConfig({ linlogEdgeWeightInfluence: v }),
+    );
     llPanel.appendChild(llRow);
     const llStrong = el("div", "ctrl-row");
     llStrong.appendChild(el("span", "ctrl-label", "Strong Gravity"));
-    T["ll-strong"] = toggle(llStrong, false,
-      (v) => state.graph?.setForceConfig({ linlogStrongGravity: v }));
+    T["ll-strong"] = toggle(
+      llStrong,
+      false,
+      (v) => state.graph?.setForceConfig({ linlogStrongGravity: v }),
+    );
     llPanel.appendChild(llStrong);
     panel.appendChild(llPanel);
 
@@ -1266,14 +1643,42 @@ async function main(): Promise<void> {
     algoPanels["t-fdp"] = tfdpPanel;
     tfdpPanel.appendChild(el("div", "section-label", "t-FDP"));
     const tfdpRow = el("div", "fader-row");
-    F["tfdp-gamma"] = fader(tfdpRow, "Gamma", 1, 5, 2, 0.1,
-      (v) => state.graph?.setForceConfig({ tFdpGamma: v }));
-    F["tfdp-rep"] = fader(tfdpRow, "Rep", 0.1, 50, 1, 0.1,
-      (v) => state.graph?.setForceConfig({ tFdpRepulsionScale: v }));
-    F["tfdp-alpha"] = fader(tfdpRow, "Alpha", 0.01, 1, 0.1, 0.01,
-      (v) => state.graph?.setForceConfig({ tFdpAlpha: v }));
-    F["tfdp-beta"] = fader(tfdpRow, "Beta", 0, 20, 8, 0.5,
-      (v) => state.graph?.setForceConfig({ tFdpBeta: v }));
+    F["tfdp-gamma"] = fader(
+      tfdpRow,
+      "Gamma",
+      1,
+      5,
+      2,
+      0.1,
+      (v) => state.graph?.setForceConfig({ tFdpGamma: v }),
+    );
+    F["tfdp-rep"] = fader(
+      tfdpRow,
+      "Rep",
+      0.1,
+      50,
+      1,
+      0.1,
+      (v) => state.graph?.setForceConfig({ tFdpRepulsionScale: v }),
+    );
+    F["tfdp-alpha"] = fader(
+      tfdpRow,
+      "Alpha",
+      0.01,
+      1,
+      0.1,
+      0.01,
+      (v) => state.graph?.setForceConfig({ tFdpAlpha: v }),
+    );
+    F["tfdp-beta"] = fader(
+      tfdpRow,
+      "Beta",
+      0,
+      20,
+      8,
+      0.5,
+      (v) => state.graph?.setForceConfig({ tFdpBeta: v }),
+    );
     tfdpPanel.appendChild(tfdpRow);
     panel.appendChild(tfdpPanel);
   }
@@ -1302,30 +1707,87 @@ async function main(): Promise<void> {
     });
     hmCard.appendChild(hmHeader);
 
-    D["hm-scale"] = dropdown(hmCard,
-      ["viridis", "plasma", "inferno", "magma", "turbo", "spectral", "coolwarm", "blues", "reds", "greens"]
+    D["hm-scale"] = dropdown(
+      hmCard,
+      [
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "turbo",
+        "spectral",
+        "coolwarm",
+        "blues",
+        "reds",
+        "greens",
+      ]
         .map((v) => ({ value: v, label: v })),
       "viridis",
-      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ colorScale: v as "viridis" }));
-    D["hm-source"] = dropdown(hmCard,
-      [{ value: "density", label: "Density" }, { value: "errors", label: "Errors" },
-        { value: "warnings", label: "Warnings" }, { value: "complexity", label: "Complexity" },
-        { value: "lines", label: "Lines" }],
+      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ colorScale: v as "viridis" }),
+    );
+    D["hm-source"] = dropdown(
+      hmCard,
+      [
+        { value: "density", label: "Density" },
+        { value: "errors", label: "Errors" },
+        { value: "warnings", label: "Warnings" },
+        { value: "complexity", label: "Complexity" },
+        { value: "lines", label: "Lines" },
+      ],
       "density",
       (v) => {
         if (!T["heatmap"]?.get()) return;
-        if (v === "density") { state.graph?.setHeatmapDataSource(v); return; }
+        if (v === "density") {
+          state.graph?.setHeatmapDataSource(v);
+          return;
+        }
         // Create stream on demand
         if (state.graph && !state.graph.hasValueStream(v)) {
-          const configs: Record<string, { domain: [number, number]; stops: Array<{ position: number; color: [number, number, number, number] }> }> = {
-            errors: { domain: [0, 5], stops: [{ position: 0, color: [0, 0, 0, 0] }, { position: 0.5, color: [1, 0.2, 0.1, 0.5] }, { position: 1, color: [1, 0.1, 0.05, 1] }] },
-            warnings: { domain: [0, 10], stops: [{ position: 0, color: [0, 0, 0, 0] }, { position: 0.5, color: [1, 0.8, 0.2, 0.5] }, { position: 1, color: [1, 0.9, 0.3, 1] }] },
-            complexity: { domain: [0, 30], stops: [{ position: 0, color: [0, 0, 0, 0] }, { position: 0.5, color: [0.5, 0.3, 0.8, 0.5] }, { position: 1, color: [0.8, 0.2, 0.9, 1] }] },
-            lines: { domain: [0, 350], stops: [{ position: 0, color: [0, 0, 0, 0] }, { position: 0.5, color: [0.3, 0.7, 0.4, 0.5] }, { position: 1, color: [0.4, 0.9, 0.5, 1] }] },
+          const configs: Record<
+            string,
+            {
+              domain: [number, number];
+              stops: Array<{ position: number; color: [number, number, number, number] }>;
+            }
+          > = {
+            errors: {
+              domain: [0, 5],
+              stops: [{ position: 0, color: [0, 0, 0, 0] }, {
+                position: 0.5,
+                color: [1, 0.2, 0.1, 0.5],
+              }, { position: 1, color: [1, 0.1, 0.05, 1] }],
+            },
+            warnings: {
+              domain: [0, 10],
+              stops: [{ position: 0, color: [0, 0, 0, 0] }, {
+                position: 0.5,
+                color: [1, 0.8, 0.2, 0.5],
+              }, { position: 1, color: [1, 0.9, 0.3, 1] }],
+            },
+            complexity: {
+              domain: [0, 30],
+              stops: [{ position: 0, color: [0, 0, 0, 0] }, {
+                position: 0.5,
+                color: [0.5, 0.3, 0.8, 0.5],
+              }, { position: 1, color: [0.8, 0.2, 0.9, 1] }],
+            },
+            lines: {
+              domain: [0, 350],
+              stops: [{ position: 0, color: [0, 0, 0, 0] }, {
+                position: 0.5,
+                color: [0.3, 0.7, 0.4, 0.5],
+              }, { position: 1, color: [0.4, 0.9, 0.5, 1] }],
+            },
           };
           const cfg = configs[v];
           if (cfg) {
-            state.graph.defineValueStream({ id: v, name: v, colorScale: cfg, blendMode: "additive", opacity: 1.0 });
+            state.graph.defineValueStream({
+              id: v,
+              name: v,
+              colorScale: cfg,
+              blendMode: "additive",
+              opacity: 1.0,
+            });
             const data: Array<{ nodeIndex: number; value: number }> = [];
             if (state.codebaseMetrics) {
               for (const [idx, metrics] of state.codebaseMetrics) {
@@ -1335,21 +1797,50 @@ async function main(): Promise<void> {
             } else {
               const [mn, mx] = cfg.domain;
               for (let i = 0; i < state.nodeCount; i++) {
-                if (Math.random() < 0.3) data.push({ nodeIndex: i, value: mn + Math.pow(Math.random(), 2) * (mx - mn) });
+                if (Math.random() < 0.3) {
+                  data.push({
+                    nodeIndex: i,
+                    value: mn + Math.pow(Math.random(), 2) * (mx - mn),
+                  });
+                }
               }
             }
             state.graph.setStreamValues(v, data);
           }
         }
         state.graph?.setHeatmapDataSource(v);
-      });
+      },
+    );
 
-    F["hm-radius"] = miniSlider(hmCard, "Radius", 10, 200, 50, 1,
-      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ radius: v }), (v) => v.toFixed(0));
-    F["hm-intensity"] = miniSlider(hmCard, "Intensity", 0.1, 5, 1.0, 0.1,
-      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ intensity: v }), (v) => v.toFixed(1));
-    F["hm-opacity"] = miniSlider(hmCard, "Opacity", 0, 1, 0.8, 0.05,
-      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ opacity: v }));
+    F["hm-radius"] = miniSlider(
+      hmCard,
+      "Radius",
+      10,
+      200,
+      50,
+      1,
+      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ radius: v }),
+      (v) => v.toFixed(0),
+    );
+    F["hm-intensity"] = miniSlider(
+      hmCard,
+      "Intensity",
+      0.1,
+      5,
+      1.0,
+      0.1,
+      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ intensity: v }),
+      (v) => v.toFixed(1),
+    );
+    F["hm-opacity"] = miniSlider(
+      hmCard,
+      "Opacity",
+      0,
+      1,
+      0.8,
+      0.05,
+      (v) => T["heatmap"]?.get() && state.graph?.setHeatmapConfig({ opacity: v }),
+    );
     grid.appendChild(hmCard);
 
     // ---- Contours ----
@@ -1358,7 +1849,10 @@ async function main(): Promise<void> {
     ctHeader.appendChild(el("span", "card-title", "Contours"));
     T["contours"] = toggle(ctHeader, false, (v) => {
       if (v) {
-        if (!T["heatmap"]?.get()) { T["contours"]!.set(false); return; }
+        if (!T["heatmap"]?.get()) {
+          T["contours"]!.set(false);
+          return;
+        }
         state.graph?.enableContour({
           strokeWidth: F["ct-width"]?.getValue() ?? 2,
           strokeColor: C["ct-color"]?.el.value ?? "#ffffff",
@@ -1368,17 +1862,46 @@ async function main(): Promise<void> {
     });
     ctCard.appendChild(ctHeader);
 
-    F["ct-width"] = miniSlider(ctCard, "Width", 0.5, 8, 2, 0.5,
-      (v) => T["contours"]?.get() && state.graph?.setContourConfig({ strokeWidth: v }));
+    F["ct-width"] = miniSlider(
+      ctCard,
+      "Width",
+      0.5,
+      8,
+      2,
+      0.5,
+      (v) => T["contours"]?.get() && state.graph?.setContourConfig({ strokeWidth: v }),
+    );
     const ctColorRow = el("div", "ctrl-row");
     ctColorRow.appendChild(el("span", "ctrl-label", "Color"));
-    C["ct-color"] = colorPicker(ctColorRow, "#ffffff",
-      (v) => T["contours"]?.get() && state.graph?.setContourConfig({ strokeColor: v }));
+    C["ct-color"] = colorPicker(
+      ctColorRow,
+      "#ffffff",
+      (v) => T["contours"]?.get() && state.graph?.setContourConfig({ strokeColor: v }),
+    );
     ctCard.appendChild(ctColorRow);
-    F["ct-thresh"] = miniSlider(ctCard, "Thresholds", 1, 10, 4, 1,
-      () => T["contours"]?.get() && state.graph?.setContourConfig({ thresholds: getContourThresholds() }), (v) => v.toFixed(0));
-    F["ct-min"] = miniSlider(ctCard, "Min", 0.02, 0.5, 0.1, 0.02,
-      () => T["contours"]?.get() && state.graph?.setContourConfig({ thresholds: getContourThresholds() }));
+    F["ct-thresh"] = miniSlider(
+      ctCard,
+      "Thresholds",
+      1,
+      10,
+      4,
+      1,
+      () =>
+        T["contours"]?.get() &&
+        state.graph?.setContourConfig({ thresholds: getContourThresholds() }),
+      (v) => v.toFixed(0),
+    );
+    F["ct-min"] = miniSlider(
+      ctCard,
+      "Min",
+      0.02,
+      0.5,
+      0.1,
+      0.02,
+      () =>
+        T["contours"]?.get() &&
+        state.graph?.setContourConfig({ thresholds: getContourThresholds() }),
+    );
     grid.appendChild(ctCard);
 
     function getContourThresholds(): number[] {
@@ -1404,13 +1927,30 @@ async function main(): Promise<void> {
 
     const mbColorRow = el("div", "ctrl-row");
     mbColorRow.appendChild(el("span", "ctrl-label", "Color"));
-    C["mb-color"] = colorPicker(mbColorRow, "#4f8cff",
-      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ fillColor: v }));
+    C["mb-color"] = colorPicker(
+      mbColorRow,
+      "#4f8cff",
+      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ fillColor: v }),
+    );
     mbCard.appendChild(mbColorRow);
-    F["mb-thresh"] = miniSlider(mbCard, "Threshold", 0.1, 1, 0.5, 0.05,
-      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ threshold: v }));
-    F["mb-opacity"] = miniSlider(mbCard, "Opacity", 0, 1, 0.6, 0.05,
-      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ opacity: v }));
+    F["mb-thresh"] = miniSlider(
+      mbCard,
+      "Threshold",
+      0.1,
+      1,
+      0.5,
+      0.05,
+      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ threshold: v }),
+    );
+    F["mb-opacity"] = miniSlider(
+      mbCard,
+      "Opacity",
+      0,
+      1,
+      0.6,
+      0.05,
+      (v) => T["metaballs"]?.get() && state.graph?.setMetaballConfig({ opacity: v }),
+    );
     grid.appendChild(mbCard);
 
     // ---- Labels ----
@@ -1429,15 +1969,34 @@ async function main(): Promise<void> {
     });
     lbCard.appendChild(lbHeader);
 
-    F["lb-size"] = miniSlider(lbCard, "Size", 8, 32, 14, 1,
-      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ fontSize: v }), (v) => v.toFixed(0));
+    F["lb-size"] = miniSlider(
+      lbCard,
+      "Size",
+      8,
+      32,
+      14,
+      1,
+      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ fontSize: v }),
+      (v) => v.toFixed(0),
+    );
     const lbColorRow = el("div", "ctrl-row");
     lbColorRow.appendChild(el("span", "ctrl-label", "Color"));
-    C["lb-color"] = colorPicker(lbColorRow, "#ffffff",
-      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ fontColor: v }));
+    C["lb-color"] = colorPicker(
+      lbColorRow,
+      "#ffffff",
+      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ fontColor: v }),
+    );
     lbCard.appendChild(lbColorRow);
-    F["lb-max"] = miniSlider(lbCard, "Max", 10, 500, 100, 10,
-      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ maxLabels: v }), (v) => v.toFixed(0));
+    F["lb-max"] = miniSlider(
+      lbCard,
+      "Max",
+      10,
+      500,
+      100,
+      10,
+      (v) => T["labels"]?.get() && state.graph?.setLabelsConfig({ maxLabels: v }),
+      (v) => v.toFixed(0),
+    );
     grid.appendChild(lbCard);
 
     // ---- Borders ----
@@ -1445,17 +2004,31 @@ async function main(): Promise<void> {
     const brHeader = el("div", "card-header");
     brHeader.appendChild(el("span", "card-title", "Borders"));
     T["borders"] = toggle(brHeader, false, (v) => {
-      if (v) state.graph?.enableNodeBorder(F["br-width"]?.getValue() ?? 2, C["br-color"]?.el.value ?? "#000000");
-      else state.graph?.disableNodeBorder();
+      if (v) {
+        state.graph?.enableNodeBorder(
+          F["br-width"]?.getValue() ?? 2,
+          C["br-color"]?.el.value ?? "#000000",
+        );
+      } else state.graph?.disableNodeBorder();
     });
     brCard.appendChild(brHeader);
 
-    F["br-width"] = miniSlider(brCard, "Width", 0.5, 5, 2, 0.5,
-      (v) => T["borders"]?.get() && state.graph?.setNodeBorder({ width: v }));
+    F["br-width"] = miniSlider(
+      brCard,
+      "Width",
+      0.5,
+      5,
+      2,
+      0.5,
+      (v) => T["borders"]?.get() && state.graph?.setNodeBorder({ width: v }),
+    );
     const brColorRow = el("div", "ctrl-row");
     brColorRow.appendChild(el("span", "ctrl-label", "Color"));
-    C["br-color"] = colorPicker(brColorRow, "#000000",
-      (v) => T["borders"]?.get() && state.graph?.setNodeBorder({ color: v }));
+    C["br-color"] = colorPicker(
+      brColorRow,
+      "#000000",
+      (v) => T["borders"]?.get() && state.graph?.setNodeBorder({ color: v }),
+    );
     brCard.appendChild(brColorRow);
     grid.appendChild(brCard);
 
@@ -1474,12 +2047,34 @@ async function main(): Promise<void> {
     });
     cvCard.appendChild(cvHeader);
 
-    F["cv-curv"] = miniSlider(cvCard, "Curvature", -0.5, 0.5, 0.25, 0.01,
-      () => T["curves"]?.get() && applyCurvature());
-    F["cv-segs"] = miniSlider(cvCard, "Segments", 3, 50, 19, 1,
-      (v) => T["curves"]?.get() && state.graph?.setCurvedEdges({ segments: v }), (v) => v.toFixed(0));
-    F["cv-weight"] = miniSlider(cvCard, "Weight", 0.1, 2, 0.8, 0.05,
-      (v) => T["curves"]?.get() && state.graph?.setCurvedEdges({ weight: v }));
+    F["cv-curv"] = miniSlider(
+      cvCard,
+      "Curvature",
+      -0.5,
+      0.5,
+      0.25,
+      0.01,
+      () => T["curves"]?.get() && applyCurvature(),
+    );
+    F["cv-segs"] = miniSlider(
+      cvCard,
+      "Segments",
+      3,
+      50,
+      19,
+      1,
+      (v) => T["curves"]?.get() && state.graph?.setCurvedEdges({ segments: v }),
+      (v) => v.toFixed(0),
+    );
+    F["cv-weight"] = miniSlider(
+      cvCard,
+      "Weight",
+      0.1,
+      2,
+      0.8,
+      0.05,
+      (v) => T["curves"]?.get() && state.graph?.setCurvedEdges({ weight: v }),
+    );
     grid.appendChild(cvCard);
 
     function applyCurvature() {
@@ -1499,7 +2094,8 @@ async function main(): Promise<void> {
     // Preset
     const presetRow = el("div", "ctrl-row");
     presetRow.appendChild(el("span", "ctrl-label", "Preset"));
-    D["flow-preset"] = dropdown(presetRow,
+    D["flow-preset"] = dropdown(
+      presetRow,
       ["none", "particles", "waves", "dataStream", "sparks", "energy", "warning", "dualLayer"]
         .map((v) => ({ value: v, label: v })),
       "none",
@@ -1512,7 +2108,8 @@ async function main(): Promise<void> {
           T["flow-on"]?.set(true);
           syncFlowSlidersFromConfig();
         }
-      });
+      },
+    );
     panel.appendChild(presetRow);
 
     function syncFlowSlidersFromConfig() {
@@ -1551,16 +2148,40 @@ async function main(): Promise<void> {
     const f1Faders = el("div", "fader-row");
     F["f1-speed"] = fader(f1Faders, "Speed", 0.05, 2, 0.3, 0.05, () => updateFlowFromSliders());
     F["f1-width"] = fader(f1Faders, "Width", 0.01, 0.5, 0.1, 0.01, () => updateFlowFromSliders());
-    F["f1-count"] = fader(f1Faders, "Count", 1, 8, 3, 1, () => updateFlowFromSliders(), (v) => v.toFixed(0));
-    F["f1-bright"] = fader(f1Faders, "Bright", 1, 5, 2, 0.1, () => updateFlowFromSliders(), (v) => v.toFixed(1));
+    F["f1-count"] = fader(
+      f1Faders,
+      "Count",
+      1,
+      8,
+      3,
+      1,
+      () => updateFlowFromSliders(),
+      (v) => v.toFixed(0),
+    );
+    F["f1-bright"] = fader(
+      f1Faders,
+      "Bright",
+      1,
+      5,
+      2,
+      0.1,
+      () => updateFlowFromSliders(),
+      (v) => v.toFixed(1),
+    );
     F["f1-fade"] = fader(f1Faders, "Fade", 0, 1, 0.3, 0.05, () => updateFlowFromSliders());
     panel.appendChild(f1Faders);
 
     const f1Extra = el("div");
     f1Extra.style.cssText = "display:flex;gap:12px;align-items:center;margin:4px 0";
-    D["f1-wave"] = dropdown(f1Extra,
-      [{ value: "sine", label: "Sine" }, { value: "square", label: "Square" }, { value: "triangle", label: "Triangle" }],
-      "sine", () => updateFlowFromSliders());
+    D["f1-wave"] = dropdown(
+      f1Extra,
+      [{ value: "sine", label: "Sine" }, { value: "square", label: "Square" }, {
+        value: "triangle",
+        label: "Triangle",
+      }],
+      "sine",
+      () => updateFlowFromSliders(),
+    );
     C["f1-color"] = colorPicker(f1Extra, "#00ffff", () => updateFlowFromSliders());
     const f1UseEdge = el("label");
     f1UseEdge.style.cssText = "font-size:9px;display:flex;align-items:center;gap:3px";
@@ -1582,16 +2203,40 @@ async function main(): Promise<void> {
     const f2Faders = el("div", "fader-row");
     F["f2-speed"] = fader(f2Faders, "Speed", 0.05, 2, 0.5, 0.05, () => updateFlowFromSliders());
     F["f2-width"] = fader(f2Faders, "Width", 0.01, 0.5, 0.05, 0.01, () => updateFlowFromSliders());
-    F["f2-count"] = fader(f2Faders, "Count", 1, 12, 6, 1, () => updateFlowFromSliders(), (v) => v.toFixed(0));
-    F["f2-bright"] = fader(f2Faders, "Bright", 0.5, 5, 1.5, 0.1, () => updateFlowFromSliders(), (v) => v.toFixed(1));
+    F["f2-count"] = fader(
+      f2Faders,
+      "Count",
+      1,
+      12,
+      6,
+      1,
+      () => updateFlowFromSliders(),
+      (v) => v.toFixed(0),
+    );
+    F["f2-bright"] = fader(
+      f2Faders,
+      "Bright",
+      0.5,
+      5,
+      1.5,
+      0.1,
+      () => updateFlowFromSliders(),
+      (v) => v.toFixed(1),
+    );
     F["f2-fade"] = fader(f2Faders, "Fade", 0, 1, 0.2, 0.05, () => updateFlowFromSliders());
     panel.appendChild(f2Faders);
 
     const f2Extra = el("div");
     f2Extra.style.cssText = "display:flex;gap:12px;align-items:center;margin:4px 0";
-    D["f2-wave"] = dropdown(f2Extra,
-      [{ value: "sine", label: "Sine" }, { value: "square", label: "Square" }, { value: "triangle", label: "Triangle" }],
-      "square", () => updateFlowFromSliders());
+    D["f2-wave"] = dropdown(
+      f2Extra,
+      [{ value: "sine", label: "Sine" }, { value: "square", label: "Square" }, {
+        value: "triangle",
+        label: "Triangle",
+      }],
+      "square",
+      () => updateFlowFromSliders(),
+    );
     C["f2-color"] = colorPicker(f2Extra, "#ff6b6b", () => updateFlowFromSliders());
     const f2UseEdge = el("label");
     f2UseEdge.style.cssText = "font-size:9px;display:flex;align-items:center;gap:3px";
@@ -1602,7 +2247,10 @@ async function main(): Promise<void> {
     f2Extra.appendChild(f2UseEdge);
     panel.appendChild(f2Extra);
 
-    function getFlowColor(colorPick: ReturnType<typeof colorPicker>, useEdgeCb: HTMLInputElement): [number, number, number, number] | null {
+    function getFlowColor(
+      colorPick: ReturnType<typeof colorPicker>,
+      useEdgeCb: HTMLInputElement,
+    ): [number, number, number, number] | null {
       if (useEdgeCb.checked) return null;
       return hexToRgba(colorPick.el.value);
     }
@@ -1660,8 +2308,7 @@ async function main(): Promise<void> {
     // Background color
     const bgRow = el("div", "ctrl-row");
     bgRow.appendChild(el("span", "ctrl-label", "Background"));
-    C["bg-color"] = colorPicker(bgRow, "#0a0a0f",
-      (v) => state.graph?.setBackgroundColor(v));
+    C["bg-color"] = colorPicker(bgRow, "#0a0a0f", (v) => state.graph?.setBackgroundColor(v));
     panel.appendChild(bgRow);
 
     // Edge opacity
@@ -1674,9 +2321,14 @@ async function main(): Promise<void> {
       for (let i = 0; i < state.edgeCount; i++) {
         let r = 0.5, g = 0.5, b = 0.5;
         if (state.currentEdgeColors && state.currentEdgeColors.length === state.edgeCount * 4) {
-          r = state.currentEdgeColors[i * 4]; g = state.currentEdgeColors[i * 4 + 1]; b = state.currentEdgeColors[i * 4 + 2];
+          r = state.currentEdgeColors[i * 4];
+          g = state.currentEdgeColors[i * 4 + 1];
+          b = state.currentEdgeColors[i * 4 + 2];
         }
-        colors[i * 4] = r; colors[i * 4 + 1] = g; colors[i * 4 + 2] = b; colors[i * 4 + 3] = v;
+        colors[i * 4] = r;
+        colors[i * 4 + 1] = g;
+        colors[i * 4 + 2] = b;
+        colors[i * 4 + 3] = v;
       }
       setEdgeColorsWithTracking(colors);
     });
@@ -1717,7 +2369,10 @@ async function main(): Promise<void> {
     let config: Record<string, unknown>;
     try {
       const resp = await fetch("/config.json");
-      if (!resp.ok) { await loadNodes(1000); return; }
+      if (!resp.ok) {
+        await loadNodes(1000);
+        return;
+      }
       config = await resp.json();
       console.log("Loaded config.json");
     } catch {
@@ -1743,7 +2398,9 @@ async function main(): Promise<void> {
     const ef = config.edgeFlow as Record<string, unknown> | undefined;
 
     // Generator
-    if (g?.branching != null) F["branch"]?.setValue(Number(g.branching));
+    if (g?.branching !== undefined && g?.branching !== null) {
+      F["branch"]?.setValue(Number(g.branching));
+    }
 
     // Algorithm
     if (f?.algorithm) {
@@ -1759,75 +2416,210 @@ async function main(): Promise<void> {
     const fc: Record<string, unknown> = {};
 
     // Common forces
-    if (f?.repulsion != null) { fc.repulsionStrength = -Math.abs(Number(f.repulsion)); F["rep"]?.setValue(Math.abs(Number(f.repulsion))); }
-    if (f?.springStrength != null) { fc.springStrength = Number(f.springStrength); F["spring"]?.setValue(Number(f.springStrength)); }
-    if (f?.linkDistance != null) { fc.springLength = Number(f.linkDistance); F["length"]?.setValue(Number(f.linkDistance)); }
-    if (f?.centerGravity != null) { fc.centerStrength = Number(f.centerGravity); F["gravity"]?.setValue(Number(f.centerGravity)); }
-    if (f?.damping != null) { fc.velocityDecay = Number(f.damping); F["damping"]?.setValue(Number(f.damping)); }
-    if (f?.theta != null) { fc.theta = Number(f.theta); F["theta"]?.setValue(Number(f.theta)); }
-    if (f?.maxVelocity != null) { fc.maxVelocity = Number(f.maxVelocity); F["maxvel"]?.setValue(Number(f.maxVelocity)); }
-    if (f?.pinRootNode != null) { fc.pinnedNode = f.pinRootNode ? 0 : 0xFFFFFFFF; T["pinRoot"]?.set(Boolean(f.pinRootNode)); }
+    if (f?.repulsion !== undefined && f?.repulsion !== null) {
+      fc.repulsionStrength = -Math.abs(Number(f.repulsion));
+      F["rep"]?.setValue(Math.abs(Number(f.repulsion)));
+    }
+    if (f?.springStrength !== undefined && f?.springStrength !== null) {
+      fc.springStrength = Number(f.springStrength);
+      F["spring"]?.setValue(Number(f.springStrength));
+    }
+    if (f?.linkDistance !== undefined && f?.linkDistance !== null) {
+      fc.springLength = Number(f.linkDistance);
+      F["length"]?.setValue(Number(f.linkDistance));
+    }
+    if (f?.centerGravity !== undefined && f?.centerGravity !== null) {
+      fc.centerStrength = Number(f.centerGravity);
+      F["gravity"]?.setValue(Number(f.centerGravity));
+    }
+    if (f?.damping !== undefined && f?.damping !== null) {
+      fc.velocityDecay = Number(f.damping);
+      F["damping"]?.setValue(Number(f.damping));
+    }
+    if (f?.theta !== undefined && f?.theta !== null) {
+      fc.theta = Number(f.theta);
+      F["theta"]?.setValue(Number(f.theta));
+    }
+    if (f?.maxVelocity !== undefined && f?.maxVelocity !== null) {
+      fc.maxVelocity = Number(f.maxVelocity);
+      F["maxvel"]?.setValue(Number(f.maxVelocity));
+    }
+    if (f?.pinRootNode !== undefined && f?.pinRootNode !== null) {
+      fc.pinnedNode = f.pinRootNode ? 0 : 0xFFFFFFFF;
+      T["pinRoot"]?.set(Boolean(f.pinRootNode));
+    }
 
     // Relativity Atlas
     if (ra) {
-      if (ra.baseMass != null) { fc.relativityBaseMass = Number(ra.baseMass); F["ra-baseMass"]?.setValue(Number(ra.baseMass)); }
-      if (ra.childFactor != null) { fc.relativityChildMassFactor = Number(ra.childFactor); F["ra-childFactor"]?.setValue(Number(ra.childFactor)); }
-      if (ra.massExponent != null) { fc.relativityMassExponent = Number(ra.massExponent); F["ra-massExp"]?.setValue(Number(ra.massExponent)); }
-      if (ra.maxSiblings != null) { fc.relativityMaxSiblings = Number(ra.maxSiblings); F["ra-maxSib"]?.setValue(Number(ra.maxSiblings)); }
-      if (ra.parentChildMult != null) { fc.relativityParentChildMultiplier = Number(ra.parentChildMult); F["ra-parentChild"]?.setValue(Number(ra.parentChildMult)); }
-      if (ra.densityRepulsion != null) { fc.relativityDensityRepulsion = Number(ra.densityRepulsion); F["ra-density"]?.setValue(Number(ra.densityRepulsion)); }
-      if (ra.orbitStrength != null) { fc.relativityOrbitStrength = Number(ra.orbitStrength); F["ra-orbit"]?.setValue(Number(ra.orbitStrength)); }
-      if (ra.tangentialMultiplier != null) { fc.relativityTangentialMultiplier = Number(ra.tangentialMultiplier); F["ra-tang"]?.setValue(Number(ra.tangentialMultiplier)); }
-      if (ra.orbitRadius != null) { fc.relativityOrbitRadius = Number(ra.orbitRadius); F["ra-orbitRad"]?.setValue(Number(ra.orbitRadius)); }
-      if (ra.cousinRepulsion != null) { fc.relativityCousinRepulsion = Boolean(ra.cousinRepulsion); T["ra-cousin"]?.set(Boolean(ra.cousinRepulsion)); }
-      if (ra.phantomZone != null) { fc.relativityPhantomZone = Boolean(ra.phantomZone); T["ra-phantom"]?.set(Boolean(ra.phantomZone)); }
+      if (ra.baseMass !== undefined && ra.baseMass !== null) {
+        fc.relativityBaseMass = Number(ra.baseMass);
+        F["ra-baseMass"]?.setValue(Number(ra.baseMass));
+      }
+      if (ra.childFactor !== undefined && ra.childFactor !== null) {
+        fc.relativityChildMassFactor = Number(ra.childFactor);
+        F["ra-childFactor"]?.setValue(Number(ra.childFactor));
+      }
+      if (ra.massExponent !== undefined && ra.massExponent !== null) {
+        fc.relativityMassExponent = Number(ra.massExponent);
+        F["ra-massExp"]?.setValue(Number(ra.massExponent));
+      }
+      if (ra.maxSiblings !== undefined && ra.maxSiblings !== null) {
+        fc.relativityMaxSiblings = Number(ra.maxSiblings);
+        F["ra-maxSib"]?.setValue(Number(ra.maxSiblings));
+      }
+      if (ra.parentChildMult !== undefined && ra.parentChildMult !== null) {
+        fc.relativityParentChildMultiplier = Number(ra.parentChildMult);
+        F["ra-parentChild"]?.setValue(Number(ra.parentChildMult));
+      }
+      if (ra.densityRepulsion !== undefined && ra.densityRepulsion !== null) {
+        fc.relativityDensityRepulsion = Number(ra.densityRepulsion);
+        F["ra-density"]?.setValue(Number(ra.densityRepulsion));
+      }
+      if (ra.orbitStrength !== undefined && ra.orbitStrength !== null) {
+        fc.relativityOrbitStrength = Number(ra.orbitStrength);
+        F["ra-orbit"]?.setValue(Number(ra.orbitStrength));
+      }
+      if (ra.tangentialMultiplier !== undefined && ra.tangentialMultiplier !== null) {
+        fc.relativityTangentialMultiplier = Number(ra.tangentialMultiplier);
+        F["ra-tang"]?.setValue(Number(ra.tangentialMultiplier));
+      }
+      if (ra.orbitRadius !== undefined && ra.orbitRadius !== null) {
+        fc.relativityOrbitRadius = Number(ra.orbitRadius);
+        F["ra-orbitRad"]?.setValue(Number(ra.orbitRadius));
+      }
+      if (ra.cousinRepulsion !== undefined && ra.cousinRepulsion !== null) {
+        fc.relativityCousinRepulsion = Boolean(ra.cousinRepulsion);
+        T["ra-cousin"]?.set(Boolean(ra.cousinRepulsion));
+      }
+      if (ra.phantomZone !== undefined && ra.phantomZone !== null) {
+        fc.relativityPhantomZone = Boolean(ra.phantomZone);
+        T["ra-phantom"]?.set(Boolean(ra.phantomZone));
+      }
       // Bubble mode
-      if (ra.bubbleMode != null) { fc.relativityBubbleMode = Boolean(ra.bubbleMode); T["ra-bubble"]?.set(Boolean(ra.bubbleMode)); }
-      if (ra.bubbleBaseRadius != null) { fc.relativityBubbleBaseRadius = Number(ra.bubbleBaseRadius); F["ra-bubbleRad"]?.setValue(Number(ra.bubbleBaseRadius)); }
-      if (ra.bubblePadding != null) { fc.relativityBubblePadding = Number(ra.bubblePadding); F["ra-bubblePad"]?.setValue(Number(ra.bubblePadding)); }
-      if (ra.depthDecay != null) { fc.relativityDepthDecay = Number(ra.depthDecay); F["ra-depthDecay"]?.setValue(Number(ra.depthDecay)); }
-      if (ra.bubbleOrbitScale != null) { fc.relativityBubbleOrbitScale = Number(ra.bubbleOrbitScale); F["ra-bubbleOrbit"]?.setValue(Number(ra.bubbleOrbitScale)); }
+      if (ra.bubbleMode !== undefined && ra.bubbleMode !== null) {
+        fc.relativityBubbleMode = Boolean(ra.bubbleMode);
+        T["ra-bubble"]?.set(Boolean(ra.bubbleMode));
+      }
+      if (ra.bubbleBaseRadius !== undefined && ra.bubbleBaseRadius !== null) {
+        fc.relativityBubbleBaseRadius = Number(ra.bubbleBaseRadius);
+        F["ra-bubbleRad"]?.setValue(Number(ra.bubbleBaseRadius));
+      }
+      if (ra.bubblePadding !== undefined && ra.bubblePadding !== null) {
+        fc.relativityBubblePadding = Number(ra.bubblePadding);
+        F["ra-bubblePad"]?.setValue(Number(ra.bubblePadding));
+      }
+      if (ra.depthDecay !== undefined && ra.depthDecay !== null) {
+        fc.relativityDepthDecay = Number(ra.depthDecay);
+        F["ra-depthDecay"]?.setValue(Number(ra.depthDecay));
+      }
+      if (ra.bubbleOrbitScale !== undefined && ra.bubbleOrbitScale !== null) {
+        fc.relativityBubbleOrbitScale = Number(ra.bubbleOrbitScale);
+        F["ra-bubbleOrbit"]?.setValue(Number(ra.bubbleOrbitScale));
+      }
     }
 
     // LinLog
     if (ll) {
-      if (ll.scaling != null) { fc.linlogScaling = Number(ll.scaling); F["ll-scaling"]?.setValue(Number(ll.scaling)); }
-      if (ll.gravity != null) { fc.linlogGravity = Number(ll.gravity); F["ll-gravity"]?.setValue(Number(ll.gravity)); }
-      if (ll.edgeWeightInfluence != null) { fc.linlogEdgeWeightInfluence = Number(ll.edgeWeightInfluence); F["ll-weight"]?.setValue(Number(ll.edgeWeightInfluence)); }
-      if (ll.strongGravity != null) { fc.linlogStrongGravity = Boolean(ll.strongGravity); T["ll-strong"]?.set(Boolean(ll.strongGravity)); }
+      if (ll.scaling !== undefined && ll.scaling !== null) {
+        fc.linlogScaling = Number(ll.scaling);
+        F["ll-scaling"]?.setValue(Number(ll.scaling));
+      }
+      if (ll.gravity !== undefined && ll.gravity !== null) {
+        fc.linlogGravity = Number(ll.gravity);
+        F["ll-gravity"]?.setValue(Number(ll.gravity));
+      }
+      if (ll.edgeWeightInfluence !== undefined && ll.edgeWeightInfluence !== null) {
+        fc.linlogEdgeWeightInfluence = Number(ll.edgeWeightInfluence);
+        F["ll-weight"]?.setValue(Number(ll.edgeWeightInfluence));
+      }
+      if (ll.strongGravity !== undefined && ll.strongGravity !== null) {
+        fc.linlogStrongGravity = Boolean(ll.strongGravity);
+        T["ll-strong"]?.set(Boolean(ll.strongGravity));
+      }
     }
 
     // t-FDP
     if (tfdp) {
-      if (tfdp.gamma != null) { fc.tFdpGamma = Number(tfdp.gamma); F["tfdp-gamma"]?.setValue(Number(tfdp.gamma)); }
-      if (tfdp.repulsionScale != null) { fc.tFdpRepulsionScale = Number(tfdp.repulsionScale); F["tfdp-rep"]?.setValue(Number(tfdp.repulsionScale)); }
-      if (tfdp.alpha != null) { fc.tFdpAlpha = Number(tfdp.alpha); F["tfdp-alpha"]?.setValue(Number(tfdp.alpha)); }
-      if (tfdp.beta != null) { fc.tFdpBeta = Number(tfdp.beta); F["tfdp-beta"]?.setValue(Number(tfdp.beta)); }
+      if (tfdp.gamma !== undefined && tfdp.gamma !== null) {
+        fc.tFdpGamma = Number(tfdp.gamma);
+        F["tfdp-gamma"]?.setValue(Number(tfdp.gamma));
+      }
+      if (tfdp.repulsionScale !== undefined && tfdp.repulsionScale !== null) {
+        fc.tFdpRepulsionScale = Number(tfdp.repulsionScale);
+        F["tfdp-rep"]?.setValue(Number(tfdp.repulsionScale));
+      }
+      if (tfdp.alpha !== undefined && tfdp.alpha !== null) {
+        fc.tFdpAlpha = Number(tfdp.alpha);
+        F["tfdp-alpha"]?.setValue(Number(tfdp.alpha));
+      }
+      if (tfdp.beta !== undefined && tfdp.beta !== null) {
+        fc.tFdpBeta = Number(tfdp.beta);
+        F["tfdp-beta"]?.setValue(Number(tfdp.beta));
+      }
     }
 
     // Tidy Tree
     if (tt) {
-      if (tt.levelSeparation != null) { fc.tidyTreeLevelSeparation = Number(tt.levelSeparation); F["tt-levelSep"]?.setValue(Number(tt.levelSeparation)); }
-      if (tt.siblingSeparation != null) { fc.tidyTreeSiblingSeparation = Number(tt.siblingSeparation); F["tt-sibSep"]?.setValue(Number(tt.siblingSeparation)); }
-      if (tt.subtreeSeparation != null) { fc.tidyTreeSubtreeSeparation = Number(tt.subtreeSeparation); F["tt-subSep"]?.setValue(Number(tt.subtreeSeparation)); }
-      if (tt.stiffness != null) { fc.tidyTreeStiffness = Number(tt.stiffness); F["tt-stiff"]?.setValue(Number(tt.stiffness)); }
-      if (tt.damping != null) { fc.tidyTreeDamping = Number(tt.damping); F["tt-damp"]?.setValue(Number(tt.damping)); }
-      if (tt.coordMode != null) { fc.tidyTreeRadial = String(tt.coordMode) === "radial"; T["tt-radial"]?.set(String(tt.coordMode) === "radial"); }
+      if (tt.levelSeparation !== undefined && tt.levelSeparation !== null) {
+        fc.tidyTreeLevelSeparation = Number(tt.levelSeparation);
+        F["tt-levelSep"]?.setValue(Number(tt.levelSeparation));
+      }
+      if (tt.siblingSeparation !== undefined && tt.siblingSeparation !== null) {
+        fc.tidyTreeSiblingSeparation = Number(tt.siblingSeparation);
+        F["tt-sibSep"]?.setValue(Number(tt.siblingSeparation));
+      }
+      if (tt.subtreeSeparation !== undefined && tt.subtreeSeparation !== null) {
+        fc.tidyTreeSubtreeSeparation = Number(tt.subtreeSeparation);
+        F["tt-subSep"]?.setValue(Number(tt.subtreeSeparation));
+      }
+      if (tt.stiffness !== undefined && tt.stiffness !== null) {
+        fc.tidyTreeStiffness = Number(tt.stiffness);
+        F["tt-stiff"]?.setValue(Number(tt.stiffness));
+      }
+      if (tt.damping !== undefined && tt.damping !== null) {
+        fc.tidyTreeDamping = Number(tt.damping);
+        F["tt-damp"]?.setValue(Number(tt.damping));
+      }
+      if (tt.coordMode !== undefined && tt.coordMode !== null) {
+        fc.tidyTreeRadial = String(tt.coordMode) === "radial";
+        T["tt-radial"]?.set(String(tt.coordMode) === "radial");
+      }
     }
 
     // Community
     if (comm) {
-      if (comm.resolution != null) { fc.communityResolution = Number(comm.resolution); F["comm-res"]?.setValue(Number(comm.resolution)); }
-      if (comm.spacing != null) { fc.communitySpacing = Number(comm.spacing); F["comm-space"]?.setValue(Number(comm.spacing)); }
-      if (comm.nodeSpacing != null) { fc.communityNodeSpacing = Number(comm.nodeSpacing); F["comm-nodeSpace"]?.setValue(Number(comm.nodeSpacing)); }
-      if (comm.spreadFactor != null) { fc.communitySpreadFactor = Number(comm.spreadFactor); F["comm-spread"]?.setValue(Number(comm.spreadFactor)); }
+      if (comm.resolution !== undefined && comm.resolution !== null) {
+        fc.communityResolution = Number(comm.resolution);
+        F["comm-res"]?.setValue(Number(comm.resolution));
+      }
+      if (comm.spacing !== undefined && comm.spacing !== null) {
+        fc.communitySpacing = Number(comm.spacing);
+        F["comm-space"]?.setValue(Number(comm.spacing));
+      }
+      if (comm.nodeSpacing !== undefined && comm.nodeSpacing !== null) {
+        fc.communityNodeSpacing = Number(comm.nodeSpacing);
+        F["comm-nodeSpace"]?.setValue(Number(comm.nodeSpacing));
+      }
+      if (comm.spreadFactor !== undefined && comm.spreadFactor !== null) {
+        fc.communitySpreadFactor = Number(comm.spreadFactor);
+        F["comm-spread"]?.setValue(Number(comm.spreadFactor));
+      }
     }
 
     // Codebase
     if (cb) {
-      if (cb.directoryPadding != null) { fc.codebaseDirectoryPadding = Number(cb.directoryPadding); F["cb-dirPad"]?.setValue(Number(cb.directoryPadding)); }
-      if (cb.filePadding != null) { fc.codebaseFilePadding = Number(cb.filePadding); F["cb-filePad"]?.setValue(Number(cb.filePadding)); }
-      if (cb.spreadFactor != null) { fc.codebaseSpreadFactor = Number(cb.spreadFactor); F["cb-spread"]?.setValue(Number(cb.spreadFactor)); }
+      if (cb.directoryPadding !== undefined && cb.directoryPadding !== null) {
+        fc.codebaseDirectoryPadding = Number(cb.directoryPadding);
+        F["cb-dirPad"]?.setValue(Number(cb.directoryPadding));
+      }
+      if (cb.filePadding !== undefined && cb.filePadding !== null) {
+        fc.codebaseFilePadding = Number(cb.filePadding);
+        F["cb-filePad"]?.setValue(Number(cb.filePadding));
+      }
+      if (cb.spreadFactor !== undefined && cb.spreadFactor !== null) {
+        fc.codebaseSpreadFactor = Number(cb.spreadFactor);
+        F["cb-spread"]?.setValue(Number(cb.spreadFactor));
+      }
     }
 
     // Apply all force config
@@ -1856,9 +2648,15 @@ async function main(): Promise<void> {
     if (hm) {
       if (hm.colorScale) D["hm-scale"]?.set(String(hm.colorScale));
       if (hm.dataSource) D["hm-source"]?.set(String(hm.dataSource));
-      if (hm.radius != null) F["hm-radius"]?.setValue(Number(hm.radius));
-      if (hm.intensity != null) F["hm-intensity"]?.setValue(Number(hm.intensity));
-      if (hm.opacity != null) F["hm-opacity"]?.setValue(Number(hm.opacity));
+      if (hm.radius !== undefined && hm.radius !== null) {
+        F["hm-radius"]?.setValue(Number(hm.radius));
+      }
+      if (hm.intensity !== undefined && hm.intensity !== null) {
+        F["hm-intensity"]?.setValue(Number(hm.intensity));
+      }
+      if (hm.opacity !== undefined && hm.opacity !== null) {
+        F["hm-opacity"]?.setValue(Number(hm.opacity));
+      }
       T["heatmap"]?.set(Boolean(hm.enabled));
       if (hm.enabled) {
         state.graph?.enableHeatmap({
@@ -1872,10 +2670,16 @@ async function main(): Promise<void> {
 
     // Contours
     if (ct) {
-      if (ct.strokeWidth != null) F["ct-width"]?.setValue(Number(ct.strokeWidth));
+      if (ct.strokeWidth !== undefined && ct.strokeWidth !== null) {
+        F["ct-width"]?.setValue(Number(ct.strokeWidth));
+      }
       if (ct.strokeColor) C["ct-color"]?.set(String(ct.strokeColor));
-      if (ct.thresholdCount != null) F["ct-thresh"]?.setValue(Number(ct.thresholdCount));
-      if (ct.minThreshold != null) F["ct-min"]?.setValue(Number(ct.minThreshold));
+      if (ct.thresholdCount !== undefined && ct.thresholdCount !== null) {
+        F["ct-thresh"]?.setValue(Number(ct.thresholdCount));
+      }
+      if (ct.minThreshold !== undefined && ct.minThreshold !== null) {
+        F["ct-min"]?.setValue(Number(ct.minThreshold));
+      }
       T["contours"]?.set(Boolean(ct.enabled));
       if (ct.enabled) {
         const count = Number(ct.thresholdCount ?? 4);
@@ -1890,8 +2694,12 @@ async function main(): Promise<void> {
 
     // Metaballs
     if (mb) {
-      if (mb.threshold != null) F["mb-thresh"]?.setValue(Number(mb.threshold));
-      if (mb.opacity != null) F["mb-opacity"]?.setValue(Number(mb.opacity));
+      if (mb.threshold !== undefined && mb.threshold !== null) {
+        F["mb-thresh"]?.setValue(Number(mb.threshold));
+      }
+      if (mb.opacity !== undefined && mb.opacity !== null) {
+        F["mb-opacity"]?.setValue(Number(mb.opacity));
+      }
       if (mb.fillColor) C["mb-color"]?.set(String(mb.fillColor));
       T["metaballs"]?.set(Boolean(mb.enabled));
       if (mb.enabled) {
@@ -1905,9 +2713,13 @@ async function main(): Promise<void> {
 
     // Labels
     if (lb) {
-      if (lb.fontSize != null) F["lb-size"]?.setValue(Number(lb.fontSize));
+      if (lb.fontSize !== undefined && lb.fontSize !== null) {
+        F["lb-size"]?.setValue(Number(lb.fontSize));
+      }
       if (lb.textColor) C["lb-color"]?.set(String(lb.textColor));
-      if (lb.maxLabels != null) F["lb-max"]?.setValue(Number(lb.maxLabels));
+      if (lb.maxLabels !== undefined && lb.maxLabels !== null) {
+        F["lb-max"]?.setValue(Number(lb.maxLabels));
+      }
       T["labels"]?.set(Boolean(lb.enabled));
       if (lb.enabled) {
         await state.graph?.enableLabels({
@@ -1920,27 +2732,51 @@ async function main(): Promise<void> {
 
     // Node style
     if (ns) {
-      if (ns.sizeScale != null) F["node-sizeScale"]?.setValue(Number(ns.sizeScale));
+      if (ns.sizeScale !== undefined && ns.sizeScale !== null) {
+        F["node-sizeScale"]?.setValue(Number(ns.sizeScale));
+      }
       const borders = ns.borders as Record<string, unknown> | undefined;
       if (borders) {
-        if (borders.width != null) F["br-width"]?.setValue(Number(borders.width));
+        if (borders.width !== undefined && borders.width !== null) {
+          F["br-width"]?.setValue(Number(borders.width));
+        }
         if (borders.color) C["br-color"]?.set(String(borders.color));
         T["borders"]?.set(Boolean(borders.enabled));
-        if (borders.enabled) state.graph?.enableNodeBorder(Number(borders.width ?? 2), String(borders.color ?? "#000000"));
+        if (borders.enabled) {
+          state.graph?.enableNodeBorder(
+            Number(borders.width ?? 2),
+            String(borders.color ?? "#000000"),
+          );
+        }
       }
     }
 
     // Edge style
     if (es) {
-      if (es.opacity != null) F["edge-opacity"]?.setValue(Number(es.opacity));
-      if (es.widthScale != null) F["edge-widthScale"]?.setValue(Number(es.widthScale));
+      if (es.opacity !== undefined && es.opacity !== null) {
+        F["edge-opacity"]?.setValue(Number(es.opacity));
+      }
+      if (es.widthScale !== undefined && es.widthScale !== null) {
+        F["edge-widthScale"]?.setValue(Number(es.widthScale));
+      }
       const curved = es.curved as Record<string, unknown> | undefined;
       if (curved) {
-        if (curved.segments != null) F["cv-segs"]?.setValue(Number(curved.segments));
-        if (curved.weight != null) F["cv-weight"]?.setValue(Number(curved.weight));
-        if (curved.curvature != null) F["cv-curv"]?.setValue(Number(curved.curvature));
+        if (curved.segments !== undefined && curved.segments !== null) {
+          F["cv-segs"]?.setValue(Number(curved.segments));
+        }
+        if (curved.weight !== undefined && curved.weight !== null) {
+          F["cv-weight"]?.setValue(Number(curved.weight));
+        }
+        if (curved.curvature !== undefined && curved.curvature !== null) {
+          F["cv-curv"]?.setValue(Number(curved.curvature));
+        }
         T["curves"]?.set(Boolean(curved.enabled));
-        if (curved.enabled) state.graph?.enableCurvedEdges(Number(curved.segments ?? 19), Number(curved.weight ?? 0.8));
+        if (curved.enabled) {
+          state.graph?.enableCurvedEdges(
+            Number(curved.segments ?? 19),
+            Number(curved.weight ?? 0.8),
+          );
+        }
       }
     }
 
@@ -1949,20 +2785,32 @@ async function main(): Promise<void> {
       const l1 = ef.layer1 as Record<string, unknown> | undefined;
       const l2 = ef.layer2 as Record<string, unknown> | undefined;
       if (l1) {
-        if (l1.speed != null) F["f1-speed"]?.setValue(Number(l1.speed));
-        if (l1.pulseWidth != null) F["f1-width"]?.setValue(Number(l1.pulseWidth));
-        if (l1.pulseCount != null) F["f1-count"]?.setValue(Number(l1.pulseCount));
-        if (l1.brightness != null) F["f1-bright"]?.setValue(Number(l1.brightness));
-        if (l1.fade != null) F["f1-fade"]?.setValue(Number(l1.fade));
+        if (l1.speed !== undefined && l1.speed !== null) F["f1-speed"]?.setValue(Number(l1.speed));
+        if (l1.pulseWidth !== undefined && l1.pulseWidth !== null) {
+          F["f1-width"]?.setValue(Number(l1.pulseWidth));
+        }
+        if (l1.pulseCount !== undefined && l1.pulseCount !== null) {
+          F["f1-count"]?.setValue(Number(l1.pulseCount));
+        }
+        if (l1.brightness !== undefined && l1.brightness !== null) {
+          F["f1-bright"]?.setValue(Number(l1.brightness));
+        }
+        if (l1.fade !== undefined && l1.fade !== null) F["f1-fade"]?.setValue(Number(l1.fade));
         if (l1.waveShape) D["f1-wave"]?.set(String(l1.waveShape));
         if (l1.color) C["f1-color"]?.set(String(l1.color));
       }
       if (l2) {
-        if (l2.speed != null) F["f2-speed"]?.setValue(Number(l2.speed));
-        if (l2.pulseWidth != null) F["f2-width"]?.setValue(Number(l2.pulseWidth));
-        if (l2.pulseCount != null) F["f2-count"]?.setValue(Number(l2.pulseCount));
-        if (l2.brightness != null) F["f2-bright"]?.setValue(Number(l2.brightness));
-        if (l2.fade != null) F["f2-fade"]?.setValue(Number(l2.fade));
+        if (l2.speed !== undefined && l2.speed !== null) F["f2-speed"]?.setValue(Number(l2.speed));
+        if (l2.pulseWidth !== undefined && l2.pulseWidth !== null) {
+          F["f2-width"]?.setValue(Number(l2.pulseWidth));
+        }
+        if (l2.pulseCount !== undefined && l2.pulseCount !== null) {
+          F["f2-count"]?.setValue(Number(l2.pulseCount));
+        }
+        if (l2.brightness !== undefined && l2.brightness !== null) {
+          F["f2-bright"]?.setValue(Number(l2.brightness));
+        }
+        if (l2.fade !== undefined && l2.fade !== null) F["f2-fade"]?.setValue(Number(l2.fade));
         if (l2.waveShape) D["f2-wave"]?.set(String(l2.waveShape));
         if (l2.color) C["f2-color"]?.set(String(l2.color));
         T["f2-on"]?.set(Boolean(l2.enabled));
@@ -1972,18 +2820,26 @@ async function main(): Promise<void> {
         state.graph?.setEdgeFlowConfig({
           layer1: {
             enabled: true,
-            speed: Number(l1.speed ?? 0.3), pulseWidth: Number(l1.pulseWidth ?? 0.1),
-            pulseCount: Number(l1.pulseCount ?? 3), brightness: Number(l1.brightness ?? 2),
-            fade: Number(l1.fade ?? 0.3), waveShape: String(l1.waveShape ?? "sine") as "sine",
+            speed: Number(l1.speed ?? 0.3),
+            pulseWidth: Number(l1.pulseWidth ?? 0.1),
+            pulseCount: Number(l1.pulseCount ?? 3),
+            brightness: Number(l1.brightness ?? 2),
+            fade: Number(l1.fade ?? 0.3),
+            waveShape: String(l1.waveShape ?? "sine") as "sine",
             color: l1.useEdgeColor ? null : hexToRgba(String(l1.color ?? "#00ffff")),
           },
-          layer2: l2 ? {
-            enabled: Boolean(l2.enabled),
-            speed: Number(l2.speed ?? 0.5), pulseWidth: Number(l2.pulseWidth ?? 0.05),
-            pulseCount: Number(l2.pulseCount ?? 6), brightness: Number(l2.brightness ?? 1.5),
-            fade: Number(l2.fade ?? 0.2), waveShape: String(l2.waveShape ?? "square") as "sine",
-            color: l2.useEdgeColor ? null : hexToRgba(String(l2.color ?? "#ff6b6b")),
-          } : undefined,
+          layer2: l2
+            ? {
+              enabled: Boolean(l2.enabled),
+              speed: Number(l2.speed ?? 0.5),
+              pulseWidth: Number(l2.pulseWidth ?? 0.05),
+              pulseCount: Number(l2.pulseCount ?? 6),
+              brightness: Number(l2.brightness ?? 1.5),
+              fade: Number(l2.fade ?? 0.2),
+              waveShape: String(l2.waveShape ?? "square") as "sine",
+              color: l2.useEdgeColor ? null : hexToRgba(String(l2.color ?? "#ff6b6b")),
+            }
+            : undefined,
         });
       }
     }
@@ -1995,7 +2851,9 @@ async function main(): Promise<void> {
         if (alg === "tidy-tree") state.graph?.computeTreeLayout();
         else if (alg === "community") state.graph?.computeCommunityLayout();
         else if (alg === "codebase") state.graph?.computeCodebaseLayout(buildCodebaseCategories());
-      } catch (err) { console.warn("Auto-compute failed:", err); }
+      } catch (err) {
+        console.warn("Auto-compute failed:", err);
+      }
     }
 
     console.log("Config applied");
@@ -2007,9 +2865,16 @@ async function main(): Promise<void> {
 
   document.addEventListener("keydown", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    if (e.code === "Space") { e.preventDefault(); toggleDrawer(); }
-    else if (e.code === "KeyR") { e.preventDefault(); state.graph?.restartSimulation(); }
-    else if (e.code === "KeyF") { e.preventDefault(); state.graph?.fitToView(); }
+    if (e.code === "Space") {
+      e.preventDefault();
+      toggleDrawer();
+    } else if (e.code === "KeyR") {
+      e.preventDefault();
+      state.graph?.restartSimulation();
+    } else if (e.code === "KeyF") {
+      e.preventDefault();
+      state.graph?.fitToView();
+    }
   });
 
   // ========================================================================

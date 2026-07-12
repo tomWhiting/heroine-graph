@@ -56,10 +56,30 @@ struct SiblingUniforms {
 // Well radii (bubble mode: subtree-based collision boundaries)
 @group(0) @binding(8) var<storage, read> well_radius: array<f32>;
 
+// Node state flags (bit 0 = dead slot from removal)
+@group(0) @binding(9) var<storage, read> node_flags: array<u32>;
+
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
-// Cap on cousin iterations to prevent runaway loops in wide hierarchies
+const NODE_FLAG_DEAD: u32 = 1u;
+// Budget on cousin force computations to prevent runaway loops in wide
+// hierarchies. Group selection (see sibling_group_count) keeps the expected
+// number of selected cousins at or below this, so the cap rarely binds.
 const MAX_COUSIN_ITERATIONS: u32 = 64u;
+
+// Number of modulo-groups for a truncated interaction list.
+//
+// When a list exceeds the interaction cap, nodes interact only with members
+// of their own modulo-group (slot_index % group_count). Because
+// `i % G == j % G` is symmetric in (i, j) and both endpoints derive the same
+// G from the same shared list, pairwise visibility is MUTUAL — Newton's
+// third law holds for every computed pair and truncation injects no net
+// momentum. The old head-prefix cap pushed late-listed children without any
+// recoil on the early-listed ones, driving persistent directional drift in
+// large sibling groups.
+fn sibling_group_count(list_len: u32, cap: u32) -> u32 {
+    return max((list_len + cap - 1u) / max(cap, 1u), 1u);
+}
 
 // Compute repulsive force between two nodes.
 // Linear (1/r) repulsion like ForceAtlas2 — maintains force at medium distance
@@ -181,6 +201,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
+    // Dead slots (holes from removals) neither receive nor exert forces.
+    // CSR data should never reference dead slots, but the receiver check
+    // also skips all their list scans.
+    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+        return;
+    }
+
     let pos = positions[node_idx];
     let mass_i = max(node_mass[node_idx], 1.0);
 
@@ -231,14 +258,24 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         // -- B: Sibling repulsion with tangential amplification --
-        // CRITICAL: Limit loop iterations to prevent infinite loops
-        let max_iterations = min(num_siblings, uniforms.max_siblings);
+        // Symmetric truncation: when the list exceeds max_siblings, interact
+        // only within this node's modulo-group (mutual by construction — see
+        // sibling_group_count). Expected force computations ~= max_siblings;
+        // the scan itself is bounded by the sibling list length.
+        let sib_groups = sibling_group_count(num_siblings, uniforms.max_siblings);
 
-        for (var s = sibling_start; s < sibling_start + max_iterations; s++) {
+        for (var s = sibling_start; s < sibling_end; s++) {
             let sibling_idx = csr_targets[s];
 
-            // Skip self and invalid indices
+            // Skip self, invalid indices, and dead slots
             if (sibling_idx == node_idx || sibling_idx >= uniforms.node_count) {
+                continue;
+            }
+            if ((node_flags[sibling_idx] & NODE_FLAG_DEAD) != 0u) {
+                continue;
+            }
+            // Modulo-group membership (always true when sib_groups == 1)
+            if (sib_groups > 1u && (sibling_idx % sib_groups) != (node_idx % sib_groups)) {
                 continue;
             }
 
@@ -274,9 +311,22 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 // Uncle/aunt = other children of grandparent (excluding our parent)
                 let uncle_start = csr_offsets[grandparent_idx];
                 let uncle_end = csr_offsets[grandparent_idx + 1u];
-                let max_uncles = min(uncle_end - uncle_start, uniforms.max_siblings);
 
-                for (var u = uncle_start; u < uncle_start + max_uncles; u++) {
+                // Symmetric cousin truncation: both members of a cousin pair
+                // share this grandparent, so both derive the SAME group count
+                // from its total grandchild count — modulo-group membership
+                // is mutual exactly as for siblings. (Offsets-only pre-scan.)
+                var grandchild_count = 0u;
+                for (var u = uncle_start; u < uncle_end; u++) {
+                    let uncle_idx = csr_targets[u];
+                    if (uncle_idx >= uniforms.node_count) {
+                        continue;
+                    }
+                    grandchild_count += csr_offsets[uncle_idx + 1u] - csr_offsets[uncle_idx];
+                }
+                let cousin_groups = sibling_group_count(grandchild_count, MAX_COUSIN_ITERATIONS);
+
+                for (var u = uncle_start; u < uncle_end; u++) {
                     let uncle_idx = csr_targets[u];
 
                     // Skip our own parent (we already handled siblings above)
@@ -287,9 +337,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     // Cousins = children of uncle/aunt
                     let cousin_start_idx = csr_offsets[uncle_idx];
                     let cousin_end_idx = csr_offsets[uncle_idx + 1u];
-                    let max_cousins = min(cousin_end_idx - cousin_start_idx, uniforms.max_siblings);
 
-                    for (var c = cousin_start_idx; c < cousin_start_idx + max_cousins; c++) {
+                    for (var c = cousin_start_idx; c < cousin_end_idx; c++) {
+                        // Hard budget backstop; group selection keeps the
+                        // expected selections at or below it, so exhaustion
+                        // (and its residual asymmetry) is rare.
                         if (cousin_count >= MAX_COUSIN_ITERATIONS) {
                             break;
                         }
@@ -297,6 +349,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                         let cousin_idx = csr_targets[c];
 
                         if (cousin_idx == node_idx || cousin_idx >= uniforms.node_count) {
+                            continue;
+                        }
+                        if ((node_flags[cousin_idx] & NODE_FLAG_DEAD) != 0u) {
+                            continue;
+                        }
+                        if (cousin_groups > 1u &&
+                            (cousin_idx % cousin_groups) != (node_idx % cousin_groups)) {
                             continue;
                         }
 
@@ -327,11 +386,21 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let child_start = csr_offsets[node_idx];
     let child_end = csr_offsets[node_idx + 1u];
 
-    let max_children = min(child_end - child_start, uniforms.max_siblings);
-    for (var c = child_start; c < child_start + max_children; c++) {
+    // Gather-only pass (children never reciprocate directly), so no mutuality
+    // requirement — but the sample must be unbiased: a head-prefix cap pushed
+    // the parent away from its first-listed children only. Modulo-group
+    // selection spreads the sampled children across the whole list.
+    let child_groups = sibling_group_count(child_end - child_start, uniforms.max_siblings);
+    for (var c = child_start; c < child_end; c++) {
         let child_idx = csr_targets[c];
 
         if (child_idx >= uniforms.node_count) {
+            continue;
+        }
+        if ((node_flags[child_idx] & NODE_FLAG_DEAD) != 0u) {
+            continue;
+        }
+        if (child_groups > 1u && (child_idx % child_groups) != (node_idx % child_groups)) {
             continue;
         }
 

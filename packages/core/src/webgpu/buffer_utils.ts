@@ -30,4 +30,3 @@ export function toArrayBuffer(
     typedArray.byteOffset + typedArray.byteLength,
   ) as ArrayBuffer;
 }
-

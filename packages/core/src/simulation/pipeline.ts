@@ -41,8 +41,7 @@ export function dumpSettlingTelemetry(): void {
     return;
   }
   // Print a compact table to console
-  const header = ["frame", "alpha", "damping",
-    ...SETTLING_SAMPLE_DEPTHS.map((d) => `d${d}`)];
+  const header = ["frame", "alpha", "damping", ...SETTLING_SAMPLE_DEPTHS.map((d) => `d${d}`)];
   console.log("[settling] " + header.join("\t"));
   for (const f of _settlingLog) {
     const row = [
@@ -159,6 +158,8 @@ export interface SimulationBuffers {
   velocitiesOut: GPUBuffer;
   // Force accumulators - vec2<f32> per node
   forces: GPUBuffer;
+  // Previous tick's total force - vec2<f32> per node (adaptive speed swing/traction)
+  prevForces: GPUBuffer;
   // Edge data
   edgeSources: GPUBuffer;
   edgeTargets: GPUBuffer;
@@ -445,6 +446,7 @@ export function createSimulationBindGroups(
       { binding: 5, resource: { buffer: buffers.forces } },
       { binding: 6, resource: { buffer: buffers.nodeDepth } },
       { binding: 7, resource: { buffer: buffers.nodeFlags } },
+      { binding: 8, resource: { buffer: buffers.prevForces } },
     ],
   });
 
@@ -502,6 +504,13 @@ export function createSimulationBuffers(
   // Force accumulators - vec2<f32> per node
   const forces = device.createBuffer({
     label: "Sim Forces",
+    size: nodeVec2Bytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // Previous tick's total force - vec2<f32> per node (adaptive speed)
+  const prevForces = device.createBuffer({
+    label: "Sim Prev Forces",
     size: nodeVec2Bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
@@ -577,6 +586,7 @@ export function createSimulationBuffers(
     velocities,
     velocitiesOut,
     forces,
+    prevForces,
     edgeSources,
     edgeTargets,
     clearUniforms,
@@ -601,6 +611,9 @@ export function createSimulationBuffers(
  * @param edgeCount - Number of edges
  * @param alpha - Simulation temperature (0-1)
  * @param forceConfig - Force configuration (optional, uses defaults if not provided)
+ * @param adaptiveSpeedOverride - Per-algorithm override for adaptive speed
+ *   (e.g. from ForceAlgorithm.prefersAdaptiveSpeed). When set, wins over
+ *   forceConfig.adaptiveSpeed.
  */
 export function updateSimulationUniforms(
   device: GPUDevice,
@@ -609,6 +622,7 @@ export function updateSimulationUniforms(
   edgeCount: number,
   alpha: number,
   forceConfig: FullForceConfig = DEFAULT_FORCE_CONFIG,
+  adaptiveSpeedOverride?: boolean,
 ): void {
   // ClearUniforms: { node_count: u32 }
   const clearData = new ArrayBuffer(16);
@@ -648,7 +662,8 @@ export function updateSimulationUniforms(
   //   gravity_strength: f32,   // offset 28
   //   center_x: f32,           // offset 32
   //   center_y: f32,           // offset 36
-  //   _padding: vec2<u32>,     // offset 40 (8 bytes)
+  //   pinned_node: u32,        // offset 40
+  //   adaptive_speed: f32,     // offset 44 (0 = disabled)
   // }
   // Note: velocityDecay is the fraction lost per frame, damping is fraction retained
   // damping = 1 - velocityDecay
@@ -662,18 +677,19 @@ export function updateSimulationUniforms(
 
   const intData = new ArrayBuffer(48);
   const intView = new DataView(intData);
-  intView.setUint32(0, nodeCount, true);                          // node_count
-  intView.setFloat32(4, forceConfig.timeStep, true);              // dt
-  intView.setFloat32(8, effectiveDamping, true);                  // damping (progressive)
-  intView.setFloat32(12, forceConfig.maxVelocity, true);          // max_velocity
-  intView.setFloat32(16, alpha, true);                            // alpha
-  intView.setFloat32(20, forceConfig.depthSettlingSpread, true);    // depth_settling_spread (parents settle before children)
-  intView.setFloat32(24, 0.0, true);                              // alpha_min (unused by shader — convergence managed on CPU)
-  intView.setFloat32(28, forceConfig.centerStrength, true);       // gravity_strength
-  intView.setFloat32(32, forceConfig.centerX, true);              // center_x
-  intView.setFloat32(36, forceConfig.centerY, true);              // center_y
-  intView.setUint32(40, forceConfig.pinnedNode >>> 0, true);        // pinned_node (0xFFFFFFFF = none)
-  intView.setUint32(44, 0, true);                                 // padding[1]
+  intView.setUint32(0, nodeCount, true); // node_count
+  intView.setFloat32(4, forceConfig.timeStep, true); // dt
+  intView.setFloat32(8, effectiveDamping, true); // damping (progressive)
+  intView.setFloat32(12, forceConfig.maxVelocity, true); // max_velocity
+  intView.setFloat32(16, alpha, true); // alpha
+  intView.setFloat32(20, forceConfig.depthSettlingSpread, true); // depth_settling_spread (parents settle before children)
+  intView.setFloat32(24, 0.0, true); // alpha_min (unused by shader — convergence managed on CPU)
+  intView.setFloat32(28, forceConfig.centerStrength, true); // gravity_strength
+  intView.setFloat32(32, forceConfig.centerX, true); // center_x
+  intView.setFloat32(36, forceConfig.centerY, true); // center_y
+  intView.setUint32(40, forceConfig.pinnedNode >>> 0, true); // pinned_node (0xFFFFFFFF = none)
+  const adaptiveOn = adaptiveSpeedOverride ?? forceConfig.adaptiveSpeed;
+  intView.setFloat32(44, adaptiveOn ? forceConfig.adaptiveSpeedStrength : 0, true); // adaptive_speed
   device.queue.writeBuffer(buffers.integrationUniforms, 0, intData);
 
   // Record settling telemetry
@@ -709,6 +725,7 @@ export function copyPositionsToSimulation(
   device.queue.writeBuffer(buffers.velocities, 0, toArrayBuffer(zerosVec2));
   device.queue.writeBuffer(buffers.velocitiesOut, 0, toArrayBuffer(zerosVec2));
   device.queue.writeBuffer(buffers.forces, 0, toArrayBuffer(zerosVec2));
+  device.queue.writeBuffer(buffers.prevForces, 0, toArrayBuffer(zerosVec2));
 
   // Initialize node flags to 0 (all slots live)
   const zeroFlags = new Uint32Array(nodeCount);

@@ -34,6 +34,14 @@ struct GridCollisionUniforms {
 @group(0) @binding(4) var<storage, read_write> node_next: array<u32>;
 @group(0) @binding(5) var<storage, read_write> node_cell: array<u32>;
 
+// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned).
+// Pinned nodes are inserted into cell lists (they push others away) but are
+// never displaced themselves; dead slots never enter any list.
+@group(0) @binding(6) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_PINNED: u32 = 2u;
+
 const EPSILON: f32 = 0.0001;
 const EMPTY: u32 = 0xFFFFFFFFu;
 // Safety cap for linked list traversal. With cell_size = 2 * max_radius,
@@ -62,9 +70,9 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Dead slots (negative radius sentinel) are never inserted into cell
-    // lists, so no live node ever collides with them
-    if (node_sizes[idx] < 0.0) {
+    // Dead slots (flags or negative radius sentinel) are never inserted into
+    // cell lists, so no live node ever collides with them
+    if (node_sizes[idx] < 0.0 || (node_flags[idx] & NODE_FLAG_DEAD) != 0u) {
         return;
     }
 
@@ -95,6 +103,12 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
     let node_idx = gid.x;
     if (node_idx >= uniforms.node_count) {
+        return;
+    }
+
+    // Dead slots don't exist; pinned nodes are never displaced (they are in
+    // the cell lists, so other nodes still get pushed away from them).
+    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
         return;
     }
 

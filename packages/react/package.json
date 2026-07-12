@@ -17,10 +17,21 @@
     "src"
   ],
   "scripts": {
-    "build": "bunx tsup src/index.ts --format esm --dts --clean",
-    "dev": "bunx tsup src/index.ts --format esm --dts --watch",
+    "build": "deno run -A npm:tsup@^8.3.0/tsup",
+    "dev": "deno run -A npm:tsup@^8.3.0/tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "dts": {
+      "compilerOptions": {
+        "jsx": "react-jsx",
+        "moduleResolution": "bundler"
+      }
+    },
+    "clean": true
   },
   "peerDependencies": {
     "react": ">=18.0.0",

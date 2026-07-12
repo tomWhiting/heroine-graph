@@ -11,10 +11,8 @@ declare module "*.wgsl?raw" {
 
 /** V8-specific Error.captureStackTrace */
 interface ErrorConstructor {
-  captureStackTrace?(targetObject: object, constructorOpt?: Function): void;
-}
-
-/** WebGPU timestamp query extension (not yet in base @webgpu/types) */
-interface GPUCommandEncoder {
-  writeTimestamp(querySet: GPUQuerySet, queryIndex: number): void;
+  captureStackTrace?(
+    targetObject: object,
+    constructorOpt?: ((...args: never[]) => unknown) | (new (...args: never[]) => unknown),
+  ): void;
 }

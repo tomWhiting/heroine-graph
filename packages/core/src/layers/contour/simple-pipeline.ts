@@ -38,14 +38,24 @@ export interface SimpleContourPipeline {
   pipeline: GPURenderPipeline;
   /** Bind group layout */
   bindGroupLayout: GPUBindGroupLayout;
-  /** Uniform buffer */
+  /** Default uniform buffer */
   uniformBuffer: GPUBuffer;
   /** Sampler for density texture */
   sampler: GPUSampler;
-  /** Update uniforms */
-  updateUniforms: (uniforms: SimpleContourUniforms) => void;
-  /** Create bind group */
-  createBindGroup: (densityTextureView: GPUTextureView) => GPUBindGroup;
+  /**
+   * Create an additional uniform buffer (the layer allocates one per
+   * threshold — queue.writeBuffer executes at call time while encoded
+   * passes execute at submit, so passes sharing one buffer would all
+   * sample the last write).
+   */
+  createUniformBuffer: () => GPUBuffer;
+  /** Update uniforms (targets the default buffer unless one is given) */
+  updateUniforms: (uniforms: SimpleContourUniforms, target?: GPUBuffer) => void;
+  /** Create bind group (binds the default uniform buffer unless one is given) */
+  createBindGroup: (
+    densityTextureView: GPUTextureView,
+    uniformBuffer?: GPUBuffer,
+  ) => GPUBindGroup;
   /** Destroy resources */
   destroy: () => void;
 }
@@ -78,11 +88,15 @@ export function createSimpleContourPipeline(context: GPUContext): SimpleContourP
 
   // Create uniform buffer
   // Layout: vec4 lineColor, f32 lineThickness, f32 feather, f32 threshold, f32 maxDensity
-  const uniformBuffer = device.createBuffer({
-    label: "Simple Contour Uniform Buffer",
-    size: 32, // 4 floats for color + 4 floats for params = 8 * 4 = 32 bytes
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  // COPY_SRC allows tests/diagnostics to read the uniforms back.
+  function createUniformBuffer(): GPUBuffer {
+    return device.createBuffer({
+      label: "Simple Contour Uniform Buffer",
+      size: 32, // 4 floats for color + 4 floats for params = 8 * 4 = 32 bytes
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+  }
+  const uniformBuffer = createUniformBuffer();
 
   // Create bind group layout
   const bindGroupLayout = device.createBindGroupLayout({
@@ -150,7 +164,7 @@ export function createSimpleContourPipeline(context: GPUContext): SimpleContourP
   });
 
   // Update uniforms function
-  function updateUniforms(uniforms: SimpleContourUniforms): void {
+  function updateUniforms(uniforms: SimpleContourUniforms, target?: GPUBuffer): void {
     const data = new Float32Array([
       uniforms.lineColor[0],
       uniforms.lineColor[1],
@@ -161,18 +175,21 @@ export function createSimpleContourPipeline(context: GPUContext): SimpleContourP
       uniforms.threshold,
       uniforms.maxDensity,
     ]);
-    device.queue.writeBuffer(uniformBuffer, 0, data);
+    device.queue.writeBuffer(target ?? uniformBuffer, 0, data);
   }
 
   // Create bind group function
-  function createBindGroup(densityTextureView: GPUTextureView): GPUBindGroup {
+  function createBindGroup(
+    densityTextureView: GPUTextureView,
+    targetUniformBuffer?: GPUBuffer,
+  ): GPUBindGroup {
     return device.createBindGroup({
       label: "Simple Contour Bind Group",
       layout: bindGroupLayout,
       entries: [
         { binding: 0, resource: densityTextureView },
         { binding: 1, resource: sampler },
-        { binding: 2, resource: { buffer: uniformBuffer } },
+        { binding: 2, resource: { buffer: targetUniformBuffer ?? uniformBuffer } },
       ],
     });
   }
@@ -187,6 +204,7 @@ export function createSimpleContourPipeline(context: GPUContext): SimpleContourP
     bindGroupLayout,
     uniformBuffer,
     sampler,
+    createUniformBuffer,
     updateUniforms,
     createBindGroup,
     destroy,

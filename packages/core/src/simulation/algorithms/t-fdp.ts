@@ -21,6 +21,10 @@
  * Constraint: alpha * (1 + beta) < 1 for proper force balance.
  * Paper defaults: alpha=0.1, beta=8, gamma=2.
  *
+ * All kernels operate on the normalized distance d = dist / distScale
+ * (distScale = 2 x springLength), mapping world units onto the paper's
+ * unit scale where the model equilibrates at d = O(1).
+ *
  * Handles its own springs (attraction = linear spring + attractive t-force).
  * Gravity delegated to shared integration shader.
  *
@@ -48,8 +52,7 @@ import T_FDP_ATTRACTION_WGSL from "../shaders/t_fdp_attraction.comp.wgsl";
 const T_FDP_ALGORITHM_INFO: ForceAlgorithmInfo = {
   id: "t-fdp",
   name: "t-FDP",
-  description:
-    "Bounded repulsion + attractive t-force via t-distribution kernel. " +
+  description: "Bounded repulsion + attractive t-force via t-distribution kernel. " +
     "Preserves local neighborhoods while maintaining global structure.",
   minNodes: 0,
   maxNodes: 10000,
@@ -60,6 +63,8 @@ const T_FDP_ALGORITHM_INFO: ForceAlgorithmInfo = {
  * Extended pipeline type for t-FDP (repulsion + attraction passes)
  */
 interface TFdpPipelines extends AlgorithmPipelines {
+  /** Repulsion with dead-slot masking (entry point main_masked, bindings 0-3) */
+  repulsionMasked: GPUComputePipeline;
   attraction: GPUComputePipeline;
   attractionLayout: GPUBindGroupLayout;
 }
@@ -69,6 +74,8 @@ interface TFdpPipelines extends AlgorithmPipelines {
  */
 interface TFdpBindGroups extends AlgorithmBindGroups {
   attraction: GPUBindGroup;
+  /** True when repulsion was bound with node_flags (use repulsionMasked) */
+  repulsionUsesFlags: boolean;
 }
 
 /**
@@ -115,6 +122,17 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       },
     });
 
+    // Dead-slot-masked variant: auto layout picks up binding 3 (node_flags)
+    // only for this entry point, so `repulsion` keeps its 0-2 layout.
+    const repulsionMasked = device.createComputePipeline({
+      label: "t-FDP Repulsion Pipeline (masked)",
+      layout: "auto",
+      compute: {
+        module: repulsionShader,
+        entryPoint: "main_masked",
+      },
+    });
+
     // Attraction shader module (per-edge)
     const attractionShader = device.createShaderModule({
       label: "t-FDP Attraction Shader",
@@ -144,6 +162,7 @@ export class TFdpAlgorithm implements ForceAlgorithm {
 
     const pipelines: TFdpPipelines = {
       repulsion,
+      repulsionMasked,
       attraction,
       attractionLayout,
     };
@@ -177,22 +196,31 @@ export class TFdpAlgorithm implements ForceAlgorithm {
     const buffers = algorithmBuffers as TFdpBuffers;
     const tfdpPipelines = pipelines as TFdpPipelines;
 
-    // Repulsion bind group: uniforms, positions, forces
+    // Repulsion bind group: uniforms, positions, forces (+ node_flags when
+    // the context provides them, so dead slots are skipped as both force
+    // receivers and force sources)
+    const repulsionUsesFlags = context.nodeFlags !== undefined;
+    const repulsionEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: buffers.repulsionUniformBuffer } },
+      { binding: 1, resource: { buffer: context.positions } },
+      { binding: 2, resource: { buffer: context.forces } },
+    ];
+    if (context.nodeFlags) {
+      repulsionEntries.push({ binding: 3, resource: { buffer: context.nodeFlags } });
+    }
     const repulsion = device.createBindGroup({
       label: "t-FDP Repulsion Bind Group",
-      layout: pipelines.repulsion.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: buffers.repulsionUniformBuffer } },
-        { binding: 1, resource: { buffer: context.positions } },
-        { binding: 2, resource: { buffer: context.forces } },
-      ],
+      layout: repulsionUsesFlags
+        ? tfdpPipelines.repulsionMasked.getBindGroupLayout(0)
+        : tfdpPipelines.repulsion.getBindGroupLayout(0),
+      entries: repulsionEntries,
     });
 
     // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets
     if (!context.edgeSources || !context.edgeTargets) {
       throw new Error(
         "t-FDP requires edge source/target buffers in AlgorithmRenderContext. " +
-        "Ensure graph.ts populates edgeSources and edgeTargets.",
+          "Ensure graph.ts populates edgeSources and edgeTargets.",
       );
     }
 
@@ -208,7 +236,7 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       ],
     });
 
-    const bindGroups: TFdpBindGroups = { repulsion, attraction };
+    const bindGroups: TFdpBindGroups = { repulsion, attraction, repulsionUsesFlags };
     return bindGroups;
   }
 
@@ -223,23 +251,31 @@ export class TFdpAlgorithm implements ForceAlgorithm {
     // Cache edge count for dispatch sizing in recordRepulsionPass
     this.lastEdgeCount = context.edgeCount;
 
-    // Repulsion uniforms: { node_count, gamma, repulsion_scale, _padding }
+    // Distance normalization: the paper's kernels do all their work at
+    // normalized d ≈ O(1) — with defaults (alpha=0.1, beta=8, gamma=2) a
+    // connected pair equilibrates at d ≈ 0.48. Mapping one kernel unit to
+    // 2 × springLength puts that equilibrium near the configured spring
+    // length in world units; without this the kernel is ~0 at typical
+    // world spacing and the layout collapses.
+    const distScale = 2 * fc.springLength;
+
+    // Repulsion uniforms: { node_count, gamma, repulsion_scale, dist_scale }
     // Paper: repulsion_scale = 1/alpha (default: 1/0.1 = 10.0), scaled by user multiplier
     const repulsionData = new ArrayBuffer(16);
     const repView = new DataView(repulsionData);
     repView.setUint32(0, context.nodeCount, true);
     repView.setFloat32(4, fc.tFdpGamma, true);
     repView.setFloat32(8, (1.0 / fc.tFdpAlpha) * fc.tFdpRepulsionScale, true);
-    repView.setUint32(12, 0, true); // padding
+    repView.setFloat32(12, distScale, true);
     device.queue.writeBuffer(buffers.repulsionUniformBuffer, 0, repulsionData);
 
-    // Attraction uniforms: { edge_count, alpha, beta, _padding }
+    // Attraction uniforms: { edge_count, alpha, beta, dist_scale }
     const attractionData = new ArrayBuffer(16);
     const attrView = new DataView(attractionData);
     attrView.setUint32(0, context.edgeCount, true);
     attrView.setFloat32(4, fc.tFdpAlpha, true);
     attrView.setFloat32(8, fc.tFdpBeta, true);
-    attrView.setUint32(12, 0, true); // padding
+    attrView.setFloat32(12, distScale, true);
     device.queue.writeBuffer(buffers.attractionUniformBuffer, 0, attractionData);
   }
 
@@ -252,11 +288,14 @@ export class TFdpAlgorithm implements ForceAlgorithm {
     const tfdpPipelines = pipelines as TFdpPipelines;
     const tfdpBindGroups = bindGroups as TFdpBindGroups;
 
-    // Pass 1: Repulsion (N^2 over all node pairs)
+    // Pass 1: Repulsion (N^2 over all node pairs, dead slots masked when
+    // the bind group carries node_flags)
     {
       const workgroups = calculateWorkgroups(nodeCount, 256);
       const pass = encoder.beginComputePass({ label: "t-FDP Repulsion" });
-      pass.setPipeline(tfdpPipelines.repulsion);
+      pass.setPipeline(
+        tfdpBindGroups.repulsionUsesFlags ? tfdpPipelines.repulsionMasked : tfdpPipelines.repulsion,
+      );
       pass.setBindGroup(0, tfdpBindGroups.repulsion);
       pass.dispatchWorkgroups(workgroups);
       pass.end();

@@ -176,8 +176,8 @@ export function parseGraphInput(
     }
 
     // Extract type for type-based styling (top-level or metadata.type)
-    const nodeType = (node["type"] as string | undefined)
-      ?? (nodeMetadataValue?.["type"] as string | undefined);
+    const nodeType = (node["type"] as string | undefined) ??
+      (nodeMetadataValue?.["type"] as string | undefined);
     if (nodeType) {
       nodeTypes[idx] = nodeType;
       hasNodeTypes = true;

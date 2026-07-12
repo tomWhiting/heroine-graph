@@ -168,7 +168,9 @@ function updateFps() {
     statFps.className = `stats-value ${fps >= 30 ? "good" : fps >= 15 ? "" : "warning"}`;
 
     statFrametime.textContent = `${avgFrameTime.toFixed(1)}ms`;
-    statFrametime.className = `stats-value ${avgFrameTime <= 33 ? "good" : avgFrameTime <= 66 ? "" : "warning"}`;
+    statFrametime.className = `stats-value ${
+      avgFrameTime <= 33 ? "good" : avgFrameTime <= 66 ? "" : "warning"
+    }`;
   }
   lastFrameTime = now;
 

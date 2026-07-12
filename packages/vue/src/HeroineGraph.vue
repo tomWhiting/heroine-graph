@@ -34,6 +34,7 @@ import {
   ref,
   computed,
   watch,
+  nextTick,
   onMounted,
   onUnmounted,
   type CSSProperties,
@@ -119,6 +120,14 @@ defineExpose({
   getGraph: () => graph.value,
   /** Get the canvas element */
   getCanvas: () => canvasRef.value,
+  /**
+   * Reload the current data prop into the graph.
+   *
+   * The data prop is watched by reference only (deep watching is O(nodes+edges)
+   * per evaluation, prohibitive at large graph sizes). After mutating the data
+   * object in place, call this to push the changes to the graph.
+   */
+  reload,
 });
 
 // Computed styles
@@ -147,7 +156,7 @@ const registeredHandlers: Array<{ event: string; handler: (e: unknown) => void }
 function registerEventHandlers(graphInstance: HeroineGraphCore) {
   const handlers: Array<[string, (e: unknown) => void]> = [
     ["node:click", (e) => emit("nodeClick", e as NodeClickEvent)],
-    ["node:doubleclick", (e) => emit("nodeDoubleClick", e as NodeDoubleClickEvent)],
+    ["node:dblclick", (e) => emit("nodeDoubleClick", e as NodeDoubleClickEvent)],
     ["node:hoverenter", (e) => emit("nodeHoverEnter", e as NodeHoverEnterEvent)],
     ["node:hoverleave", (e) => emit("nodeHoverLeave", e as NodeHoverLeaveEvent)],
     ["node:dragstart", (e) => emit("nodeDragStart", e as NodeDragStartEvent)],
@@ -169,10 +178,16 @@ function registerEventHandlers(graphInstance: HeroineGraphCore) {
   }
 }
 
-// Initialize graph
-onMounted(async () => {
+// Bumped whenever the current graph is (or is about to be) destroyed, so an
+// in-flight initialization can detect it is stale and dispose its instance
+// instead of leaking a WebGPU device.
+let initGeneration = 0;
+
+async function initGraph(): Promise<void> {
   const canvas = canvasRef.value;
   if (!canvas) return;
+
+  const generation = ++initGeneration;
 
   try {
     // Check WebGPU support
@@ -189,6 +204,12 @@ onMounted(async () => {
       debug: props.debug,
     });
 
+    // Destroyed/re-initialized while awaiting: discard the late instance
+    if (generation !== initGeneration) {
+      graphInstance.dispose();
+      return;
+    }
+
     graph.value = graphInstance;
     isInitialized.value = true;
 
@@ -203,14 +224,15 @@ onMounted(async () => {
       await graphInstance.load(props.data);
     }
   } catch (err) {
+    if (generation !== initGeneration) return;
     const e = err instanceof Error ? err : new Error(String(err));
     error.value = e;
     emit("error", e);
   }
-});
+}
 
-// Cleanup on unmount
-onUnmounted(() => {
+function destroyGraph(): void {
+  initGeneration++;
   if (graph.value) {
     for (const { event, handler } of registeredHandlers) {
       graph.value.off(event as Parameters<typeof graph.value.off>[0], handler as Parameters<typeof graph.value.off>[1]);
@@ -219,9 +241,32 @@ onUnmounted(() => {
     graph.value.dispose();
     graph.value = null;
   }
-});
+  isInitialized.value = false;
+}
 
-// Watch for data changes
+/** Reload the current data prop into the graph (see defineExpose docs). */
+async function reload(): Promise<void> {
+  if (!graph.value || !isInitialized.value || !props.data) return;
+
+  try {
+    await graph.value.load(props.data);
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    error.value = e;
+    emit("error", e);
+  }
+}
+
+// Initialize graph
+onMounted(initGraph);
+
+// Cleanup on unmount
+onUnmounted(destroyGraph);
+
+// Watch for data changes by reference only. Deep watching would traverse
+// every node/edge on each evaluation and reload the whole graph on any
+// nested field mutation; consumers replace the data object (or call the
+// exposed reload()) instead.
 watch(
   () => props.data,
   async (newData) => {
@@ -234,8 +279,20 @@ watch(
       error.value = e;
       emit("error", e);
     }
-  },
-  { deep: true }
+  }
+);
+
+// Config is consumed at creation time by the core, so re-initialize the
+// graph when the config prop is replaced (matches the React wrapper).
+watch(
+  () => props.config,
+  async () => {
+    destroyGraph();
+    error.value = null;
+    // Wait for the canvas to re-render if the error template was showing
+    await nextTick();
+    await initGraph();
+  }
 );
 
 // Handle resize

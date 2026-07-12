@@ -23,7 +23,7 @@ struct IntegrationUniforms {
     center_x: f32,              // Gravity center X
     center_y: f32,              // Gravity center Y
     pinned_node: u32,           // Index of pinned node (0xFFFFFFFF = none)
-    _pad1: u32,
+    adaptive_speed: f32,        // Adaptive speed strength k (0 = disabled)
 }
 
 @group(0) @binding(0) var<uniform> uniforms: IntegrationUniforms;
@@ -44,6 +44,9 @@ struct IntegrationUniforms {
 
 // Node state flags (bit 0 = dead slot from removal, bit 1 = pinned)
 @group(0) @binding(7) var<storage, read> node_flags: array<u32>;
+
+// Previous tick's total force per node (for adaptive speed swing/traction)
+@group(0) @binding(8) var<storage, read_write> prev_forces: array<vec2<f32>>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
@@ -73,6 +76,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
         positions_out[node_idx] = positions_in[node_idx];
         velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
+        prev_forces[node_idx] = vec2<f32>(0.0, 0.0);
         return;
     }
 
@@ -81,6 +85,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let center = vec2<f32>(uniforms.center_x, uniforms.center_y);
         positions_out[node_idx] = center;
         velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
+        prev_forces[node_idx] = vec2<f32>(0.0, 0.0);
         return;
     }
 
@@ -106,6 +111,26 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Alpha acts as temperature, reducing force effect as simulation cools
     let acceleration = total_force * effective_alpha;
     vel = vel * uniforms.damping + acceleration * uniforms.dt;
+
+    // Adaptive speed (ForceAtlas2-style swing/traction, per node):
+    //   swing    = |F_t - F_{t-1}|  — oscillation (force flipping direction)
+    //   traction = |F_t + F_{t-1}|/2 — steady progress in one direction
+    //   factor   = k * traction / (traction + swing), clamped to [0.05, 1]
+    // A node converging steadily gets factor ~ k (1.0 by default, no change);
+    // a node whose force reverses every tick gets factor ~ 0, killing the
+    // oscillation. Disabled when adaptive_speed = 0.
+    if (uniforms.adaptive_speed > 0.0) {
+        let prev_force = prev_forces[node_idx];
+        let swing = length(total_force - prev_force);
+        let traction = length(total_force + prev_force) * 0.5;
+        let factor = clamp(
+            uniforms.adaptive_speed * traction / (traction + swing + 1e-6),
+            0.05,
+            1.0,
+        );
+        vel *= factor;
+    }
+    prev_forces[node_idx] = total_force;
 
     // Cap velocity to prevent instability
     vel = clamp_magnitude(vel, uniforms.max_velocity);

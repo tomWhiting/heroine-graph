@@ -6,7 +6,7 @@
  * @module
  */
 
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
+import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
 import type { GraphStore } from "./graph.svelte";
 
 /**
@@ -46,7 +46,7 @@ export function createSimulationStore(options: SimulationStoreOptions) {
   let status = $state<SimulationStatus>("stopped");
   let alpha = $state(0);
   let forceConfig = $state<ForceConfig | null>(null);
-  let isRunning = $derived(status === "running");
+  const isRunning = $derived(status === "running");
 
   // Event handlers
   let tickHandler: ((event: { alpha: number }) => void) | null = null;
@@ -125,7 +125,9 @@ export function createSimulationStore(options: SimulationStoreOptions) {
   }
 
   function resume(): void {
-    graphStore.graph?.resumeSimulation();
+    // Core has no resumeSimulation(); startSimulation() resumes a paused
+    // controller without resetting alpha (fresh start only when tickCount === 0).
+    graphStore.graph?.startSimulation();
     status = "running";
   }
 
@@ -146,10 +148,18 @@ export function createSimulationStore(options: SimulationStoreOptions) {
 
   return {
     // State (use getter functions for reactivity)
-    get status() { return status; },
-    get isRunning() { return isRunning; },
-    get alpha() { return alpha; },
-    get forceConfig() { return forceConfig; },
+    get status() {
+      return status;
+    },
+    get isRunning() {
+      return isRunning;
+    },
+    get alpha() {
+      return alpha;
+    },
+    get forceConfig() {
+      return forceConfig;
+    },
 
     // Methods
     start,

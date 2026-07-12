@@ -32,8 +32,7 @@ import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl?raw";
 const DENSITY_FIELD_ALGORITHM_INFO: ForceAlgorithmInfo = {
   id: "density",
   name: "Density Field",
-  description:
-    "O(n) grid-based approximation. Best for very large graphs (100K+ nodes).",
+  description: "O(n) grid-based approximation. Best for very large graphs (100K+ nodes).",
   minNodes: 1000,
   maxNodes: -1, // Unlimited
   complexity: "O(n)",
@@ -65,12 +64,19 @@ class DensityFieldBuffers implements AlgorithmBuffers {
     public uniforms: GPUBuffer,
     public densityGrid: GPUBuffer,
     public wellRadius: GPUBuffer,
+    /**
+     * Zero-filled node flags used when AlgorithmRenderContext.nodeFlags is
+     * not provided (all slots treated as live). Production passes the shared
+     * simulation nodeFlags buffer for dead-slot masking.
+     */
+    public fallbackNodeFlags: GPUBuffer,
   ) {}
 
   destroy(): void {
     this.uniforms.destroy();
     this.densityGrid.destroy();
     this.wellRadius.destroy();
+    this.fallbackNodeFlags.destroy();
   }
 }
 
@@ -94,7 +100,8 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     });
 
     // Create explicit bind group layout
-    // Bindings: uniforms, positions (vec2), forces (vec2), density_grid
+    // Bindings: uniforms, positions (vec2), forces (vec2), density_grid,
+    //           well_radius, node_flags
     const bindGroupLayout = device.createBindGroupLayout({
       label: "Density Field Bind Group Layout",
       entries: [
@@ -103,6 +110,7 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -159,7 +167,15 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new DensityFieldBuffers(uniforms, densityGrid, wellRadius);
+    // Zero-filled fallback for contexts without a shared nodeFlags buffer
+    // (GPU buffers are created zero-initialized: all slots live)
+    const fallbackNodeFlags = device.createBuffer({
+      label: "Density Field Fallback Node Flags",
+      size: safeMaxNodes * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    return new DensityFieldBuffers(uniforms, densityGrid, wellRadius, fallbackNodeFlags);
   }
 
   createBindGroups(
@@ -171,6 +187,10 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     const p = pipelines as DensityFieldPipelines;
     const b = algorithmBuffers as DensityFieldBuffers;
 
+    // Dead-slot masking: use the shared simulation nodeFlags buffer when the
+    // host provides it, otherwise a zero-filled fallback (all slots live)
+    const nodeFlags = context.nodeFlags ?? b.fallbackNodeFlags;
+
     const repulsion = device.createBindGroup({
       label: "Density Field Bind Group",
       layout: p.bindGroupLayout,
@@ -180,6 +200,7 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: b.densityGrid } },
         { binding: 4, resource: { buffer: b.wellRadius } },
+        { binding: 5, resource: { buffer: nodeFlags } },
       ],
     });
 
@@ -199,8 +220,8 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     if (!context.bounds) {
       throw new Error(
         "Density field algorithm requires bounds to be provided in AlgorithmRenderContext. " +
-        "Bounds must be computed from actual node positions. Without bounds, the density " +
-        "grid cannot correctly map positions to cells."
+          "Bounds must be computed from actual node positions. Without bounds, the density " +
+          "grid cannot correctly map positions to cells.",
       );
     }
 
@@ -214,18 +235,18 @@ export class DensityFieldAlgorithm implements ForceAlgorithm {
     const view = new DataView(data);
     const gridSize = context.forceConfig.densityGridSize || DEFAULT_GRID_SIZE;
     this.currentGridSize = gridSize;
-    view.setUint32(0, context.nodeCount, true);           // node_count
-    view.setUint32(4, gridSize, true);                    // grid_width
-    view.setUint32(8, gridSize, true);                    // grid_height
+    view.setUint32(0, context.nodeCount, true); // node_count
+    view.setUint32(4, gridSize, true); // grid_width
+    view.setUint32(8, gridSize, true); // grid_height
     view.setFloat32(12, Math.abs(context.forceConfig.repulsionStrength), true); // repulsion_strength
-    view.setFloat32(16, boundsMinX, true);                // bounds_min_x
-    view.setFloat32(20, boundsMinY, true);                // bounds_min_y
-    view.setFloat32(24, boundsMaxX, true);                // bounds_max_x
-    view.setFloat32(28, boundsMaxY, true);                // bounds_max_y
-    view.setFloat32(32, DEFAULT_SPLAT_RADIUS, true);      // splat_radius
-    view.setFloat32(36, 0, true);                         // _pad1
-    view.setFloat32(40, 0, true);                         // _pad2
-    view.setFloat32(44, 0, true);                         // _pad3
+    view.setFloat32(16, boundsMinX, true); // bounds_min_x
+    view.setFloat32(20, boundsMinY, true); // bounds_min_y
+    view.setFloat32(24, boundsMaxX, true); // bounds_max_x
+    view.setFloat32(28, boundsMaxY, true); // bounds_max_y
+    view.setFloat32(32, DEFAULT_SPLAT_RADIUS, true); // splat_radius
+    view.setFloat32(36, 0, true); // _pad1
+    view.setFloat32(40, 0, true); // _pad2
+    view.setFloat32(44, 0, true); // _pad3
     device.queue.writeBuffer(b.uniforms, 0, data);
   }
 

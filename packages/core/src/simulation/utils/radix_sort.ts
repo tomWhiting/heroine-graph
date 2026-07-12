@@ -234,25 +234,28 @@ export function createRadixSortBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // COPY_SRC allows sorted keys/values to be read back (GPU test harness)
+  const keyValueUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST |
+    GPUBufferUsage.COPY_SRC;
   const keysA = device.createBuffer({
     label: `${label} Keys A`,
     size: elementBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: keyValueUsage,
   });
   const keysB = device.createBuffer({
     label: `${label} Keys B`,
     size: elementBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: keyValueUsage,
   });
   const valuesA = device.createBuffer({
     label: `${label} Values A`,
     size: elementBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: keyValueUsage,
   });
   const valuesB = device.createBuffer({
     label: `${label} Values B`,
     size: elementBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: keyValueUsage,
   });
 
   const histogram = device.createBuffer({
@@ -360,7 +363,7 @@ export function updateRadixSortUniforms(
   if (elementCount > buffers.maxElements) {
     throw new Error(
       `RadixSort buffer overflow: elementCount (${elementCount}) exceeds buffer capacity (${buffers.maxElements}). ` +
-      `Buffers must be recreated with createRadixSortBuffers() when element count increases.`
+        `Buffers must be recreated with createRadixSortBuffers() when element count increases.`,
     );
   }
 
@@ -370,23 +373,23 @@ export function updateRadixSortUniforms(
   // struct ScanUniforms { element_count: u32, pass_number: u32, workgroup_count: u32, _padding: u32 }
   const scanData = new ArrayBuffer(16);
   const scanView = new DataView(scanData);
-  scanView.setUint32(0, workgroupCount * RADIX_SIZE, true);  // element_count
-  scanView.setUint32(4, 0, true);                            // pass_number (unused)
-  scanView.setUint32(8, workgroupCount, true);                // workgroup_count
-  scanView.setUint32(12, 0, true);                           // _padding
+  scanView.setUint32(0, workgroupCount * RADIX_SIZE, true); // element_count
+  scanView.setUint32(4, 0, true); // pass_number (unused)
+  scanView.setUint32(8, workgroupCount, true); // workgroup_count
+  scanView.setUint32(12, 0, true); // _padding
   device.queue.writeBuffer(buffers.scanUniforms, 0, scanData);
 
   // Sort uniforms staging (128 bytes = 8 passes * 16 bytes)
   // Pre-compute uniforms for all passes so copyBufferToBuffer can be used during encoding
-  // struct SortUniforms { node_count: u32, pass_number: u32, _padding: vec2<u32> }
+  // struct SortUniforms { node_count: u32, pass_number: u32, workgroup_count: u32, _padding: u32 }
   const stagingData = new ArrayBuffer(RADIX_PASSES * 16);
   const stagingView = new DataView(stagingData);
   for (let pass = 0; pass < RADIX_PASSES; pass++) {
     const offset = pass * 16;
-    stagingView.setUint32(offset + 0, elementCount, true);  // node_count
-    stagingView.setUint32(offset + 4, pass, true);          // pass_number (0-7)
-    stagingView.setUint32(offset + 8, 0, true);             // _padding[0]
-    stagingView.setUint32(offset + 12, 0, true);            // _padding[1]
+    stagingView.setUint32(offset + 0, elementCount, true); // node_count
+    stagingView.setUint32(offset + 4, pass, true); // pass_number (0-7)
+    stagingView.setUint32(offset + 8, workgroupCount, true); // workgroup_count (digit-major indexing)
+    stagingView.setUint32(offset + 12, 0, true); // _padding
   }
   device.queue.writeBuffer(buffers.sortUniformsStaging, 0, stagingData);
 }
@@ -427,8 +430,10 @@ export function recordRadixSort(
   if (useSimpleSort) {
     // Simple counting sort writes to keysB/valuesB (pass 0: A → B)
     encoder.copyBufferToBuffer(
-      buffers.sortUniformsStaging, 0,
-      buffers.sortUniforms, 0,
+      buffers.sortUniformsStaging,
+      0,
+      buffers.sortUniforms,
+      0,
       16,
     );
     const pass = encoder.beginComputePass({ label: `${label} Simple Sort` });
@@ -441,7 +446,7 @@ export function recordRadixSort(
     if (nodeWorkgroups > MAX_SCAN_WORKGROUPS) {
       console.error(
         `RadixSort: Element count ${elementCount} requires ${nodeWorkgroups} workgroups, ` +
-        `but prefix scan supports max ${MAX_SCAN_WORKGROUPS} (~131K elements).`
+          `but prefix scan supports max ${MAX_SCAN_WORKGROUPS} (~131K elements).`,
       );
       return false;
     }
@@ -450,8 +455,10 @@ export function recordRadixSort(
     for (let pass = 0; pass < RADIX_PASSES; pass++) {
       // Copy per-pass uniforms from staging buffer
       encoder.copyBufferToBuffer(
-        buffers.sortUniformsStaging, pass * 16,
-        buffers.sortUniforms, 0,
+        buffers.sortUniformsStaging,
+        pass * 16,
+        buffers.sortUniforms,
+        0,
         16,
       );
 
@@ -500,7 +507,9 @@ export function recordRadixSort(
           computePass.end();
         }
         {
-          const computePass = encoder.beginComputePass({ label: `${label} Scan Propagate ${pass}` });
+          const computePass = encoder.beginComputePass({
+            label: `${label} Scan Propagate ${pass}`,
+          });
           computePass.setPipeline(pipeline.scanPropagate);
           computePass.setBindGroup(0, bindGroups.scan);
           computePass.dispatchWorkgroups(nodeWorkgroups);

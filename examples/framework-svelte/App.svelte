@@ -9,6 +9,7 @@
 <script lang="ts">
     import { HeroineGraph } from "@graphmother/svelte";
     import type {
+        EdgeInput,
         GraphInput,
         NodeClickEvent,
         NodeHoverEnterEvent,
@@ -36,7 +37,8 @@
                       : "tertiary",
         }));
 
-        const edges: GraphInput["edges"] = [];
+        // GraphInput["edges"] is readonly; build with a mutable array
+        const edges: EdgeInput[] = [];
         for (let i = 1; i < nodeCount; i++) {
             edges.push({ source: Math.floor(i / 2), target: i });
             if (Math.random() > 0.7 && i > 3) {
@@ -57,21 +59,21 @@
         eventLog = [message, ...eventLog.slice(0, 9)];
     }
 
-    function onReady(event: CustomEvent<HeroineGraphCore>) {
+    function onReady(_graph: HeroineGraphCore) {
         addLog("Graph ready!");
     }
 
-    function onNodeClick(event: CustomEvent<NodeClickEvent>) {
-        selectedNode = event.detail.nodeId as number;
-        addLog(`Clicked node ${event.detail.nodeId}`);
+    function onNodeClick(event: NodeClickEvent) {
+        selectedNode = event.nodeId as number;
+        addLog(`Clicked node ${event.nodeId}`);
     }
 
-    function onNodeHoverEnter(event: CustomEvent<NodeHoverEnterEvent>) {
-        addLog(`Hover enter: ${event.detail.nodeId}`);
+    function onNodeHoverEnter(event: NodeHoverEnterEvent) {
+        addLog(`Hover enter: ${event.nodeId}`);
     }
 
-    function onNodeHoverLeave(event: CustomEvent<NodeHoverLeaveEvent>) {
-        addLog(`Hover leave: ${event.detail.nodeId}`);
+    function onNodeHoverLeave(event: NodeHoverLeaveEvent) {
+        addLog(`Hover leave: ${event.nodeId}`);
     }
 
     function onSimulationEnd() {
@@ -109,11 +111,11 @@
             <HeroineGraph
                 bind:this={graphComponent}
                 data={graphData}
-                on:ready={onReady}
-                on:nodeClick={onNodeClick}
-                on:nodeHoverEnter={onNodeHoverEnter}
-                on:nodeHoverLeave={onNodeHoverLeave}
-                on:simulationEnd={onSimulationEnd}
+                onready={onReady}
+                onnodeClick={onNodeClick}
+                onnodeHoverEnter={onNodeHoverEnter}
+                onnodeHoverLeave={onNodeHoverLeave}
+                onsimulationEnd={onSimulationEnd}
                 width="100%"
                 height="100%"
             />

@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
+import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
 
 /**
  * Options for the useSimulation hook
@@ -141,7 +141,9 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   }, [graph]);
 
   const resume = useCallback(() => {
-    graph?.resumeSimulation();
+    // Core has no resumeSimulation(); startSimulation() resumes a paused
+    // controller without resetting alpha (fresh start only when tickCount === 0).
+    graph?.startSimulation();
     setStatus("running");
   }, [graph]);
 
@@ -150,7 +152,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       graph?.restartSimulation();
       setStatus("running");
     },
-    [graph]
+    [graph],
   );
 
   const setForceConfig = useCallback(
@@ -158,7 +160,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       graph?.setForceConfig(config);
       setForceConfigState(graph?.getForceConfig() ?? null);
     },
-    [graph]
+    [graph],
   );
 
   const setAlpha = useCallback(
@@ -166,7 +168,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       graph?.setSimulationAlpha(newAlpha);
       setAlphaState(newAlpha);
     },
-    [graph]
+    [graph],
   );
 
   return {

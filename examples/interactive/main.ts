@@ -13,16 +13,16 @@
  */
 
 import {
+  type BackgroundClickEvent,
   createHeroineGraph,
   type GraphInput,
   type HeroineGraph,
-  type NodeId,
   type NodeClickEvent,
+  type NodeDragEndEvent,
   type NodeHoverEnterEvent,
   type NodeHoverLeaveEvent,
-  type NodeDragEndEvent,
+  type NodeId,
   type SelectionChangeEvent,
-  type BackgroundClickEvent,
 } from "../../packages/core/mod.ts";
 
 // DOM elements
@@ -80,7 +80,7 @@ function updateNodeInfo(nodeId: NodeId | null) {
 
   // Count connections
   const connections = edges.filter(
-    (e) => e.source === nodeId || e.target === nodeId
+    (e) => e.source === nodeId || e.target === nodeId,
   ).length;
 
   const title = document.createElement("div");
@@ -108,7 +108,13 @@ function addNode(x?: number, y?: number) {
   const id = nodeCounter++;
   const label = `Node ${id}`;
 
-  nodes.push({ id, label, x, y });
+  // Omit x/y entirely when absent (exactOptionalPropertyTypes)
+  nodes.push({
+    id,
+    label,
+    ...(x !== undefined ? { x } : {}),
+    ...(y !== undefined ? { y } : {}),
+  });
 
   // Connect to 1-3 random existing nodes
   if (nodes.length > 1) {
@@ -178,8 +184,8 @@ async function reloadGraph() {
     nodes: nodes.map((n) => ({
       id: n.id,
       label: n.label,
-      x: n.x,
-      y: n.y,
+      ...(n.x !== undefined ? { x: n.x } : {}),
+      ...(n.y !== undefined ? { y: n.y } : {}),
       color: n.id === selectedNodeId ? "#ff6b6b" : "#4ecdc4",
     })),
     edges: edges.map((e) => ({
@@ -239,7 +245,7 @@ async function init() {
     logEvent(`Clicked ${nodes.find((n) => n.id === event.nodeId)?.label}`);
   });
 
-  graph.on("node:hoverenter", (event: NodeHoverEnterEvent) => {
+  graph.on("node:hoverenter", (_event: NodeHoverEnterEvent) => {
     canvas.style.cursor = "pointer";
   });
 
@@ -257,8 +263,8 @@ async function init() {
   });
 
   graph.on("selection:change", (event: SelectionChangeEvent) => {
-    if (event.nodes.length > 0) {
-      selectedNodeId = event.nodes[0];
+    if (event.selectedNodes.length > 0) {
+      selectedNodeId = event.selectedNodes[0];
       updateNodeInfo(selectedNodeId);
     } else {
       selectedNodeId = null;
@@ -266,7 +272,7 @@ async function init() {
     }
   });
 
-  graph.on("background:click", (event: BackgroundClickEvent) => {
+  graph.on("background:click", (_event: BackgroundClickEvent) => {
     // Clear selection on background click
     selectedNodeId = null;
     updateNodeInfo(null);
@@ -305,15 +311,18 @@ async function init() {
     }
   });
 
-  // Force sliders
+  // Force sliders — the simulation reads the extended FullForceConfig keys
+  // (repulsionStrength/springStrength), not the legacy repulsion/attraction ones.
   repulsionSlider.addEventListener("input", () => {
     const value = parseInt(repulsionSlider.value);
-    graph?.setForceConfig({ repulsion: value });
+    // Slider 0..200 -> strength 0..-200 (negative = repel; default -50)
+    graph?.setForceConfig({ repulsionStrength: -value });
   });
 
   attractionSlider.addEventListener("input", () => {
     const value = parseInt(attractionSlider.value);
-    graph?.setForceConfig({ attraction: value / 100 });
+    // Slider 0..200 -> spring stiffness 0..0.2 (default 0.1)
+    graph?.setForceConfig({ springStrength: value / 1000 });
   });
 
   // Layer toggles
@@ -326,11 +335,35 @@ async function init() {
   });
 
   layerContours.addEventListener("change", () => {
-    graph?.toggleLayer("contours", layerContours.checked);
+    if (layerContours.checked) {
+      graph?.enableContour();
+    } else {
+      graph?.disableContour();
+    }
   });
 
-  layerLabels.addEventListener("change", () => {
-    graph?.toggleLayer("labels", layerLabels.checked);
+  layerLabels.addEventListener("change", async () => {
+    if (!graph) return;
+    if (layerLabels.checked) {
+      await graph.enableLabels();
+      // Labels layer renders only explicitly provided labels
+      graph.setLabels(
+        nodes.flatMap((n) => {
+          const pos = graph?.getNodePosition(n.id);
+          if (!pos) return [];
+          return [{
+            nodeId: n.id,
+            text: n.label,
+            x: pos.x,
+            y: pos.y,
+            priority: 1,
+            minZoom: 0,
+          }];
+        }),
+      );
+    } else {
+      graph.disableLabels();
+    }
   });
 
   // Generate and load initial graph

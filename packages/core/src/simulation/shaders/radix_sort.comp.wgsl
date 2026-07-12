@@ -1,13 +1,31 @@
 // Parallel Radix Sort Compute Shader
 // Sorts Morton codes and their associated node indices using GPU-parallel radix sort
 //
-// This implements a 4-bit radix sort with parallel prefix sum (scan) for histogram
-// computation. The sort operates in 8 passes (32 bits / 4 bits per pass).
+// This implements a 4-bit LSD radix sort with parallel prefix sum (scan) for
+// histogram computation. The sort operates in 8 passes (32 bits / 4 bits per pass).
+//
+// Correctness requirements (both are load-bearing — LSD radix sort is only
+// correct if every pass is a stable global bucket sort):
+//
+// 1. DIGIT-MAJOR histogram layout: histogram[digit * workgroup_count + wg].
+//    A plain linear exclusive scan over this layout yields, for each
+//    (digit, workgroup) pair, the true global scatter base: the count of all
+//    smaller digits across ALL workgroups plus same-digit counts in earlier
+//    workgroups. (A workgroup-major layout would confine every element to its
+//    own workgroup's 256-element segment, so nothing ever crosses a workgroup
+//    boundary and the buffer never becomes globally sorted.)
+//
+// 2. STABLE within-workgroup ranks: each element's rank among equal-digit
+//    elements is its buffer-index order, computed by counting equal digits at
+//    lower local indices in shared memory. (atomicAdd arrival order is
+//    hardware-arbitrary and would scramble the lower-digit ordering
+//    established by previous passes.)
 
 struct SortUniforms {
     node_count: u32,
-    pass_number: u32,     // Current radix pass (0-7)
-    _padding: vec2<u32>,
+    pass_number: u32,      // Current radix pass (0-7)
+    workgroup_count: u32,  // Dispatch width — needed for digit-major indexing
+    _padding: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SortUniforms;
@@ -18,19 +36,23 @@ struct SortUniforms {
 @group(0) @binding(3) var<storage, read_write> keys_out: array<u32>;
 @group(0) @binding(4) var<storage, read_write> values_out: array<u32>;
 
-// Histogram for counting digits
+// Histogram for counting digits (digit-major: histogram[digit * wg_count + wg])
 @group(0) @binding(5) var<storage, read_write> histogram: array<atomic<u32>>;
 
-// Prefix sums for scattering
+// Exclusive prefix sums of the digit-major histogram (from prefix_scan shader)
 @group(0) @binding(6) var<storage, read> prefix_sums: array<u32>;
 
 const RADIX_BITS: u32 = 4u;
 const RADIX_SIZE: u32 = 16u;  // 2^4 = 16 buckets
 const WORKGROUP_SIZE: u32 = 256u;
+// Sentinel digit for out-of-range threads; never matches a real digit (0-15)
+const INVALID_DIGIT: u32 = 0xFFFFFFFFu;
 
 var<workgroup> local_histogram: array<atomic<u32>, 16>;
-var<workgroup> local_prefix: array<u32, 16>;
-var<workgroup> bucket_offsets: array<atomic<u32>, 16>;
+// Digits of this workgroup's 256 elements, for stable rank computation
+var<workgroup> local_digits: array<u32, 256>;
+// Global scatter base per digit for this workgroup (from prefix_sums)
+var<workgroup> digit_base: array<u32, 16>;
 
 // Extract 4-bit digit at given radix pass
 fn get_digit(key: u32, pass_idx: u32) -> u32 {
@@ -64,57 +86,60 @@ fn histogram_count(@builtin(global_invocation_id) global_id: vec3<u32>,
     if (local_id.x < RADIX_SIZE) {
         let count = atomicLoad(&local_histogram[local_id.x]);
         if (count > 0u) {
-            let global_bucket = group_id.x * RADIX_SIZE + local_id.x;
+            // Digit-major layout: all workgroups' counts for one digit are
+            // contiguous, so the linear exclusive scan produces global offsets
+            let global_bucket = local_id.x * uniforms.workgroup_count + group_id.x;
             atomicAdd(&histogram[global_bucket], count);
         }
     }
 }
 
 // Phase 2: Compute prefix sum (scan) on histogram
-// This is done separately with a single workgroup scan shader
+// This is done separately with the prefix_scan shader
 
-// Phase 3: Scatter elements to sorted positions
+// Phase 3: Scatter elements to sorted positions (stable)
 @compute @workgroup_size(256)
 fn scatter(@builtin(global_invocation_id) global_id: vec3<u32>,
            @builtin(local_invocation_id) local_id: vec3<u32>,
            @builtin(workgroup_id) group_id: vec3<u32>) {
     let idx = global_id.x;
+    let tid = local_id.x;
     let is_valid = idx < uniforms.node_count;
 
-    // Load prefix sums for this workgroup's buckets - all threads participate
-    if (local_id.x < RADIX_SIZE) {
-        let global_bucket = group_id.x * RADIX_SIZE + local_id.x;
-        local_prefix[local_id.x] = prefix_sums[global_bucket];
-    }
-    workgroupBarrier();
-
-    // Initialize bucket offsets - all threads participate
-    if (local_id.x < RADIX_SIZE) {
-        atomicStore(&bucket_offsets[local_id.x], 0u);
-    }
-    workgroupBarrier();
-
-    // Load data for valid threads
+    // Load data and publish this thread's digit to shared memory
     var key = 0u;
     var value = 0u;
-    var digit = 0u;
+    var digit = INVALID_DIGIT;
     if (is_valid) {
         key = keys_in[idx];
         value = values_in[idx];
         digit = get_digit(key, uniforms.pass_number);
     }
+    local_digits[tid] = digit;
 
-    // Compute position within bucket using atomic increment
-    // All threads compute, but only valid ones will write
-    var output_pos = 0u;
-    if (is_valid) {
-        let base_pos = local_prefix[digit];
-        let local_offset = atomicAdd(&bucket_offsets[digit], 1u);
-        output_pos = base_pos + local_offset;
+    // Load this workgroup's global scatter base for each digit
+    if (tid < RADIX_SIZE) {
+        digit_base[tid] = prefix_sums[tid * uniforms.workgroup_count + group_id.x];
+    }
+    workgroupBarrier();
+
+    if (!is_valid) {
+        return;
     }
 
-    // Write to output - only valid threads with valid positions
-    if (is_valid && output_pos < uniforms.node_count) {
+    // Stable within-workgroup rank: count equal-digit elements at lower
+    // buffer index. O(WORKGROUP_SIZE) shared-memory scan per thread — an
+    // atomicAdd counter would assign ranks in hardware arrival order and
+    // destroy the stability LSD radix sort depends on.
+    var rank = 0u;
+    for (var i = 0u; i < tid; i++) {
+        if (local_digits[i] == digit) {
+            rank += 1u;
+        }
+    }
+
+    let output_pos = digit_base[digit] + rank;
+    if (output_pos < uniforms.node_count) {
         keys_out[output_pos] = key;
         values_out[output_pos] = value;
     }

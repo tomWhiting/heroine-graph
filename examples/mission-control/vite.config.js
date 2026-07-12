@@ -8,7 +8,7 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 function wgslPlugin() {
   return {
     name: "wgsl-loader",
-    transform(code, id) {
+    transform(_code, id) {
       if (id.endsWith(".wgsl")) {
         const content = readFileSync(id, "utf-8");
         return {

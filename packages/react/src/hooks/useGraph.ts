@@ -8,11 +8,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  EdgeId,
   GraphConfig,
   GraphInput,
   HeroineGraph,
   NodeId,
-  EdgeId,
   Vec2,
 } from "@graphmother/core";
 import { createHeroineGraph, isSupported } from "@graphmother/core";
@@ -124,6 +124,12 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   const { config, debug = false, initialData } = options;
 
   const graphRef = useRef<HeroineGraph | null>(null);
+  // In-flight initialization, if any. Prevents StrictMode's double-invoked
+  // effects (or any concurrent callers) from creating two instances.
+  const initPromiseRef = useRef<Promise<void> | null>(null);
+  // Bumped by dispose()/unmount to invalidate an in-flight initialization;
+  // the stale init disposes its instance instead of leaking a WebGPU device.
+  const initEpochRef = useRef(0);
   const [isReady, setIsReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -135,29 +141,50 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
       if (graphRef.current) {
         return; // Already initialized
       }
-
-      try {
-        const graph = await createHeroineGraph({
-          canvas,
-          config,
-          debug,
-        });
-
-        graphRef.current = graph;
-        setIsReady(true);
-        setError(null);
-
-        // Load initial data if provided
-        if (initialData) {
-          setIsLoading(true);
-          await graph.load(initialData);
-          setIsLoading(false);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
+      if (initPromiseRef.current) {
+        return initPromiseRef.current; // Initialization already in flight
       }
+
+      const epoch = initEpochRef.current;
+      const initPromise = (async () => {
+        try {
+          const graph = await createHeroineGraph({
+            canvas,
+            config,
+            debug,
+          });
+
+          // Disposed/unmounted while awaiting: discard the late instance
+          if (epoch !== initEpochRef.current) {
+            graph.dispose();
+            return;
+          }
+
+          graphRef.current = graph;
+          setIsReady(true);
+          setError(null);
+
+          // Load initial data if provided
+          if (initialData) {
+            setIsLoading(true);
+            await graph.load(initialData);
+            setIsLoading(false);
+          }
+        } catch (err) {
+          if (epoch === initEpochRef.current) {
+            setError(err instanceof Error ? err : new Error(String(err)));
+          }
+        } finally {
+          if (epoch === initEpochRef.current) {
+            initPromiseRef.current = null;
+          }
+        }
+      })();
+
+      initPromiseRef.current = initPromise;
+      return initPromise;
     },
-    [config, debug, initialData]
+    [config, debug, initialData],
   );
 
   // Load data
@@ -181,6 +208,9 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
 
   // Dispose
   const dispose = useCallback(() => {
+    // Invalidate any in-flight initialization so it disposes its instance
+    initEpochRef.current++;
+    initPromiseRef.current = null;
     if (graphRef.current) {
       graphRef.current.dispose();
       graphRef.current = null;
@@ -242,6 +272,9 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Invalidate any in-flight initialization so it disposes its instance
+      initEpochRef.current++;
+      initPromiseRef.current = null;
       if (graphRef.current) {
         graphRef.current.dispose();
         graphRef.current = null;

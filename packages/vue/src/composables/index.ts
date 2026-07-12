@@ -4,8 +4,8 @@
  * @module
  */
 
-export { useGraph, default as useGraphDefault } from "./useGraph";
+export { default as useGraphDefault, useGraph } from "./useGraph";
 export type { UseGraphOptions, UseGraphReturn } from "./useGraph";
 
-export { useSimulation, default as useSimulationDefault } from "./useSimulation";
+export { default as useSimulationDefault, useSimulation } from "./useSimulation";
 export type { UseSimulationOptions, UseSimulationReturn } from "./useSimulation";

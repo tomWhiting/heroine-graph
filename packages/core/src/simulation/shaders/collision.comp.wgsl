@@ -29,6 +29,15 @@ struct CollisionUniforms {
 // do not exist for collision purposes and are skipped entirely.
 @group(0) @binding(2) var<storage, read> node_sizes: array<f32>;
 
+// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned).
+// Pinned nodes are never displaced by collision resolution (the integrate
+// pin pass-through would otherwise carry the drift forward every frame),
+// but they still push other nodes away.
+@group(0) @binding(3) var<storage, read> node_flags: array<u32>;
+
+const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_PINNED: u32 = 2u;
+
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 
@@ -39,6 +48,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = global_id.x;
 
     if (node_idx >= uniforms.node_count) {
+        return;
+    }
+
+    // Dead slots don't exist; pinned nodes are never displaced (they still
+    // push others away — other threads read this node's position and size).
+    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
         return;
     }
 
@@ -65,7 +80,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        // Get other node's radius (skip dead slots)
+        // Get other node's radius (skip dead slots — flags and radius sentinel)
+        if ((node_flags[j] & NODE_FLAG_DEAD) != 0u) {
+            continue;
+        }
         var radius_j = node_sizes[j];
         if (radius_j < 0.0) {
             continue;
@@ -128,6 +146,8 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
     // CRITICAL: All threads must reach workgroupBarrier() calls.
     // Out-of-bounds threads participate in barriers but skip actual work.
     // Dead slots (negative radius) participate in barriers but never collide.
+    // Pinned nodes participate in barriers and tile loads (so they push
+    // others away) but never receive displacement themselves.
     var is_valid = node_idx < uniforms.node_count;
 
     // Load this node's data (only valid threads read from global memory)
@@ -136,7 +156,8 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
     if (is_valid) {
         pos = positions[node_idx];
         radius = node_sizes[node_idx];
-        if (radius < 0.0) {
+        if (radius < 0.0 ||
+            (node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
             is_valid = false;
         } else if (radius <= EPSILON) {
             radius = uniforms.default_radius;
@@ -156,7 +177,10 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
         if (tile_idx < uniforms.node_count) {
             shared_pos[tid] = positions[tile_idx];
             var r = node_sizes[tile_idx];
-            if (r >= 0.0 && r <= EPSILON) {
+            if ((node_flags[tile_idx] & NODE_FLAG_DEAD) != 0u) {
+                // Flag-dead slots get the same negative skip marker
+                r = -1.0;
+            } else if (r >= 0.0 && r <= EPSILON) {
                 r = uniforms.default_radius;
             }
             // Dead slots keep their negative radius as a skip marker

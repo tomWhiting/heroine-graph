@@ -69,11 +69,11 @@ tests/          # Test files
 
 ## Algorithm Design Direction: Gravitational Well / Nested Bubble Model
 
-The user (Tom) has a clear vision for a new layout algorithm built on top of Relativity Atlas infrastructure. Current algorithms all fail for large code trees:
-- **ForceAtlas2**: Everything spreads into a uniform circle. No structure visible.
-- **Barnes-Hut**: Collapses everything to center, nodes overlap.
-- **Tidy Tree**: At 1K+ nodes, creates a solid ring around the edges. Useless at scale.
-- **Relativity Atlas**: Closest to working, but jittery, creates grid/cross-hatch artifacts from the 128x128 density field grid and regular angular spacing. Leaf nodes get pulled inward past their parents.
+The user (Tom) has a clear vision for a new layout algorithm built on top of Relativity Atlas infrastructure. Historically all algorithms failed for large code trees (see Known Issues for the root causes fixed on branch `005-audit-fixes`):
+- **ForceAtlas2**: Everything spread into a uniform circle. No structure visible.
+- **Barnes-Hut**: Collapsed everything to center, nodes overlapped.
+- **Tidy Tree**: At 1K+ nodes, created a solid ring around the edges. Useless at scale.
+- **Relativity Atlas**: Closest to working, but jittery, with grid/cross-hatch artifacts from the 128x128 density field grid and regular angular spacing. Leaf nodes got pulled inward past their parents.
 
 ### The Nested Bubble Algorithm (to be built)
 
@@ -102,10 +102,24 @@ Tom previously forked Cosmos GL (open source version of Cosmograph) and added va
 ## Mission Control Example
 Located at `examples/mission-control/`. Currently a 3,600-line kitchen-sink demo showing every feature. Plan is to rewrite as a focused code graph visualizer. The code quality is decent but it's trying to do too much. Has 3 data sources (random corporate graph, hierarchical tree, codebase dataset) and exposes ~50 configuration sliders.
 
-## Known Issues (post branch 004 fixes)
-- TypeScript check shows 47 pre-existing errors (WebGPU type index signatures, SharedArrayBuffer). These are NOT regressions.
-- Cargo clippy clean, 59/59 Rust tests passing.
-- Branch `004-incremental-graph-mutations` has comprehensive fixes for core mutation bugs, GPU shader correctness, framework wrappers, and infrastructure.
+## Status (post branch 005-audit-fixes)
+
+Suite is fully green: `deno task check` clean (the old "47 pre-existing TS errors" note is obsolete), `deno task test` passing (headless-WebGPU + unit tests), `deno task lint` and `deno fmt --check` clean, `cargo test` 77/77, `cargo clippy -D warnings` clean.
+
+Branch `005-audit-fixes` fixed the root causes behind the historical algorithm failures:
+- **Foundations**: WASM NodeId now equals the GPU slot index (SoA/CSR/NodeId spaces no longer diverge after remove+add); simulation and collision dispatch over `nodeHighWater` with dead slots masked via `NODE_FLAG_DEAD`; per-node pinning via `NODE_FLAG_PINNED` respected by `integrate.comp.wgsl`.
+- **Barnes-Hut**: GPU radix sort rewritten digit-major with stable ranks (Morton codes were never globally sorted at >=1024 nodes); Karras tree bottom-up aggregation no longer relies on cross-workgroup memory coherence WGSL doesn't provide; split-search loop terminates arithmetically.
+- **ForceAtlas2/LinLog**: attraction/repulsion calibration rebalanced (1/d repulsion was ~10x over-strong vs the substituted Hooke springs — the "uniform disc" symptom).
+- **t-FDP**: the anti-collapse force floor no longer applies at all distances (it had nullified the t-distribution kernel entirely).
+- **Relativity Atlas**: inverse-mass gravity vs depth-decay interaction fixed (leaves were pulled past parents); unbounded F=d attraction tamed; density-field forces de-quantized (bilinear splat/gradient — the cross-hatch and jitter source).
+- **Per-edge force races**: non-atomic `forces[i] +=` in attraction shaders lost a degree-proportional fraction of hub attraction (systematic bias against exactly the high-degree parents in code trees).
+- **Tidy Tree**: apportion ancestor bug fixed (subtrees overlapped/landed coincident); radial transform and recursion-depth issues fixed.
+- **Defaults**: `alphaDecay` is now 0.0228 (d3 convention, ~300 ticks) instead of 0.0002 (~10 min of simmer).
+- **Wrappers/examples/publish**: event-name mismatches, vite alias paths, StrictMode double-init, npm publish pipeline, and more.
+
+There is a deterministic test harness under `tests/` (seeded-PRNG fixtures, invariant helpers in `tests/helpers/invariants.ts`, headless WebGPU tests in `tests/gpu/` driving the real pipelines). Physics changes should come with a harness test.
+
+**Toolchain note**: `deno` and `wasm-pack` are required and were previously missing on this machine — install both before building (`deno task build:wasm` needs wasm-pack).
 <!-- MANUAL ADDITIONS END -->
 
 ## Active Technologies

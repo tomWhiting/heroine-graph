@@ -100,7 +100,9 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
 
     // For small node counts, use actual evaluation
     // For large counts, we'd need spatial acceleration (octree/BVH)
-    // This simple version works well for up to ~1000 nodes
+    // This simple version works well for up to ~1000 nodes; the layer
+    // enforces MAX_METABALL_NODES (config.ts) and skips rendering above
+    // it so this per-pixel loop cannot trigger a GPU watchdog timeout.
 
     if (uniforms.outline_only != 0u) {
         // Outline mode: only draw near the boundary

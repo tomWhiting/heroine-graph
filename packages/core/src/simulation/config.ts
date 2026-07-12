@@ -56,6 +56,20 @@ export interface FullForceConfig extends ForceConfig {
   timeStep: number;
   /** Index of pinned node (kept at center, no movement). 0xFFFFFFFF = none */
   pinnedNode: number;
+  /**
+   * FA2-style per-node adaptive displacement control (swing/traction).
+   * Nodes whose force flips direction between ticks (oscillating) get their
+   * velocity scaled down; nodes with a steady force keep full speed.
+   * Off by default for the plain N² path; algorithms can request it via
+   * ForceAlgorithm.prefersAdaptiveSpeed.
+   */
+  adaptiveSpeed: boolean;
+  /**
+   * Strength k of the adaptive speed factor: factor = k * traction / (traction + swing),
+   * clamped to [0.05, 1]. 1.0 = full FA2-style behavior (steady motion unchanged,
+   * oscillation suppressed). Lower values damp all motion. Range 0.1-2.
+   */
+  adaptiveSpeedStrength: number;
 
   // Simulation parameters
   /** Density field grid resolution (power of 2, 32-512, default: 128) */
@@ -207,6 +221,8 @@ export const DEFAULT_FORCE_CONFIG: FullForceConfig = {
   maxVelocity: 50,
   timeStep: 1.0,
   pinnedNode: 0xFFFFFFFF, // No pinned node by default
+  adaptiveSpeed: false,
+  adaptiveSpeedStrength: 1.0,
 
   // Simulation defaults
   densityGridSize: 128,
@@ -437,6 +453,9 @@ export function validateForceConfig(
   // Ensure positive max velocity
   result.maxVelocity = Math.max(1, result.maxVelocity);
 
+  // Clamp adaptive speed strength
+  result.adaptiveSpeedStrength = Math.max(0.1, Math.min(2, result.adaptiveSpeedStrength));
+
   // Validate simulation parameters
   // densityGridSize must be power of 2 between 32 and 512
   result.densityGridSize = Math.max(32, Math.min(512, result.densityGridSize));
@@ -454,17 +473,29 @@ export function validateForceConfig(
   result.relativityChildMassFactor = Math.max(0, Math.min(1, result.relativityChildMassFactor));
   result.relativityMassExponent = Math.max(0, Math.min(2, result.relativityMassExponent));
   result.relativityMaxSiblings = Math.max(10, Math.floor(result.relativityMaxSiblings));
-  result.relativityParentChildMultiplier = Math.max(0, Math.min(1, result.relativityParentChildMultiplier));
+  result.relativityParentChildMultiplier = Math.max(
+    0,
+    Math.min(1, result.relativityParentChildMultiplier),
+  );
   result.relativityGravityExponent = Math.max(-2, Math.min(2, result.relativityGravityExponent));
   result.relativityCousinStrength = Math.max(0, Math.min(1, result.relativityCousinStrength));
-  result.relativityPhantomMultiplier = Math.max(0, Math.min(100, result.relativityPhantomMultiplier));
+  result.relativityPhantomMultiplier = Math.max(
+    0,
+    Math.min(100, result.relativityPhantomMultiplier),
+  );
   result.relativityDensityRepulsion = Math.max(0, Math.min(2, result.relativityDensityRepulsion));
   result.relativityOrbitStrength = Math.max(0, Math.min(20, result.relativityOrbitStrength));
-  result.relativityTangentialMultiplier = Math.max(1, Math.min(20, result.relativityTangentialMultiplier));
+  result.relativityTangentialMultiplier = Math.max(
+    1,
+    Math.min(20, result.relativityTangentialMultiplier),
+  );
   result.relativityOrbitRadius = Math.max(1, Math.min(200, result.relativityOrbitRadius));
 
   // Validate Bubble Mode parameters
-  result.relativityBubbleBaseRadius = Math.max(1.0, Math.min(100, result.relativityBubbleBaseRadius));
+  result.relativityBubbleBaseRadius = Math.max(
+    1.0,
+    Math.min(100, result.relativityBubbleBaseRadius),
+  );
   result.relativityBubblePadding = Math.max(0, Math.min(50, result.relativityBubblePadding));
   result.relativityDepthDecay = Math.max(0, Math.min(1, result.relativityDepthDecay));
   result.relativityBubbleOrbitScale = Math.max(0.1, Math.min(2, result.relativityBubbleOrbitScale));
@@ -494,7 +525,10 @@ export function validateForceConfig(
 
   // Validate Community Layout parameters
   result.communityResolution = Math.max(0.1, Math.min(5.0, result.communityResolution));
-  result.communityMaxIterations = Math.max(1, Math.min(500, Math.floor(result.communityMaxIterations)));
+  result.communityMaxIterations = Math.max(
+    1,
+    Math.min(500, Math.floor(result.communityMaxIterations)),
+  );
   result.communitySpacing = Math.max(5.0, Math.min(500, result.communitySpacing));
   result.communityNodeSpacing = Math.max(1.0, Math.min(100, result.communityNodeSpacing));
   result.communitySpreadFactor = Math.max(0.1, Math.min(5.0, result.communitySpreadFactor));

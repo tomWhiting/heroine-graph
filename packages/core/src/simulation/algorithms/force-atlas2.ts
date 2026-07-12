@@ -86,16 +86,23 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
 /**
  * ForceAtlas2 algorithm implementation.
  *
- * handlesSprings = false: FA2 now delegates to standard Hooke's law springs
- * for attraction. The original FA2 linear attraction (F = d, no rest length)
- * created spoke/wheel patterns and had no equilibrium distance. Standard
- * springs produce better layouts and are consistent with other algorithms.
- * The FA2 attraction shader is preserved but not dispatched.
+ * handlesSprings = true: FA2 dispatches its native linear attraction
+ * (F = w^delta * d, per the published model). The repulsion calibration
+ * (scaling = 0.1 * |repulsionStrength|) was tuned against F = d attraction;
+ * an earlier substitution of the ~10x weaker Hooke spring pass left the 1/d
+ * repulsion unopposed and inflated every graph into a structureless uniform
+ * disc. The spoke/wheel oscillation that motivated that substitution came
+ * from unbounded F = d attraction overshooting under fixed-step integration;
+ * it is suppressed by per-node adaptive speed (prefersAdaptiveSpeed).
  */
 export class ForceAtlas2Algorithm implements ForceAlgorithm {
   readonly info = FORCE_ATLAS2_ALGORITHM_INFO;
   readonly handlesGravity = true;
-  readonly handlesSprings = false;
+  readonly handlesSprings = true;
+  readonly prefersAdaptiveSpeed = true;
+
+  /** Cached edge count from last updateUniforms for attraction dispatch sizing */
+  private lastEdgeCount = 0;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -122,7 +129,8 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       },
     });
 
-    // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
+    // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets,
+    // edge_weights, node_flags
     const attractionLayout = device.createBindGroupLayout({
       label: "ForceAtlas2 Attraction Layout",
       entries: [
@@ -132,6 +140,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -201,7 +210,14 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     const buffers = algorithmBuffers as ForceAtlas2Buffers;
     const fa2Pipelines = pipelines as FA2Pipelines;
 
-    // Repulsion bind group: uniforms, positions, forces, degrees
+    if (!context.nodeFlags) {
+      throw new Error(
+        "ForceAtlas2 requires the nodeFlags buffer in AlgorithmRenderContext. " +
+          "Ensure graph.ts populates nodeFlags.",
+      );
+    }
+
+    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags
     const repulsion = device.createBindGroup({
       label: "ForceAtlas2 Repulsion Bind Group",
       layout: pipelines.repulsion.getBindGroupLayout(0),
@@ -210,14 +226,16 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: buffers.degreesBuffer } },
+        { binding: 4, resource: { buffer: context.nodeFlags } },
       ],
     });
 
-    // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets, edge_weights
+    // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets,
+    // edge_weights, node_flags
     if (!context.edgeSources || !context.edgeTargets) {
       throw new Error(
         "ForceAtlas2 requires edge source/target buffers in AlgorithmRenderContext. " +
-        "Ensure graph.ts populates edgeSources and edgeTargets.",
+          "Ensure graph.ts populates edgeSources and edgeTargets.",
       );
     }
 
@@ -231,6 +249,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
         { binding: 3, resource: { buffer: context.edgeSources } },
         { binding: 4, resource: { buffer: context.edgeTargets } },
         { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
+        { binding: 6, resource: { buffer: context.nodeFlags } },
       ],
     });
 
@@ -245,14 +264,16 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
   ): void {
     const buffers = algorithmBuffers as ForceAtlas2Buffers;
 
+    // Cache edge count for attraction dispatch sizing in recordRepulsionPass
+    this.lastEdgeCount = context.edgeCount;
+
     // CRITICAL: Validate node count doesn't exceed buffer capacity.
     if (context.nodeCount > buffers.maxNodes) {
       throw new Error(
         `ForceAtlas2 buffer overflow: nodeCount (${context.nodeCount}) exceeds buffer capacity (${buffers.maxNodes}). ` +
-        `Buffers must be recreated with createBuffers() when node count increases.`
+          `Buffers must be recreated with createBuffers() when node count increases.`,
       );
     }
-
 
     // FA2 force model calibration:
     // FA2 uses 1/d repulsion (not 1/d² like Coulomb) with degree-weighted mass,
@@ -348,13 +369,21 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       pass.end();
     }
 
-    // FA2 attraction pass disabled — handlesSprings=false delegates to standard
-    // Hooke's law springs for consistent behavior across algorithms.
-    // The attraction shader and pipeline are preserved for potential future use.
+    // Pass 2: Native FA2 linear attraction (per-edge, F = w^delta * d).
+    // Balances the FA2-calibrated 1/d repulsion — see class doc.
+    if (this.lastEdgeCount > 0) {
+      const edgeWorkgroups = calculateWorkgroups(this.lastEdgeCount, 256);
+      const pass = encoder.beginComputePass({ label: "ForceAtlas2 Attraction" });
+      pass.setPipeline(fa2Pipelines.attraction);
+      pass.setBindGroup(0, fa2BindGroups.attraction);
+      pass.dispatchWorkgroups(edgeWorkgroups);
+      pass.end();
+    }
   }
 
   destroy(): void {
     // Buffers are destroyed via AlgorithmBuffers.destroy()
+    this.lastEdgeCount = 0;
   }
 }
 

@@ -118,7 +118,7 @@
   // Event handler registration
   function registerEventHandlers(g: HeroineGraphCore) {
     g.on("node:click", (e) => onnodeClick?.(e));
-    g.on("node:doubleclick", (e) => onnodeDoubleClick?.(e));
+    g.on("node:dblclick", (e) => onnodeDoubleClick?.(e));
     g.on("node:hoverenter", (e) => onnodeHoverEnter?.(e));
     g.on("node:hoverleave", (e) => onnodeHoverLeave?.(e));
     g.on("node:dragstart", (e) => onnodeDragStart?.(e));

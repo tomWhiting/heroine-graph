@@ -10,10 +10,15 @@
  * 1. Screen-space derivatives (dpdx/dpdy) - gradients too small
  * 2. Simple band test (like metaball outline) - still not rendering
  *
- * The heatmap and metaball layers work correctly. The issue may be:
+ * FIXED since this TODO was written: all thresholds used to share one
+ * uniform buffer, so queue.writeBuffer raced ahead of the encoded passes
+ * and every pass sampled only the LAST threshold (typically 0.8, almost
+ * never reached with default maxDensity). Each threshold now has its own
+ * uniform buffer + bind group.
+ *
+ * The heatmap and metaball layers work correctly. Remaining suspects:
  * - Density values not in expected range for thresholds
  * - Texture sampling issues
- * - Bind group/pipeline configuration
  *
  * Consider using D3 contour for CPU-based isoline computation as fallback.
  *
@@ -21,7 +26,7 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
-import type { Layer } from "../heatmap/layer.ts";
+import type { Layer } from "../types.ts";
 import type { ContourConfig } from "./config.ts";
 import type { SimpleContourPipeline } from "./simple-pipeline.ts";
 
@@ -48,8 +53,13 @@ export class SimpleContourLayer implements Layer {
   private config: Required<ContourConfig>;
   private pipeline: SimpleContourPipeline;
   private renderContext: SimpleContourRenderContext | null = null;
-  private bindGroup: GPUBindGroup | null = null;
+  // One uniform buffer + bind group per threshold: queue.writeBuffer
+  // executes immediately while encoded passes run at submit, so N passes
+  // sharing one buffer would all sample the LAST threshold written.
+  private thresholdBuffers: GPUBuffer[] = [];
+  private thresholdBindGroups: GPUBindGroup[] = [];
   private bindGroupDirty = true;
+  private uniformsDirty = true;
 
   constructor(
     id: string,
@@ -59,9 +69,6 @@ export class SimpleContourLayer implements Layer {
     this.id = id;
     this.config = mergeContourConfig(config);
     this.pipeline = createSimpleContourPipeline(context);
-
-    // Initialize uniforms
-    this.updateUniforms();
   }
 
   get enabled(): boolean {
@@ -86,7 +93,7 @@ export class SimpleContourLayer implements Layer {
   setRenderContext(context: SimpleContourRenderContext): void {
     this.renderContext = context;
     this.bindGroupDirty = true;
-    this.updateUniforms();
+    this.uniformsDirty = true;
   }
 
   /**
@@ -99,7 +106,7 @@ export class SimpleContourLayer implements Layer {
       this.config.thresholds = [...config.thresholds];
     }
 
-    this.updateUniforms();
+    this.uniformsDirty = true;
     this.bindGroupDirty = true;
   }
 
@@ -131,86 +138,84 @@ export class SimpleContourLayer implements Layer {
   }
 
   /**
-   * Update GPU uniforms
+   * Ensure one uniform buffer + bind group exists per threshold
    */
-  private updateUniforms(): void {
-    const [r, g, b, a] = parseColor(this.config.strokeColor);
-    const threshold = this.config.thresholds[0] ?? 0.5;
-    const maxDensity = this.renderContext?.maxDensity ?? 10;
+  private ensureThresholdResources(): void {
+    if (!this.renderContext) return;
 
-    this.pipeline.updateUniforms({
-      lineColor: [r, g, b, a * this.config.opacity],
-      lineThickness: this.config.strokeWidth,
-      feather: 1.5, // Anti-aliasing amount
-      threshold,
-      maxDensity,
-    });
+    const count = this.config.thresholds.length;
+
+    if (this.bindGroupDirty || this.thresholdBindGroups.length !== count) {
+      // Grow/shrink the buffer pool to match the threshold count
+      while (this.thresholdBuffers.length < count) {
+        this.thresholdBuffers.push(this.pipeline.createUniformBuffer());
+      }
+      while (this.thresholdBuffers.length > count) {
+        this.thresholdBuffers.pop()!.destroy();
+      }
+
+      this.thresholdBindGroups = this.thresholdBuffers.map((buffer) =>
+        this.pipeline.createBindGroup(this.renderContext!.densityTextureView, buffer)
+      );
+
+      this.bindGroupDirty = false;
+      this.uniformsDirty = true;
+    }
+
+    if (this.uniformsDirty) {
+      const [r, g, b, a] = parseColor(this.config.strokeColor);
+      const maxDensity = this.renderContext.maxDensity;
+
+      // One write per buffer: every encoded pass keeps its own threshold
+      // even though all writes land before the frame's single submit.
+      this.config.thresholds.forEach((threshold, i) => {
+        this.pipeline.updateUniforms({
+          lineColor: [r, g, b, a * this.config.opacity],
+          lineThickness: this.config.strokeWidth,
+          feather: 1.5, // Anti-aliasing amount
+          threshold,
+          maxDensity,
+        }, this.thresholdBuffers[i]);
+      });
+
+      this.uniformsDirty = false;
+    }
   }
 
   /**
-   * Ensure bind group is created
+   * Per-threshold uniform buffers (one per configured threshold).
+   * Exposed for tests/diagnostics: each encoded pass must bind its own
+   * buffer so every threshold survives to the frame's single queue.submit.
    */
-  private ensureBindGroup(): void {
-    if (!this.bindGroupDirty || !this.renderContext) return;
-
-    this.bindGroup = this.pipeline.createBindGroup(
-      this.renderContext.densityTextureView,
-    );
-    this.bindGroupDirty = false;
+  getThresholdUniformBuffers(): readonly GPUBuffer[] {
+    return this.thresholdBuffers;
   }
 
   /**
-   * Render the contour layer
+   * Render the contour layer (one pass per threshold)
    */
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
     if (!this.config.enabled) return;
     if (!this.renderContext) return;
 
-    // Ensure bind group exists
-    this.ensureBindGroup();
-    if (!this.bindGroup) return;
+    this.ensureThresholdResources();
 
-    // Update uniforms for each threshold
-    for (const threshold of this.config.thresholds) {
-      this.renderThreshold(encoder, targetView, threshold);
+    for (const bindGroup of this.thresholdBindGroups) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: targetView,
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      });
+
+      pass.setPipeline(this.pipeline.pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3, 1, 0, 0); // Fullscreen triangle
+      pass.end();
     }
-  }
-
-  /**
-   * Render a single threshold level
-   */
-  private renderThreshold(
-    encoder: GPUCommandEncoder,
-    targetView: GPUTextureView,
-    threshold: number,
-  ): void {
-    // Update threshold in uniforms
-    const [r, g, b, a] = parseColor(this.config.strokeColor);
-    const maxDensity = this.renderContext?.maxDensity ?? 10;
-
-    this.pipeline.updateUniforms({
-      lineColor: [r, g, b, a * this.config.opacity],
-      lineThickness: this.config.strokeWidth,
-      feather: 1.5,
-      threshold,
-      maxDensity,
-    });
-
-    // Render pass
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: targetView,
-          loadOp: "load",
-          storeOp: "store",
-        },
-      ],
-    });
-
-    pass.setPipeline(this.pipeline.pipeline);
-    pass.setBindGroup(0, this.bindGroup!);
-    pass.draw(3, 1, 0, 0); // Fullscreen triangle
-    pass.end();
   }
 
   /**
@@ -225,6 +230,11 @@ export class SimpleContourLayer implements Layer {
    * Destroy layer resources
    */
   destroy(): void {
+    for (const buffer of this.thresholdBuffers) {
+      buffer.destroy();
+    }
+    this.thresholdBuffers = [];
+    this.thresholdBindGroups = [];
     this.pipeline.destroy();
   }
 }

@@ -7,9 +7,9 @@
  * - Simulation controls
  */
 
-import { useRef, useState, useCallback } from "react";
-import { HeroineGraph, useGraph, useSimulation } from "@graphmother/react";
-import type { HeroineGraphRef, NodeClickEvent, GraphInput } from "@graphmother/react";
+import { useCallback, useRef, useState } from "react";
+import { HeroineGraph } from "@graphmother/react";
+import type { EdgeInput, GraphInput, HeroineGraphRef, NodeClickEvent } from "@graphmother/react";
 
 // Generate sample graph data
 function generateGraph(nodeCount: number): GraphInput {
@@ -19,7 +19,8 @@ function generateGraph(nodeCount: number): GraphInput {
     type: i % 3 === 0 ? "primary" : i % 3 === 1 ? "secondary" : "tertiary",
   }));
 
-  const edges: GraphInput["edges"] = [];
+  // GraphInput["edges"] is readonly; build with a mutable array
+  const edges: EdgeInput[] = [];
   for (let i = 1; i < nodeCount; i++) {
     // Create a tree structure with some cross-links
     edges.push({ source: Math.floor(i / 2), target: i });
@@ -38,9 +39,6 @@ function App() {
   const [graphData] = useState(() => generateGraph(100));
   const [selectedNode, setSelectedNode] = useState<number | null>(null);
   const [eventLog, setEventLog] = useState<string[]>([]);
-
-  // Use the simulation hook (requires graph from ref)
-  const graph = graphRef.current?.getGraph() ?? null;
 
   const addLog = useCallback((message: string) => {
     setEventLog((prev) => [message, ...prev.slice(0, 9)]);
@@ -121,18 +119,21 @@ function App() {
             </h2>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <button
+                type="button"
                 onClick={() => graphRef.current?.getGraph()?.fitToView()}
                 style={buttonStyle}
               >
                 Fit to View
               </button>
               <button
+                type="button"
                 onClick={() => graphRef.current?.getGraph()?.restartSimulation()}
                 style={buttonStyle}
               >
                 Restart Simulation
               </button>
               <button
+                type="button"
                 onClick={() => graphRef.current?.getGraph()?.clearSelection()}
                 style={buttonStyle}
               >
@@ -166,9 +167,7 @@ function App() {
                 fontFamily: "monospace",
               }}
             >
-              {eventLog.length === 0 ? (
-                <span style={{ color: "#666" }}>No events yet...</span>
-              ) : (
+              {eventLog.length === 0 ? <span style={{ color: "#666" }}>No events yet...</span> : (
                 eventLog.map((log, i) => (
                   <div key={i} style={{ color: "#aaa", marginBottom: "4px" }}>
                     {log}

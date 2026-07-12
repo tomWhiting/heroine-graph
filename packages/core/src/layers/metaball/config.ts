@@ -43,6 +43,19 @@ export interface MetaballConfig {
 }
 
 /**
+ * Maximum node count the metaball layer will render.
+ *
+ * The SDF fragment shader (sdf.frag.wgsl) iterates every node for every
+ * pixel of a fullscreen triangle — O(nodeCount * pixels) — with only an
+ * in-loop AABB early-out. Beyond roughly this many nodes a fullscreen
+ * pass takes long enough to trigger GPU watchdog timeouts (TDR/device
+ * loss) on common hardware; at the project's 35K-node target it is a
+ * guaranteed device kill. Until spatial acceleration (tiling/BVH) lands,
+ * the layer skips rendering above this bound and logs a warning.
+ */
+export const MAX_METABALL_NODES = 2000;
+
+/**
  * Default metaball configuration
  */
 export const DEFAULT_METABALL_CONFIG: Required<MetaballConfig> = {

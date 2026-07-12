@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html';
 import './heroine-graph.css';
 import type { GraphData } from './graph-generators.ts';
+import { registerStoryCleanup, runStoryCleanups } from './story-cleanup.ts';
 
 interface ContourStoryArgs {
   preset: string;
@@ -21,6 +22,7 @@ interface HeroineGraph {
   setContourConfig?: (config: Record<string, unknown>) => void;
   enableHeatmap?: (config?: Record<string, unknown>) => void;
   setHeatmapConfig?: (config: Record<string, unknown>) => void;
+  dispose: () => void;
 }
 
 interface HeroineGraphModule {
@@ -192,6 +194,9 @@ async function initGraph(container: HTMLElement): Promise<void> {
   const contourControls = container.querySelector<HTMLElement>('.contour-controls')!;
 
   try {
+    // Tear down graphs/timers/listeners from previously rendered stories
+    runStoryCleanups();
+
     await waitForLayout(container);
 
     const rect = container.getBoundingClientRect();
@@ -210,11 +215,19 @@ async function initGraph(container: HTMLElement): Promise<void> {
     const graph = await createHeroineGraph({ canvas, debug: true });
 
     // Handle resize
-    window.addEventListener('resize', () => {
+    const resizeCanvas = () => {
       const r = container.getBoundingClientRect();
       canvas.width = r.width * window.devicePixelRatio;
       canvas.height = r.height * window.devicePixelRatio;
       graph.resize(canvas.width, canvas.height);
+    };
+    window.addEventListener('resize', resizeCanvas);
+
+    let statsInterval: ReturnType<typeof setInterval> | undefined;
+    registerStoryCleanup(() => {
+      window.removeEventListener('resize', resizeCanvas);
+      if (statsInterval !== undefined) clearInterval(statsInterval);
+      graph.dispose();
     });
 
     // State
@@ -254,7 +267,7 @@ async function initGraph(container: HTMLElement): Promise<void> {
     contourControls.style.display = 'block';
 
     // FPS display
-    setInterval(() => {
+    statsInterval = setInterval(() => {
       const fps = container.querySelector('[data-stat="fps"]');
       if (fps && graph.frameStats) {
         fps.textContent = graph.frameStats.fps?.toFixed(0) || '--';

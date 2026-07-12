@@ -47,10 +47,9 @@ interface CodebaseLayoutBindGroups extends AlgorithmBindGroups {
 }
 
 const CODEBASE_LAYOUT_INFO: ForceAlgorithmInfo = {
-  id: "codebase" as "codebase",
+  id: "codebase" as const,
   name: "Codebase Layout",
-  description:
-    "Hierarchy-aware force simulation using containment relationships. " +
+  description: "Hierarchy-aware force simulation using containment relationships. " +
     "Nodes in the same directory cluster together naturally.",
   minNodes: 0,
   maxNodes: -1,
@@ -342,9 +341,9 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
       view.setUint32(0, context.nodeCount, true);
       view.setFloat32(4, Math.abs(cfg.repulsionStrength) * cfg.codebaseSpreadFactor, true);
       view.setFloat32(8, cfg.repulsionDistanceMin, true);
-      view.setFloat32(12, cfg.codebaseFilePadding * 0.1, true);       // File Padding slider: 8 → 0.8
-      view.setFloat32(16, cfg.codebaseDirectoryPadding * 0.1, true);  // Dir Padding slider: 15 → 1.5
-      view.setFloat32(20, cfg.centerStrength * 100, true);            // Center Gravity slider: 0.01 → 1.0
+      view.setFloat32(12, cfg.codebaseFilePadding * 0.1, true); // File Padding slider: 8 → 0.8
+      view.setFloat32(16, cfg.codebaseDirectoryPadding * 0.1, true); // Dir Padding slider: 15 → 1.5
+      view.setFloat32(20, cfg.centerStrength * 100, true); // Center Gravity slider: 0.01 → 1.0
       view.setFloat32(24, 0.0, true);
       view.setFloat32(28, 0.0, true);
       device.queue.writeBuffer(this.repulsionUniforms, 0, data);

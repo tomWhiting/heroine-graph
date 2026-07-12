@@ -136,6 +136,17 @@ fn vs_main(
     let is_curved = curve_config.enabled != 0u && abs(curvature) > 0.001;
     let segments = max(curve_config.segments, 1u);
 
+    // Straight edges need exactly one quad. When the pipeline dispatches
+    // 6 * segments vertices for curve tessellation, degenerate every quad
+    // after the first instead of re-emitting the same full-length quad
+    // `segments` times — repeating it multiplies fill cost ~19x and
+    // re-composites the AA fringe per repeat (alpha 1-(1-a)^segments),
+    // making straight edges look aliased and near-opaque.
+    if (!is_curved && vertex_idx >= 6u) {
+        output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);  // Behind camera
+        return output;
+    }
+
     // For curved edges, we render multiple segments
     // vertex_idx is divided into: which segment (0..segments-1) and which vertex of quad (0..5)
     var segment_idx: u32 = 0u;

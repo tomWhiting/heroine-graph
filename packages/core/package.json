@@ -8,26 +8,27 @@
   "types": "./dist/mod.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/heroine-graph.esm.js",
-      "types": "./dist/mod.d.ts"
+      "types": "./dist/mod.d.ts",
+      "import": "./dist/heroine-graph.esm.js"
     }
   },
   "files": [
     "dist",
     "src",
+    "assets",
     "mod.ts",
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun run build:bundle && bun run build:types",
-    "build:bundle": "esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
-    "build:types": "tsc --project tsconfig.npm.json"
+    "build": "deno run -A ../../scripts/build_core_types.ts && deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
+    "build:bundle": "deno run -A npm:esbuild@^0.24.0/esbuild mod.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/heroine-graph.esm.js --loader:.wgsl=text --external:@graphmother/wasm",
+    "build:types": "deno run -A ../../scripts/build_core_types.ts"
   },
   "dependencies": {
-    "@graphmother/wasm": "^0.1.0"
+    "@graphmother/wasm": "^0.1.0",
+    "@webgpu/types": "^0.1.69"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.7.0"
   },

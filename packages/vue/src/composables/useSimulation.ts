@@ -6,8 +6,8 @@
  * @module
  */
 
-import { ref, watch, onUnmounted, type Ref, type ShallowRef } from "vue";
-import type { HeroineGraph, SimulationStatus, ForceConfig } from "@graphmother/core";
+import { onUnmounted, type Ref, ref, type ShallowRef, watch } from "vue";
+import type { ForceConfig, HeroineGraph, SimulationStatus } from "@graphmother/core";
 
 /**
  * Options for the useSimulation composable
@@ -146,7 +146,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
         setupEventListeners(newGraph);
       }
     },
-    { immediate: true }
+    { immediate: true },
   );
 
   // Cleanup on unmount
@@ -176,7 +176,9 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   }
 
   function resume(): void {
-    graph.value?.resumeSimulation();
+    // Core has no resumeSimulation(); startSimulation() resumes a paused
+    // controller without resetting alpha (fresh start only when tickCount === 0).
+    graph.value?.startSimulation();
     status.value = "running";
     isRunning.value = true;
   }
