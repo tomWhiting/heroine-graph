@@ -89,7 +89,7 @@ if [ -f pkg/graphmother_wasm.js ]; then
       Object.assign(pkg, {
         name: "@graphmother/wasm",
         license: "MIT OR Apache-2.0",
-        repository: { type: "git", url: "https://github.com/tomWhiting/graphmother.git", directory: "packages/wasm" },
+        repository: { type: "git", url: "git+https://github.com/tomWhiting/graphmother.git", directory: "packages/wasm" },
         homepage: "https://github.com/tomWhiting/graphmother",
         bugs: { url: "https://github.com/tomWhiting/graphmother/issues" },
         keywords: ["graph", "visualization", "wasm", "webgpu", "graphmother"],

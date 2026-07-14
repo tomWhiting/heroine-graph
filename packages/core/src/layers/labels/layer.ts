@@ -524,7 +524,13 @@ export class LabelsLayer implements Layer {
     }
 
     // Upload glyph data (only on rebuild — cached frames skip the upload)
-    device.queue.writeBuffer(this.glyphStorageBuffer!, 0, instances);
+    device.queue.writeBuffer(
+      this.glyphStorageBuffer!,
+      0,
+      instances.buffer as ArrayBuffer,
+      instances.byteOffset,
+      instances.byteLength,
+    );
 
     // Update label uniforms (constant unless config/atlas changed, which
     // bumps the manager version and forces a rebuild)
