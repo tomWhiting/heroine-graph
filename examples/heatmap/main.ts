@@ -13,11 +13,7 @@
 // import { createGraphMother, HeatmapLayer, ... } from '@graphmother/core';
 
 // For this example, we import from the local package:
-import {
-  getColorScaleNames,
-  getSupportInfo,
-  type GraphInput,
-} from "../../packages/core/mod.ts";
+import { getColorScaleNames, getSupportInfo, type GraphInput } from "../../packages/core/mod.ts";
 
 /**
  * Generate a clustered graph with varying density regions
@@ -93,15 +89,12 @@ export function generateClusteredGraph(
   // Add some inter-cluster connections
   for (let i = 0; i < clusterCount * 3; i++) {
     const sourceCluster = Math.floor(Math.random() * clusterCount);
-    const targetCluster =
-      (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) %
+    const targetCluster = (sourceCluster + 1 + Math.floor(Math.random() * (clusterCount - 1))) %
       clusterCount;
 
-    const sourceNode =
-      sourceCluster * nodesPerCluster +
+    const sourceNode = sourceCluster * nodesPerCluster +
       Math.floor(Math.random() * nodesPerCluster);
-    const targetNode =
-      targetCluster * nodesPerCluster +
+    const targetNode = targetCluster * nodesPerCluster +
       Math.floor(Math.random() * nodesPerCluster);
 
     edges.push({

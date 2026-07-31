@@ -7,11 +7,7 @@
  * @module
  */
 
-import {
-  createGraphMother,
-  type GraphInput,
-  type GraphMother,
-} from "../../packages/core/mod.ts";
+import { createGraphMother, type GraphInput, type GraphMother } from "../../packages/core/mod.ts";
 
 // DOM elements
 const canvas = document.getElementById("graph-canvas") as HTMLCanvasElement;
@@ -143,8 +139,7 @@ function generateRandomGraph(
     const target = Math.floor(Math.random() * nodeCount);
 
     if (source !== target) {
-      const key =
-        source < target ? `${source}-${target}` : `${target}-${source}`;
+      const key = source < target ? `${source}-${target}` : `${target}-${source}`;
       if (!edgeSet.has(key)) {
         edgeSet.add(key);
         edges.push({ source, target });
@@ -182,8 +177,7 @@ function updateFps() {
       fpsSamples.shift();
     }
 
-    const avgFrameTime =
-      fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
+    const avgFrameTime = fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
     const fps = 1000 / avgFrameTime;
 
     statFps.textContent = fps.toFixed(1);
@@ -250,10 +244,9 @@ async function loadGraph() {
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   // Generate graph data
-  const data =
-    nodeCount > 100000
-      ? generateRandomGraph(nodeCount, edgesPerNode)
-      : generateScaleFreeGraph(nodeCount, edgesPerNode);
+  const data = nodeCount > 100000
+    ? generateRandomGraph(nodeCount, edgesPerNode)
+    : generateScaleFreeGraph(nodeCount, edgesPerNode);
 
   showLoading(`Loading ${data.nodes.length.toLocaleString()} nodes...`);
   await new Promise((resolve) => setTimeout(resolve, 50));
