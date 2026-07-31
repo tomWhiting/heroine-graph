@@ -27,6 +27,7 @@ import {
   GPU_SKIP_MESSAGE,
   loadModuleInliningWgsl,
   probeAdapter,
+  waitForQueue,
 } from "../helpers/gpu.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
 
@@ -228,7 +229,7 @@ if (!adapter) {
         );
         pass.end();
         device.queue.submit([encoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
+        await waitForQueue(device);
       },
     });
   }

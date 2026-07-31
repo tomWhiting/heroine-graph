@@ -97,7 +97,7 @@ async function readbackU32(device: GPUDevice, src: GPUBuffer, count: number): Pr
  */
 async function runSort(
   device: GPUDevice,
-  keys: Uint32Array,
+  keys: Uint32Array<ArrayBuffer>,
 ): Promise<{ keys: Uint32Array; values: Uint32Array }> {
   const mod = await loadRadixSortModule();
   const n = keys.length;

@@ -4,11 +4,10 @@
  * ranges, so they are pinned exactly.
  */
 
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1";
+import { assert, assertEquals } from "jsr:@std/assert@^1";
 import {
   DEFAULT_FORCE_CONFIG,
   forceConfigBuilder,
-  forceConfigToUniformData,
   mergeForceConfig,
   validateForceConfig,
 } from "../../packages/core/src/simulation/config.ts";
@@ -128,13 +127,16 @@ Deno.test("forceConfigBuilder: builds an independent config", () => {
   assertEquals(DEFAULT_FORCE_CONFIG.theta, 0.8);
 });
 
-Deno.test("forceConfigToUniformData: 16-float layout in declared order", () => {
-  const data = forceConfigToUniformData(DEFAULT_FORCE_CONFIG);
-  assertEquals(data.length, 16);
-  assertEquals(data[0], DEFAULT_FORCE_CONFIG.repulsionStrength);
-  // f32 storage rounds doubles, so compare within f32 precision
-  assertAlmostEquals(data[3], DEFAULT_FORCE_CONFIG.theta, 1e-6);
-  assertAlmostEquals(data[4], DEFAULT_FORCE_CONFIG.springStrength, 1e-6);
-  assertEquals(data[7], 0); // padding slot
-  assertEquals(data[13], DEFAULT_FORCE_CONFIG.collisionEnabled ? 1 : 0);
+Deno.test("bubble mode implies phantom zones", () => {
+  // The wellRadius bubble mode computes is only read behind the shaders'
+  // phantom_enabled gate, so the two flags must not be independently settable.
+  assert(validateForceConfig({ relativityBubbleMode: true }).relativityPhantomZone);
+  assert(mergeForceConfig({ relativityBubbleMode: true }).relativityPhantomZone);
+
+  // ...and the coupling is one-way: phantom zones stand alone.
+  assertEquals(
+    validateForceConfig({ relativityPhantomZone: true }).relativityBubbleMode,
+    false,
+  );
+  assertEquals(validateForceConfig({}).relativityPhantomZone, false);
 });

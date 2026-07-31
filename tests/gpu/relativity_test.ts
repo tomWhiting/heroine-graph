@@ -70,7 +70,7 @@ const SIBLING_WGSL = await Deno.readTextFile(
 
 function createStorageBuffer(
   device: GPUDevice,
-  data: Float32Array | Uint32Array,
+  data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>,
   extraUsage = 0,
 ): GPUBuffer {
   const buffer = device.createBuffer({

@@ -357,6 +357,33 @@ export const GPU_SKIP_MESSAGE = "WebGPU adapter unavailable — GPU integration 
   "Run via `deno task test` (passes --unstable-webgpu) on a machine with a GPU.";
 
 /**
+ * Wait for all work submitted to the device's queue to complete.
+ *
+ * Deno 2.6.x never resolves `queue.onSubmittedWorkDone()` (even on an empty
+ * queue), so awaiting it deadlocks every multi-tick GPU test. `mapAsync`
+ * does resolve, and queue execution is in submission order, so mapping a
+ * fence buffer that a just-submitted copy wrote to gives the same
+ * "everything before this is done" guarantee.
+ */
+export async function waitForQueue(device: GPUDevice): Promise<void> {
+  const src = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_SRC });
+  const fence = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(src, 0, fence, 0, 4);
+    device.queue.submit([encoder.finish()]);
+    await fence.mapAsync(GPUMapMode.READ);
+    fence.unmap();
+  } finally {
+    src.destroy();
+    fence.destroy();
+  }
+}
+
+/**
  * Graph data consumed by the harness (slot-indexed typed arrays, as
  * produced by tests/fixtures/code_tree.ts).
  */
@@ -464,7 +491,7 @@ export async function createSimHarness(
         bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
         tickCount++;
       }
-      await device.queue.onSubmittedWorkDone();
+      await waitForQueue(device);
     },
 
     async readPositions(): Promise<{ x: Float32Array; y: Float32Array }> {
@@ -730,7 +757,7 @@ export async function createAlgorithmSimHarness(
         );
         tickCount++;
       }
-      await device.queue.onSubmittedWorkDone();
+      await waitForQueue(device);
     },
 
     async readPositions(): Promise<{ x: Float32Array; y: Float32Array }> {

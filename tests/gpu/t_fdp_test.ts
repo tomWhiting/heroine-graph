@@ -25,6 +25,7 @@ import {
   loadModuleInliningWgsl,
   NODE_FLAG_DEAD,
   probeAdapter,
+  waitForQueue,
 } from "../helpers/gpu.ts";
 import { countNonFinite, maxRadius, meanEdgeLength } from "../helpers/invariants.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
@@ -275,7 +276,7 @@ async function createTFdpHarness(
         pass.end();
       }
       device.queue.submit([encoder.finish()]);
-      await device.queue.onSubmittedWorkDone();
+      await waitForQueue(device);
     },
 
     async computeForces(): Promise<{ fx: Float32Array; fy: Float32Array }> {
