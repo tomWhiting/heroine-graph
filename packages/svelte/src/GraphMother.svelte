@@ -93,8 +93,11 @@
   }: Props = $props();
 
   // State
-  let containerEl: HTMLDivElement;
-  let canvasEl: HTMLCanvasElement;
+  // Both element refs are `$state` so `bind:this` updates are reactive: the
+  // canvas lives inside an {:else} branch and is created/destroyed as the
+  // error state toggles.
+  let containerEl = $state<HTMLDivElement | undefined>(undefined);
+  let canvasEl = $state<HTMLCanvasElement | undefined>(undefined);
   let graph = $state<GraphMotherCore | null>(null);
   let isInitialized = $state(false);
   let error = $state<Error | null>(null);
@@ -112,7 +115,7 @@
   }
 
   export function getCanvas(): HTMLCanvasElement | null {
-    return canvasEl;
+    return canvasEl ?? null;
   }
 
   // Event handler registration
@@ -137,8 +140,16 @@
   // ResizeObserver
   let resizeObserver: ResizeObserver | null = null;
 
+  // Bumped whenever the component is destroyed, so an in-flight initialization
+  // can detect it is stale and dispose its instance instead of leaking a
+  // WebGPU device and its render loop. Mirrors the Vue wrapper's
+  // initGeneration counter and the React hook's initEpochRef.
+  let initGeneration = 0;
+
   onMount(async () => {
     if (!canvasEl) return;
+
+    const generation = ++initGeneration;
 
     try {
       // Check WebGPU support
@@ -155,6 +166,13 @@
         debug,
       });
 
+      // Destroyed while awaiting: discard the late instance rather than
+      // leaking it (onDestroy already ran and saw graph === null).
+      if (generation !== initGeneration) {
+        graphInstance.dispose();
+        return;
+      }
+
       graph = graphInstance;
       isInitialized = true;
 
@@ -167,13 +185,16 @@
       // Data loading is handled by the $effect below
 
       // Setup resize observer
-      resizeObserver = new ResizeObserver(() => {
-        if (graph) {
-          graph.resize();
-        }
-      });
-      resizeObserver.observe(containerEl);
+      if (containerEl) {
+        resizeObserver = new ResizeObserver(() => {
+          if (graph) {
+            graph.resize();
+          }
+        });
+        resizeObserver.observe(containerEl);
+      }
     } catch (err) {
+      if (generation !== initGeneration) return;
       const e = err instanceof Error ? err : new Error(String(err));
       error = e;
       onerror?.(e);
@@ -181,6 +202,9 @@
   });
 
   onDestroy(() => {
+    // Invalidate any in-flight initialization; the awaiting init disposes the
+    // instance it is about to receive.
+    initGeneration++;
     if (resizeObserver) {
       resizeObserver.disconnect();
       resizeObserver = null;
@@ -189,6 +213,7 @@
       graph.dispose();
       graph = null;
     }
+    isInitialized = false;
   });
 
   // Watch for data changes using $effect (also handles initial load)
@@ -230,6 +255,6 @@
     <canvas
       bind:this={canvasEl}
       style="width: 100%; height: 100%; display: block;"
-    />
+    ></canvas>
   {/if}
 </div>

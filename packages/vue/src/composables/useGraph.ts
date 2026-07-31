@@ -7,14 +7,7 @@
  */
 
 import { onUnmounted, type Ref, ref, type ShallowRef, shallowRef } from "vue";
-import type {
-  EdgeId,
-  GraphConfig,
-  GraphInput,
-  GraphMother,
-  NodeId,
-  Vec2,
-} from "@graphmother/core";
+import type { EdgeId, GraphConfig, GraphInput, GraphMother, NodeId, Vec2 } from "@graphmother/core";
 import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
@@ -127,11 +120,18 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
   const error = ref<Error | null>(null);
   const supported = ref(isSupported());
 
+  // Bumped by dispose()/unmount to invalidate an in-flight initialization; the
+  // stale init disposes its instance instead of leaking a WebGPU device.
+  // Mirrors the initGeneration counter in GraphMother.vue.
+  let initGeneration = 0;
+
   // Initialize graph with canvas
   async function initialize(canvas: HTMLCanvasElement): Promise<void> {
     if (graph.value) {
       return; // Already initialized
     }
+
+    const generation = ++initGeneration;
 
     try {
       const graphInstance = await createGraphMother({
@@ -139,6 +139,12 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
         config,
         debug,
       });
+
+      // Disposed/unmounted while awaiting: discard the late instance
+      if (generation !== initGeneration) {
+        graphInstance.dispose();
+        return;
+      }
 
       graph.value = graphInstance;
       isReady.value = true;
@@ -151,6 +157,7 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
         isLoading.value = false;
       }
     } catch (err) {
+      if (generation !== initGeneration) return;
       error.value = err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -176,6 +183,8 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
 
   // Dispose
   function dispose(): void {
+    // Invalidate any in-flight initialization so it disposes its instance
+    initGeneration++;
     if (graph.value) {
       graph.value.dispose();
       graph.value = null;
@@ -236,6 +245,8 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
 
   // Cleanup on unmount
   onUnmounted(() => {
+    // Invalidate any in-flight initialization so it disposes its instance
+    initGeneration++;
     if (graph.value) {
       graph.value.dispose();
       graph.value = null;

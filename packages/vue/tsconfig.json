@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
+    "types": ["@webgpu/types"],
+    "baseUrl": ".",
+    "paths": {
+      "@graphmother/core": ["../core/mod.ts"],
+      "@graphmother/wasm": ["../wasm/pkg/graphmother_wasm.d.ts"]
+    }
+  },
+  "include": ["src", "env.d.ts", "../core/src/shims.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

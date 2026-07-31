@@ -116,9 +116,29 @@ function getCurrentVersion(): string {
   return match[1];
 }
 
-function setVersions(version: string): void {
-  console.log(`\n  Bumping publishable packages to ${version}`);
+/** Wrapper packages that are versioned in lockstep but not published here. */
+const WRAPPER_PKG_PATHS: readonly string[] = [
+  "packages/react/package.json",
+  "packages/vue/package.json",
+  "packages/svelte/package.json",
+];
 
+/** Rewrites the `"version"` field of a deno.json without reformatting the file. */
+function setDenoJsonVersion(relPath: string, version: string): void {
+  const path = join(ROOT, relPath);
+  const source = Deno.readTextFileSync(path);
+  const updated = source.replace(/^(\s*"version"\s*:\s*)"[^"]+"/m, `$1"${version}"`);
+  if (updated === source) {
+    throw new Error(`Could not find a "version" field to update in ${relPath}`);
+  }
+  Deno.writeTextFileSync(path, updated);
+  console.log(`    ${relPath} -> ${version}`);
+}
+
+function setVersions(version: string): void {
+  console.log(`\n  Bumping packages to ${version}`);
+
+  // Cargo.toml is the source of truth (getCurrentVersion reads it).
   const cargoPath = join(ROOT, "packages/wasm/Cargo.toml");
   const cargo = Deno.readTextFileSync(cargoPath);
   Deno.writeTextFileSync(
@@ -127,14 +147,33 @@ function setVersions(version: string): void {
   );
   console.log(`    Cargo.toml -> ${version}`);
 
+  const [major, minor] = version.split(".");
+
   const corePkgPath = join(ROOT, "packages/core/package.json");
   const corePkg = JSON.parse(Deno.readTextFileSync(corePkgPath));
   corePkg.version = version;
-  const [major, minor] = version.split(".");
   corePkg.dependencies["@graphmother/wasm"] = `^${major}.${minor}.0`;
   Deno.writeTextFileSync(corePkgPath, JSON.stringify(corePkg, null, 2) + "\n");
   console.log(`    core/package.json -> ${version}`);
   console.log(`    @graphmother/wasm dependency -> ^${major}.${minor}.0`);
+
+  // Deno manifests carry their own version fields; keep them from drifting.
+  setDenoJsonVersion("deno.json", version);
+  setDenoJsonVersion("packages/core/deno.json", version);
+
+  // The framework wrappers are versioned in lockstep with core so that a
+  // published wrapper always requests a core it was built against. They are
+  // not in PUBLISH_DIRS (see the module docstring) but must not drift.
+  for (const relPath of WRAPPER_PKG_PATHS) {
+    const path = join(ROOT, relPath);
+    const pkg = JSON.parse(Deno.readTextFileSync(path));
+    pkg.version = version;
+    if (pkg.dependencies?.["@graphmother/core"]) {
+      pkg.dependencies["@graphmother/core"] = `^${version}`;
+    }
+    Deno.writeTextFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+    console.log(`    ${relPath} -> ${version} (@graphmother/core -> ^${version})`);
+  }
 
   // wasm-pack derives packages/wasm/pkg/package.json from Cargo.toml during build.
 }
@@ -194,6 +233,8 @@ async function buildAll(): Promise<void> {
       "--format=esm",
       "--platform=browser",
       "--target=es2022",
+      "--minify",
+      "--sourcemap",
       "--outfile=dist/graphmother.esm.js",
       "--loader:.wgsl=text",
       "--external:@graphmother/wasm",

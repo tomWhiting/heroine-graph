@@ -15,10 +15,7 @@ export { useGraph } from "./composables/useGraph";
 export type { UseGraphOptions, UseGraphReturn } from "./composables/useGraph";
 
 export { useSimulation } from "./composables/useSimulation";
-export type {
-  UseSimulationOptions,
-  UseSimulationReturn,
-} from "./composables/useSimulation";
+export type { UseSimulationOptions, UseSimulationReturn } from "./composables/useSimulation";
 
 // Re-export core types for convenience
 export type {

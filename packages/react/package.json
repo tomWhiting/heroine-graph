@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/react",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "React wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,8 +8,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -20,7 +20,7 @@
     "build": "deno run -A npm:tsup@^8.3.0/tsup",
     "dev": "deno run -A npm:tsup@^8.3.0/tsup --watch",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts,.tsx"
+    "lint": "deno lint src"
   },
   "tsup": {
     "entry": ["src/index.ts"],
@@ -34,17 +34,15 @@
     "clean": true
   },
   "peerDependencies": {
-    "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
+    "react": ">=18.0.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.1.0"
+    "@graphmother/core": "^0.2.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@webgpu/types": "^0.1.69",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0"
   },

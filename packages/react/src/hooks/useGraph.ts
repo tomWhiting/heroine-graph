@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * useGraph Hook
  *
@@ -7,14 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  EdgeId,
-  GraphConfig,
-  GraphInput,
-  GraphMother,
-  NodeId,
-  Vec2,
-} from "@graphmother/core";
+import type { EdgeId, GraphConfig, GraphInput, GraphMother, NodeId, Vec2 } from "@graphmother/core";
 import { createGraphMother, isSupported } from "@graphmother/core";
 
 /**
@@ -148,9 +143,11 @@ export function useGraph(options: UseGraphOptions = {}): UseGraphReturn {
       const epoch = initEpochRef.current;
       const initPromise = (async () => {
         try {
+          // `config` is spread in only when present: the core options type is
+          // exactOptionalPropertyTypes-strict and rejects `config: undefined`.
           const graph = await createGraphMother({
             canvas,
-            config,
+            ...(config ? { config } : {}),
             debug,
           });
 

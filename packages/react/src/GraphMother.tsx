@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * GraphMother React Component
  *
@@ -7,7 +9,15 @@
  * @module
  */
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   BackgroundClickEvent,
   EdgeClickEvent,
@@ -153,6 +163,17 @@ export const GraphMother = forwardRef<GraphMotherRef, GraphMotherProps>(
     const onErrorRef = useRef(onError);
     onErrorRef.current = onError;
 
+    // `config` is consumed once, at graph creation. Depending on its object
+    // identity would tear down and rebuild the entire WebGPU graph on every
+    // render for the (very common) caller that passes an inline object
+    // literal. Instead the init effect depends on a stable serialization of
+    // the config's contents and reads the latest object from a ref, so it
+    // re-initializes only when the config's *values* actually change.
+    // GraphConfig is a flat, JSON-serializable record of scalars and colors.
+    const configRef = useRef(config);
+    configRef.current = config;
+    const configKey = useMemo(() => (config ? JSON.stringify(config) : ""), [config]);
+
     // Expose ref handle
     useImperativeHandle(ref, () => ({
       getGraph: () => graphRef.current,
@@ -175,10 +196,13 @@ export const GraphMother = forwardRef<GraphMotherRef, GraphMotherProps>(
             );
           }
 
-          // Create graph instance
+          // Create graph instance. `config` is spread in only when present:
+          // the core options type is exactOptionalPropertyTypes-strict and
+          // rejects an explicit `config: undefined`.
+          const latestConfig = configRef.current;
           const graph = await createGraphMother({
             canvas,
-            config,
+            ...(latestConfig ? { config: latestConfig } : {}),
             debug,
           });
 
@@ -207,7 +231,8 @@ export const GraphMother = forwardRef<GraphMotherRef, GraphMotherProps>(
         }
         setIsInitialized(false);
       };
-    }, [config, debug]);
+      // configKey (not `config`) intentionally: see the configRef comment above.
+    }, [configKey, debug]);
 
     // Register event handlers
     useEffect(() => {

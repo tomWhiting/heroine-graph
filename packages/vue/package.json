@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/vue",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Vue wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,8 +8,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -20,16 +20,17 @@
     "build": "bunx tsup src/index.ts --format esm --dts --clean",
     "dev": "bunx tsup src/index.ts --format esm --dts --watch",
     "typecheck": "vue-tsc --noEmit",
-    "lint": "eslint src --ext .ts,.vue"
+    "lint": "deno lint src"
   },
   "peerDependencies": {
     "vue": ">=3.5.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.1.0"
+    "@graphmother/core": "^0.2.1"
   },
   "devDependencies": {
     "@vue/tsconfig": "^0.7.0",
+    "@webgpu/types": "^0.1.69",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
     "vue": "^3.5.0",
