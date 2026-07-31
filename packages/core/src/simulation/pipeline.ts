@@ -761,6 +761,66 @@ export function swapSimulationBuffers(buffers: SimulationBuffers): void {
 }
 
 /**
+ * Which of the two ping-pong orientations the position/velocity buffers are
+ * currently in. Only the parity of the swap count matters — two swaps restore
+ * the original assignment — so every bind group that references a ping-pong
+ * buffer has exactly two possible forms.
+ */
+export type BufferParity = 0 | 1;
+
+/**
+ * A value built once for each {@link BufferParity}. Index it with the current
+ * parity; never rebuild its members per frame.
+ */
+export type ParityPair<T> = readonly [T, T];
+
+/**
+ * Shallow copy of `buffers` with the position and velocity ping-pong pairs
+ * exchanged, for building the opposite-parity bind groups without mutating
+ * (or transiently corrupting) the live buffer struct.
+ *
+ * Only the four ping-pong fields differ; every other buffer is shared by
+ * reference, which is what makes both parity variants valid simultaneously.
+ */
+export function swappedPingPongView(buffers: SimulationBuffers): SimulationBuffers {
+  return {
+    ...buffers,
+    positions: buffers.positionsOut,
+    positionsOut: buffers.positions,
+    velocities: buffers.velocitiesOut,
+    velocitiesOut: buffers.velocities,
+  };
+}
+
+/**
+ * Builds `build` once per ping-pong parity so the per-frame path becomes an
+ * index flip instead of a bind-group rebuild.
+ *
+ * `buffers` is assumed to be in orientation `currentParity` (i.e. its
+ * `positions` field is the buffer the simulation reads while the parity
+ * counter holds `currentParity`), so the as-is result lands at index
+ * `currentParity` and the swapped-view result at the other index.
+ *
+ * Call this again — for both parities — whenever any buffer reachable from
+ * `buffers` is reallocated; a bind group referencing a destroyed buffer is a
+ * device-loss bug.
+ *
+ * @param buffers - Live simulation buffers, in orientation `currentParity`
+ * @param currentParity - Parity the caller's frame counter is currently at
+ * @param build - Builds the bind group(s) for one buffer orientation. Must be
+ *   a pure function of the buffers in its argument.
+ */
+export function buildForBothParities<T>(
+  buffers: SimulationBuffers,
+  currentParity: BufferParity,
+  build: (view: SimulationBuffers) => T,
+): ParityPair<T> {
+  const asIs = build(buffers);
+  const flipped = build(swappedPingPongView(buffers));
+  return currentParity === 0 ? [asIs, flipped] : [flipped, asIs];
+}
+
+/**
  * Schedule a copy of positions to readback buffer.
  * Call this during command encoding, then call readbackPositions later.
  */

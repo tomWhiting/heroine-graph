@@ -119,6 +119,11 @@ interface PipelineModule {
     },
   ): void;
   swapSimulationBuffers(buffers: SimulationBuffers): void;
+  buildForBothParities<T>(
+    buffers: SimulationBuffers,
+    currentParity: 0 | 1,
+    build: (view: SimulationBuffers) => T,
+  ): readonly [T, T];
   copyPositionsToReadback(encoder: GPUCommandEncoder, buffers: SimulationBuffers): void;
   readbackPositions(
     buffers: SimulationBuffers,
@@ -586,10 +591,22 @@ export interface SimHarness {
 export const HARNESS_ALPHA_DECAY = 0.0228;
 
 /**
+ * How a harness obtains the bind groups for each tick.
+ *
+ * - `"prebuilt-parity"` (default) mirrors production: both ping-pong parities
+ *   are built once up front and the tick loop only flips an index.
+ * - `"rebuild-each-tick"` recreates every bind group after each swap. This is
+ *   the pre-optimization behaviour, kept solely as the reference
+ *   implementation the parity-equivalence test compares against; nothing else
+ *   should select it.
+ */
+export type HarnessBindGroupMode = "prebuilt-parity" | "rebuild-each-tick";
+
+/**
  * Creates a simulation harness on the given device: builds the real
  * compute pipelines, uploads the fixture graph, and steps the simulation
  * exactly the way GraphMother does (uniforms -> record -> submit ->
- * ping-pong swap -> bind group rebuild).
+ * ping-pong swap -> parity flip).
  */
 export async function createSimHarness(
   device: GPUDevice,
@@ -597,6 +614,7 @@ export async function createSimHarness(
   config: Partial<FullForceConfig> = {},
   alphaDecay: number = HARNESS_ALPHA_DECAY,
   adaptiveSpeedOverride?: boolean,
+  bindGroupMode: HarnessBindGroupMode = "prebuilt-parity",
 ): Promise<SimHarness> {
   const mod = await loadPipelineModule();
   const { nodeCount } = graph;
@@ -619,7 +637,21 @@ export async function createSimHarness(
     device.queue.writeBuffer(buffers.nodeFlags, 0, graph.flags.slice().buffer);
   }
 
-  let bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+  let parity: 0 | 1 = 0;
+  // Production path: both ping-pong orientations built once, exactly as
+  // GraphMother does; the tick loop only flips `parity`.
+  const paritySets = mod.buildForBothParities(
+    buffers,
+    parity,
+    (view) => mod.createSimulationBindGroups(device, pipeline, view),
+  );
+  // Reference path (bindGroupMode === "rebuild-each-tick"): rebuilt from the
+  // live buffers after every swap, deliberately bypassing the parity indexing
+  // it exists to check. Seeded with the parity-0 set, which is what a fresh
+  // build from the as-allocated buffers produces.
+  let rebuiltBindGroups = paritySets[parity];
+  const currentBindGroups = (): SimulationBindGroups =>
+    bindGroupMode === "prebuilt-parity" ? paritySets[parity] : rebuiltBindGroups;
   let tickCount = 0;
 
   return {
@@ -642,12 +674,13 @@ export async function createSimHarness(
           adaptiveSpeedOverride,
         );
         const encoder = device.createCommandEncoder();
-        mod.recordSimulationStep(encoder, pipeline, bindGroups, nodeCount, edgeCount);
+        mod.recordSimulationStep(encoder, pipeline, currentBindGroups(), nodeCount, edgeCount);
         device.queue.submit([encoder.finish()]);
-        // Ping-pong swap invalidates the bind groups' buffer references;
-        // rebuild them exactly as GraphMother.tickSimulation does.
         mod.swapSimulationBuffers(buffers);
-        bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+        parity = (parity ^ 1) as 0 | 1;
+        if (bindGroupMode === "rebuild-each-tick") {
+          rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+        }
         tickCount++;
       }
       await waitForQueue(device);
@@ -749,9 +782,9 @@ export interface HarnessForceAlgorithm {
  * default N² repulsion, the shared spring pass is skipped when the
  * algorithm handles its own attraction, integration gravity is suppressed
  * when the algorithm applies its own, and prefersAdaptiveSpeed is
- * forwarded as the adaptive-speed override. Algorithm bind groups are
- * rebuilt after every ping-pong swap, mirroring
- * GraphMother.swapAndRebuildBindGroups.
+ * forwarded as the adaptive-speed override. Simulation and algorithm bind
+ * groups are built once per ping-pong parity and selected by index, mirroring
+ * GraphMother.advanceFrameParity.
  */
 export async function createAlgorithmSimHarness(
   device: GPUDevice,
@@ -773,6 +806,8 @@ export async function createAlgorithmSimHarness(
      * edges + BFS depths for Relativity Atlas) the way graph.ts does.
      */
     onAlgorithmBuffers?: (algoBuffers: { destroy(): void }) => void;
+    /** See {@link HarnessBindGroupMode}; defaults to the production path. */
+    bindGroupMode?: HarnessBindGroupMode;
   } = {},
 ): Promise<SimHarness> {
   const mod = await loadPipelineModule();
@@ -829,28 +864,45 @@ export async function createAlgorithmSimHarness(
   const algoBuffers = algorithm.createBuffers(device, nodeCount);
   options.onAlgorithmBuffers?.(algoBuffers);
 
-  const makeContext = (): HarnessAlgorithmContext => ({
+  const makeContext = (view: SimulationBuffers): HarnessAlgorithmContext => ({
     device,
-    positions: buffers.positions,
-    forces: buffers.forces,
+    positions: view.positions,
+    forces: view.forces,
     nodeCount,
     edgeCount,
     forceConfig,
     bounds: currentBounds,
-    edgeSources: buffers.edgeSources,
-    edgeTargets: buffers.edgeTargets,
+    edgeSources: view.edgeSources,
+    edgeTargets: view.edgeTargets,
     edgeSourcesData: graph.edgeSources,
     edgeTargetsData: graph.edgeTargets,
-    nodeFlags: buffers.nodeFlags,
+    nodeFlags: view.nodeFlags,
   });
 
-  let bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
-  let algoBindGroups = algorithm.createBindGroups(
-    device,
-    algoPipelines,
-    makeContext(),
-    algoBuffers,
+  const bindGroupMode = options.bindGroupMode ?? "prebuilt-parity";
+  let parity: 0 | 1 = 0;
+  // Production path: both parities built once for the simulation passes and
+  // for the algorithm's own passes; the tick loop only flips `parity`.
+  const paritySets = mod.buildForBothParities(
+    buffers,
+    parity,
+    (view) => mod.createSimulationBindGroups(device, pipeline, view),
   );
+  const algoParitySets = mod.buildForBothParities(
+    buffers,
+    parity,
+    (view) => algorithm.createBindGroups(device, algoPipelines, makeContext(view), algoBuffers),
+  );
+  // Reference path (see HarnessBindGroupMode): rebuilt from the live buffers
+  // after every swap, deliberately bypassing the parity indexing it exists to
+  // check. Seeded with the parity-0 sets, which are what a fresh build from
+  // the as-allocated buffers produces.
+  let rebuiltBindGroups = paritySets[parity];
+  let rebuiltAlgoBindGroups = algoParitySets[parity];
+  const currentBindGroups = (): SimulationBindGroups =>
+    bindGroupMode === "prebuilt-parity" ? paritySets[parity] : rebuiltBindGroups;
+  const currentAlgoBindGroups = (): AlgorithmBindGroupsHandle =>
+    bindGroupMode === "prebuilt-parity" ? algoParitySets[parity] : rebuiltAlgoBindGroups;
   let tickCount = 0;
 
   return {
@@ -888,32 +940,40 @@ export async function createAlgorithmSimHarness(
           effectiveForceConfig,
           algorithm.prefersAdaptiveSpeed,
         );
-        algorithm.updateUniforms(device, algoBuffers, makeContext());
+        // buffers is always in the current parity's orientation, so this
+        // context matches the bind groups selected below.
+        algorithm.updateUniforms(device, algoBuffers, makeContext(buffers));
         const encoder = device.createCommandEncoder();
         mod.recordSimulationStepWithOptions(
           encoder,
           pipeline,
-          bindGroups,
+          currentBindGroups(),
           nodeCount,
           edgeCount,
           {
             recordRepulsionPass: (enc) => {
-              algorithm.recordRepulsionPass(enc, algoPipelines, algoBindGroups, nodeCount);
+              algorithm.recordRepulsionPass(
+                enc,
+                algoPipelines,
+                currentAlgoBindGroups(),
+                nodeCount,
+              );
             },
             skipSprings: algorithm.handlesSprings ?? false,
           },
         );
         device.queue.submit([encoder.finish()]);
-        // Ping-pong swap invalidates the bind groups' buffer references;
-        // rebuild both sim and algorithm bind groups as GraphMother does.
         mod.swapSimulationBuffers(buffers);
-        bindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
-        algoBindGroups = algorithm.createBindGroups(
-          device,
-          algoPipelines,
-          makeContext(),
-          algoBuffers,
-        );
+        parity = (parity ^ 1) as 0 | 1;
+        if (bindGroupMode === "rebuild-each-tick") {
+          rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+          rebuiltAlgoBindGroups = algorithm.createBindGroups(
+            device,
+            algoPipelines,
+            makeContext(buffers),
+            algoBuffers,
+          );
+        }
         tickCount++;
       }
       await waitForQueue(device);

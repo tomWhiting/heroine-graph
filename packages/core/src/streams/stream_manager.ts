@@ -44,6 +44,19 @@ export class StreamManager {
   private blendedColorCache: Float32Array | null = null;
   private lastNodeCount = 0;
 
+  /**
+   * Monotonic mutation counter, bumped by {@link invalidateCache} — the single
+   * choke point every stream mutation already goes through (define, remove,
+   * set/clear data, enable/disable/toggle, clear, and the direct
+   * setOpacity/setBlendMode/setColorScale calls that callers must follow with
+   * invalidateCache).
+   *
+   * Consumers that derive GPU data from stream values (see
+   * layers/stream_intensity.ts) compare this instead of polling or
+   * deep-comparing stream contents.
+   */
+  private mutationVersion = 0;
+
   constructor(config: StreamManagerConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
@@ -323,10 +336,22 @@ export class StreamManager {
   }
 
   /**
-   * Invalidate the blended color cache
+   * Version of the current stream contents. Changes on every mutation; never
+   * repeats a previous value.
+   */
+  get version(): number {
+    return this.mutationVersion;
+  }
+
+  /**
+   * Invalidate the blended color cache and advance {@link version}.
+   *
+   * Must be called after ANY mutation of a stream reached directly through
+   * {@link getStream}, otherwise derived GPU uploads keep serving stale data.
    */
   invalidateCache(): void {
     this.blendedColorCache = null;
+    this.mutationVersion++;
   }
 
   /**

@@ -174,13 +174,35 @@ export interface ForceAlgorithm {
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers;
 
   /**
-   * Create bind groups for the repulsion pass
+   * Create bind groups for the repulsion pass.
+   *
+   * CONTRACT — called once per ping-pong parity, never per frame. The host
+   * calls this exactly twice per buffer allocation: once with
+   * `context.positions` set to each of the two ping-pong position buffers,
+   * and caches both results (see `buildForBothParities` in ../pipeline.ts).
+   * Per frame it only flips which cached set it binds.
+   *
+   * The implementation MUST therefore be a pure function of the GPU buffers
+   * reachable from `context` and `algorithmBuffers`. It must not capture
+   * `context.nodeCount`, `context.bounds`, or `context.forceConfig` in the
+   * returned bind groups — those change every frame and belong in uniforms
+   * written by {@link ForceAlgorithm.updateUniforms}. An algorithm whose bind
+   * groups genuinely cannot satisfy this (because they must reference GPU
+   * state that changes mid-run for a reason other than the ping-pong swap)
+   * cannot use the cached path and must be given an explicit opt-out here
+   * before it is registered; all currently registered algorithms satisfy the
+   * contract. Algorithm-internal ping-pong (e.g. Relativity Atlas's mass
+   * iteration) is unaffected: it lives entirely in `algorithmBuffers` and is
+   * reproduced identically in both parity variants.
+   *
+   * The host rebuilds both variants whenever any referenced buffer is
+   * reallocated (load, capacity growth, algorithm switch).
    *
    * @param device - GPU device
    * @param pipelines - Algorithm pipelines
-   * @param context - Render context with buffers
+   * @param context - Render context with buffers for one ping-pong parity
    * @param algorithmBuffers - Algorithm-specific buffers
-   * @returns Bind groups
+   * @returns Bind groups valid for that parity
    */
   createBindGroups(
     device: GPUDevice,

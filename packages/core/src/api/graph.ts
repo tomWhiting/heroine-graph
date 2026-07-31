@@ -70,6 +70,8 @@ import {
 import { createEdgeIndicesBuffer } from "../graph/parser.ts";
 import { boundsCenter, fitBoundsScale } from "../viewport/transforms.ts";
 import {
+  type BufferParity,
+  buildForBothParities,
   copyEdgesToSimulation,
   copyPositionsToReadback,
   copyPositionsToSimulation,
@@ -79,6 +81,7 @@ import {
   DEAD_SLOT_RADIUS,
   NODE_FLAG_DEAD,
   NODE_FLAG_PINNED,
+  type ParityPair,
   readbackPositions,
   recordSimulationStepWithOptions,
   type SimulationBindGroups,
@@ -136,6 +139,7 @@ import {
   type MetaballLayer,
   type MetaballRenderContext,
 } from "../layers/mod.ts";
+import { StreamIntensityCache } from "../layers/stream_intensity.ts";
 import {
   type AlgorithmBindGroups,
   type AlgorithmBuffers,
@@ -382,8 +386,8 @@ export class GraphMother {
 
   // GPU resources
   private buffers: GPUBuffers | null = null;
-  private nodeBindGroup: GPUBindGroup | null = null;
-  private edgeBindGroup: GPUBindGroup | null = null;
+  private nodeBindGroupSets: ParityPair<GPUBindGroup> | null = null;
+  private edgeBindGroupSets: ParityPair<GPUBindGroup> | null = null;
   private viewportBindGroup: GPUBindGroup | null = null;
   private renderConfigBindGroup: GPUBindGroup | null = null;
   private renderConfigBuffer: GPUBuffer | null = null;
@@ -417,25 +421,66 @@ export class GraphMother {
 
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
-  private simBindGroups: SimulationBindGroups | null = null;
+  private simBindGroupSets: ParityPair<SimulationBindGroups> | null = null;
+
+  /**
+   * Which ping-pong orientation the simulation buffers are in this frame.
+   *
+   * Every bind group that references a ping-pong buffer is built twice — once
+   * per parity — when the buffers are allocated (see rebuildAllBindGroups), so
+   * advancing a frame is an index flip rather than ~14 createBindGroup calls.
+   * simBuffers itself is still swapped in place, so `simBuffers.positions` is
+   * always the buffer the simulation reads this frame.
+   */
+  private bufferParity: BufferParity = 0;
 
   // Force algorithm resources
   private currentAlgorithm: ForceAlgorithm | null = null;
   private algorithmPipelines: AlgorithmPipelines | null = null;
   private algorithmBuffers: AlgorithmBuffers | null = null;
-  private algorithmBindGroups: AlgorithmBindGroups | null = null;
+  private algorithmBindGroupSets: ParityPair<AlgorithmBindGroups> | null = null;
 
   // Collision detection resources
   private collisionPipeline: CollisionPipeline | null = null;
   private collisionBuffers: CollisionBuffers | null = null;
-  private collisionBindGroup: CollisionBindGroup | null = null;
+  private collisionBindGroupSets: ParityPair<CollisionBindGroup> | null = null;
 
   // Grid collision resources (O(n·k) spatial hash for large graphs)
   private gridCollisionPipeline: GridCollisionPipeline | null = null;
   private gridCollisionBuffers: GridCollisionBuffers | null = null;
-  private gridCollisionBindGroups: GridCollisionBindGroups | null = null;
+  private gridCollisionBindGroupSets: ParityPair<GridCollisionBindGroups> | null = null;
   private maxNodeRadius: number = 5.0;
   private frameBounds: BoundingBox | undefined;
+
+  // ------------------------------------------------------------------------
+  // Bind groups for the current ping-pong parity.
+  // Each reads one half of a pair built by rebuildAllBindGroups; nothing here
+  // allocates, so these are safe to touch on the per-frame path.
+  // ------------------------------------------------------------------------
+
+  private get simBindGroups(): SimulationBindGroups | null {
+    return this.simBindGroupSets?.[this.bufferParity] ?? null;
+  }
+
+  private get nodeBindGroup(): GPUBindGroup | null {
+    return this.nodeBindGroupSets?.[this.bufferParity] ?? null;
+  }
+
+  private get edgeBindGroup(): GPUBindGroup | null {
+    return this.edgeBindGroupSets?.[this.bufferParity] ?? null;
+  }
+
+  private get algorithmBindGroups(): AlgorithmBindGroups | null {
+    return this.algorithmBindGroupSets?.[this.bufferParity] ?? null;
+  }
+
+  private get collisionBindGroup(): CollisionBindGroup | null {
+    return this.collisionBindGroupSets?.[this.bufferParity] ?? null;
+  }
+
+  private get gridCollisionBindGroups(): GridCollisionBindGroups | null {
+    return this.gridCollisionBindGroupSets?.[this.bufferParity] ?? null;
+  }
 
   // Interaction
   private hitTester: HitTester;
@@ -486,11 +531,14 @@ export class GraphMother {
   // Type-based styling system
   private typeStyleManager: TypeStyleManager;
 
-  // Heatmap stream intensity buffers (per-node values from stream), keyed by layer ID
-  private heatmapIntensityBuffers = new Map<string, GPUBuffer>();
-
-  // Metaball stream intensity buffer (per-node values from stream)
-  private metaballIntensityBuffer: GPUBuffer | null = null;
+  /**
+   * Per-layer caches of the stream-derived per-node intensity upload, keyed by
+   * layer ID. Each recomputes only when its stream, the stream's mutation
+   * version, the node count, or the colour-scale domain changed — without this
+   * a heatmap or metaball bound to a stream costs an O(nodeCount) loop plus a
+   * full buffer upload on every frame.
+   */
+  private streamIntensityCaches = new Map<string, StreamIntensityCache>();
 
   // Default intensity buffer (all 1.0 values for density mode)
   private defaultIntensityBuffer: GPUBuffer | null = null;
@@ -868,21 +916,13 @@ export class GraphMother {
         return;
       }
 
-      const context: AlgorithmRenderContext = {
+      // simBuffers is always in the current parity's orientation, so this
+      // context matches the bind groups selected by `bufferParity`.
+      this.currentAlgorithm.updateUniforms(
         device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: simNodeCount,
-        edgeCount: this.state.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
-        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-      this.currentAlgorithm.updateUniforms(device, this.algorithmBuffers, context);
+        this.algorithmBuffers,
+        this.buildAlgorithmContext(this.simBuffers, bounds),
+      );
     }
 
     // Record simulation compute passes with custom algorithm for repulsion
@@ -973,99 +1013,25 @@ export class GraphMother {
   }
 
   /**
-   * Swap buffers after simulation and rebuild bind groups
+   * Rotate the ping-pong buffers after a simulation step.
+   *
+   * No bind group is created here: both parity variants of every bind group
+   * that references a ping-pong buffer were built when those buffers were
+   * allocated (rebuildAllBindGroups), so advancing a frame is an index flip.
+   *
+   * simBuffers is still swapped in place because everything else in the class
+   * reads `simBuffers.positions` as "the buffer holding current positions"
+   * (readback, drag writes, layer render contexts).
    */
-  private swapAndRebuildBindGroups(): void {
-    if (!this.simBuffers || !this.simulationPipeline) return;
+  private advanceFrameParity(): void {
+    if (!this.simBuffers) return;
 
-    // Swap the ping-pong buffers
     swapSimulationBuffers(this.simBuffers);
+    this.bufferParity = (this.bufferParity ^ 1) as BufferParity;
 
-    // Rebuild bind groups with swapped buffers
-    this.simBindGroups = createSimulationBindGroups(
-      this.gpuContext.device,
-      this.simulationPipeline,
-      this.simBuffers,
-    );
-
-    // Also update render bind groups to use new position buffers
-    if (this.nodePipeline) {
-      this.nodeBindGroup = createNodeBindGroup(
-        this.gpuContext.device,
-        this.nodePipeline,
-        this.simBuffers.positions,
-        this.buffers!.nodeAttributes,
-      );
-    }
-
-    if (this.edgePipeline && this.buffers) {
-      this.edgeBindGroup = createEdgeBindGroup(
-        this.gpuContext.device,
-        this.edgePipeline,
-        this.simBuffers.positions,
-        this.buffers.edgeIndices,
-        this.buffers.edgeAttributes,
-      );
-    }
-
-    // Rebuild algorithm bind groups with swapped position/force buffers
-    if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
-      // Reuse frame bounds computed in recordSimulationCommands (same frame).
-      // Bind group creation doesn't use bounds, but the AlgorithmRenderContext
-      // interface includes them for consistency.
-      const context: AlgorithmRenderContext = {
-        device: this.gpuContext.device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: this.graphState?.nodeHighWater ?? this.state.nodeCount,
-        edgeCount: this.state.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds: this.frameBounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
-        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-
-      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
-        this.gpuContext.device,
-        this.algorithmPipelines,
-        context,
-        this.algorithmBuffers,
-      );
-    }
-
-    // Rebuild collision bind group with swapped position buffers.
-    // Collision binds to positionsOut (integration's write target) so corrections
-    // persist through the ping-pong swap.
-    if (this.collisionPipeline && this.collisionBuffers) {
-      this.collisionBindGroup = createCollisionBindGroup(
-        this.gpuContext.device,
-        this.collisionPipeline,
-        this.collisionBuffers,
-        this.simBuffers.positionsOut,
-        this.simBuffers.nodeFlags,
-      );
-    }
-
-    // Rebuild grid collision bind groups with swapped position buffers
-    if (this.gridCollisionPipeline && this.gridCollisionBuffers && this.collisionBuffers) {
-      this.gridCollisionBindGroups = createGridCollisionBindGroups(
-        this.gpuContext.device,
-        this.gridCollisionPipeline,
-        this.gridCollisionBuffers,
-        this.collisionBuffers.nodeSizes,
-        this.collisionBuffers.displacements,
-        this.simBuffers.positionsOut,
-        this.simBuffers.nodeFlags,
-      );
-    }
-
-    // Update layer render contexts to use the new position buffers
-    // This is critical: layers must point to the current read buffer,
-    // not the output buffer being written to by the simulation
-    this.updateLayerRenderContext();
+    // Layers must point at the new read buffer, not the buffer the simulation
+    // is about to write. Stream-derived uploads inside are dirty-gated.
+    this.refreshLayerRenderContexts();
   }
 
   /**
@@ -1167,7 +1133,7 @@ export class GraphMother {
     clearPass.end();
 
     // Update layer render contexts before rendering (ensures fresh texture references)
-    this.updateLayerRenderContext();
+    this.refreshLayerRenderContexts();
 
     // Render background visualization layers FIRST (heatmap, contour, metaball render behind nodes)
     // Skip labels layer - it renders after nodes
@@ -1264,9 +1230,9 @@ export class GraphMother {
       this.performPositionReadback();
     }
 
-    // Swap buffers after GPU execution for next frame
+    // Rotate ping-pong buffers after GPU execution for next frame
     if (needsCompute) {
-      this.swapAndRebuildBindGroups();
+      this.advanceFrameParity();
     }
   }
 
@@ -1474,7 +1440,7 @@ export class GraphMother {
     this.syncParsedGraphFromState();
 
     // Update layer render contexts with new position buffers
-    this.updateLayerRenderContext();
+    this.refreshLayerRenderContexts();
 
     // Start render loop on first load (delayed from constructor to ensure canvas is sized)
     if (!this.renderLoop.isRunning) {
@@ -1556,32 +1522,8 @@ export class GraphMother {
       this.forceConfig,
     );
 
-    // Create simulation bind groups
-    this.simBindGroups = createSimulationBindGroups(
-      device,
-      this.simulationPipeline,
-      this.simBuffers,
-    );
-
-    // Update render bind groups to use simulation position buffers
-    if (this.nodePipeline) {
-      this.nodeBindGroup = createNodeBindGroup(
-        device,
-        this.nodePipeline,
-        this.simBuffers.positions,
-        this.buffers!.nodeAttributes,
-      );
-    }
-
-    if (this.edgePipeline && this.buffers) {
-      this.edgeBindGroup = createEdgeBindGroup(
-        device,
-        this.edgePipeline,
-        this.simBuffers.positions,
-        this.buffers.edgeIndices,
-        this.buffers.edgeAttributes,
-      );
-    }
+    // Simulation and render bind groups (both parities) for the fresh buffers
+    this.rebuildSimulationBindGroups();
 
     // Create algorithm-specific buffers and bind groups (use capacity)
     if (this.currentAlgorithm && this.algorithmPipelines) {
@@ -1589,36 +1531,7 @@ export class GraphMother {
         device,
         nodeCap,
       );
-
-      // Compute initial bounds from the parsed graph positions.
-      // These are the initial positions before simulation starts.
-      const bounds = computeBoundsFromPositions(
-        parsed.positionsX,
-        parsed.positionsY,
-        parsed.nodeCount,
-      );
-
-      const context: AlgorithmRenderContext = {
-        device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: parsed.nodeCount,
-        edgeCount: parsed.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: parsed.edgeSources,
-        edgeTargetsData: parsed.edgeTargets,
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-
-      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
-        device,
-        this.algorithmPipelines,
-        context,
-        this.algorithmBuffers,
-      );
+      this.rebuildAlgorithmBindGroups();
 
       // Upload algorithm-specific edge data
       this.uploadAlgorithmEdgeData(device);
@@ -1661,17 +1574,6 @@ export class GraphMother {
     this.maxNodeRadius = maxRadius > 0 ? maxRadius : 5.0;
     uploadNodeSizes(device, this.collisionBuffers, nodeSizes);
 
-    // Create collision bind group — bind to positionsOut so collision corrections
-    // persist through the ping-pong swap (integration writes positionsOut, collision
-    // modifies positionsOut, swap rotates positionsOut into next frame's read buffer)
-    this.collisionBindGroup = createCollisionBindGroup(
-      device,
-      this.collisionPipeline,
-      this.collisionBuffers,
-      this.simBuffers.positionsOut,
-      this.simBuffers.nodeFlags,
-    );
-
     // Update collision uniforms
     updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
 
@@ -1681,16 +1583,11 @@ export class GraphMother {
         destroyGridCollisionBuffers(this.gridCollisionBuffers);
       }
       this.gridCollisionBuffers = createGridCollisionBuffers(device, nodeCount);
-      this.gridCollisionBindGroups = createGridCollisionBindGroups(
-        device,
-        this.gridCollisionPipeline,
-        this.gridCollisionBuffers,
-        this.collisionBuffers.nodeSizes,
-        this.collisionBuffers.displacements,
-        this.simBuffers.positionsOut,
-        this.simBuffers.nodeFlags,
-      );
     }
+
+    // Both collision paths bind the buffers created above, so their bind
+    // groups have to be rebuilt for both parities here.
+    this.rebuildCollisionBindGroups();
 
     if (this.debug) {
       console.log(`Collision detection initialized for ${nodeCount} nodes`);
@@ -1946,29 +1843,17 @@ export class GraphMother {
       edgeCapacity,
     };
 
-    // Create bind groups
+    // The viewport bind group references no ping-pong buffer, so it is built
+    // once here. The node and edge bind groups DO (they read the simulation's
+    // current position buffer, not `positions` above, which is only the
+    // pre-simulation upload target) and are built per parity by
+    // rebuildSimulationBindGroups, which createSimulationResources runs
+    // immediately after this method.
     if (this.nodePipeline) {
       this.viewportBindGroup = createViewportBindGroup(
         device,
         this.nodePipeline,
         this.viewportUniformBuffer.buffer,
-      );
-
-      this.nodeBindGroup = createNodeBindGroup(
-        device,
-        this.nodePipeline,
-        positions,
-        nodeAttributes,
-      );
-    }
-
-    if (this.edgePipeline) {
-      this.edgeBindGroup = createEdgeBindGroup(
-        device,
-        this.edgePipeline,
-        positions,
-        edgeIndices,
-        edgeAttributes,
       );
     }
 
@@ -1988,8 +1873,8 @@ export class GraphMother {
       this.buffers = null;
     }
 
-    this.nodeBindGroup = null;
-    this.edgeBindGroup = null;
+    this.nodeBindGroupSets = null;
+    this.edgeBindGroupSets = null;
   }
 
   // ==========================================================================
@@ -3178,29 +3063,7 @@ export class GraphMother {
 
     this.algorithmBuffers.destroy();
     this.algorithmBuffers = this.currentAlgorithm.createBuffers(device, newCap);
-
-    const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, gs.nodeHighWater);
-    const context: AlgorithmRenderContext = {
-      device,
-      positions: this.simBuffers.positions,
-      forces: this.simBuffers.forces,
-      nodeCount: gs.nodeHighWater,
-      edgeCount: gs.edgeCount,
-      forceConfig: this.forceConfig,
-      bounds,
-      edgeSources: this.simBuffers.edgeSources,
-      edgeTargets: this.simBuffers.edgeTargets,
-      edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
-      edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
-      nodeFlags: this.simBuffers.nodeFlags,
-    };
-
-    this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
-      device,
-      this.algorithmPipelines,
-      context,
-      this.algorithmBuffers,
-    );
+    this.rebuildAlgorithmBindGroups();
 
     this.uploadAlgorithmEdgeData(device);
 
@@ -3345,41 +3208,20 @@ export class GraphMother {
     device.queue.writeBuffer(this.simBuffers.forces, 0, zeros);
     device.queue.writeBuffer(this.simBuffers.prevForces, 0, zeros);
 
-    // === Rebuild all affected bind groups ===
-    this.rebuildAllBindGroups();
+    // === Rebuild simulation/render bind groups for the new buffers ===
+    this.rebuildSimulationBindGroups();
 
     // === Rebuild algorithm buffers if they're smaller than new capacity ===
     if (this.currentAlgorithm && this.algorithmPipelines) {
       this.algorithmBuffers?.destroy();
       this.algorithmBuffers = this.currentAlgorithm.createBuffers(device, newCapacity);
-
-      const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, hw);
-      const context: AlgorithmRenderContext = {
-        device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: hw,
-        edgeCount: gs.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
-        edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-
-      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
-        device,
-        this.algorithmPipelines,
-        context,
-        this.algorithmBuffers,
-      );
-
       this.uploadAlgorithmEdgeData(device);
     }
+    // Runs even without an algorithm-buffer recreation: the algorithm binds
+    // the simulation position/force/flag buffers replaced above.
+    this.rebuildAlgorithmBindGroups();
 
-    // === Rebuild collision buffers ===
+    // === Rebuild collision buffers (rebuilds their bind groups too) ===
     this.initializeCollisionResources(device, newCapacity, gs.nodeAttributes);
 
     // Restore per-slot liveness — the recreated nodeFlags buffer is zeroed
@@ -3387,7 +3229,7 @@ export class GraphMother {
     this.flushNodeSlotFlagsToGPU();
 
     // === Update layer render contexts ===
-    this.updateLayerRenderContext();
+    this.refreshLayerRenderContexts();
 
     if (this.debug) {
       console.log(`Node buffers reallocated: capacity ${newCapacity}`);
@@ -3482,95 +3324,188 @@ export class GraphMother {
     }
   }
 
+  // ==========================================================================
+  // Bind group construction
+  //
+  // Every bind group below references at least one ping-pong buffer, so each
+  // is built twice — once per BufferParity — and the per-frame path only flips
+  // the index (see advanceFrameParity). These MUST be re-run whenever any
+  // referenced buffer is reallocated (load, node/edge capacity growth,
+  // algorithm switch, collision buffer recreation): a bind group holding a
+  // destroyed buffer is a device-loss bug.
+  // ==========================================================================
+
   /**
-   * Rebuild all bind groups after buffer reallocation.
-   * This is the same pattern used in swapAndRebuildBindGroups() but
-   * also updates edge bind groups for edge buffer changes.
+   * Rebuild the simulation compute bind groups and the node/edge render bind
+   * groups. Call after reallocating any simulation, node-attribute, or edge
+   * buffer.
    */
-  private rebuildAllBindGroups(): void {
+  private rebuildSimulationBindGroups(): void {
     if (!this.simBuffers || !this.simulationPipeline) return;
 
     const { device } = this.gpuContext;
+    const pipeline = this.simulationPipeline;
 
-    // Rebuild simulation bind groups
-    this.simBindGroups = createSimulationBindGroups(
-      device,
-      this.simulationPipeline,
+    this.simBindGroupSets = buildForBothParities(
       this.simBuffers,
+      this.bufferParity,
+      (view) => createSimulationBindGroups(device, pipeline, view),
     );
 
-    // Rebuild node render bind group
-    if (this.nodePipeline) {
-      this.nodeBindGroup = createNodeBindGroup(
-        device,
-        this.nodePipeline,
-        this.simBuffers.positions,
-        this.buffers!.nodeAttributes,
+    // Render reads the simulation's current position buffer directly — the
+    // separate render position buffer is only the pre-simulation upload target.
+    if (this.nodePipeline && this.buffers) {
+      const nodePipeline = this.nodePipeline;
+      const nodeAttributes = this.buffers.nodeAttributes;
+      this.nodeBindGroupSets = buildForBothParities(
+        this.simBuffers,
+        this.bufferParity,
+        (view) => createNodeBindGroup(device, nodePipeline, view.positions, nodeAttributes),
       );
     }
 
-    // Rebuild edge render bind group
     if (this.edgePipeline && this.buffers) {
-      this.edgeBindGroup = createEdgeBindGroup(
-        device,
-        this.edgePipeline,
-        this.simBuffers.positions,
-        this.buffers.edgeIndices,
-        this.buffers.edgeAttributes,
+      const edgePipeline = this.edgePipeline;
+      const { edgeIndices, edgeAttributes } = this.buffers;
+      this.edgeBindGroupSets = buildForBothParities(
+        this.simBuffers,
+        this.bufferParity,
+        (view) =>
+          createEdgeBindGroup(device, edgePipeline, view.positions, edgeIndices, edgeAttributes),
       );
     }
+  }
 
-    // Rebuild algorithm bind groups
-    if (this.currentAlgorithm && this.algorithmPipelines && this.algorithmBuffers) {
-      const gs = this.graphState!;
-      const bounds = computeBoundsFromPositions(gs.positionsX, gs.positionsY, gs.nodeHighWater);
-
-      const context: AlgorithmRenderContext = {
-        device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: gs.nodeHighWater,
-        edgeCount: gs.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: gs.edgeSources.subarray(0, gs.edgeCount),
-        edgeTargetsData: gs.edgeTargets.subarray(0, gs.edgeCount),
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-
-      this.algorithmBindGroups = this.currentAlgorithm.createBindGroups(
-        device,
-        this.algorithmPipelines,
-        context,
-        this.algorithmBuffers,
-      );
+  /**
+   * Rebuild the current algorithm's bind groups for both parities. Call after
+   * creating or recreating the algorithm's buffers, or after reallocating any
+   * simulation buffer the algorithm binds.
+   */
+  private rebuildAlgorithmBindGroups(): void {
+    if (
+      !this.simBuffers || !this.currentAlgorithm || !this.algorithmPipelines ||
+      !this.algorithmBuffers
+    ) {
+      this.algorithmBindGroupSets = null;
+      return;
     }
 
-    // Rebuild collision bind group — bind to positionsOut for ping-pong consistency
+    const { device } = this.gpuContext;
+    const algorithm = this.currentAlgorithm;
+    const pipelines = this.algorithmPipelines;
+    const algorithmBuffers = this.algorithmBuffers;
+    // O(n) over the CPU position shadow — computed once, not once per parity.
+    const bounds = this.computeCurrentBounds();
+
+    this.algorithmBindGroupSets = buildForBothParities(
+      this.simBuffers,
+      this.bufferParity,
+      (view) =>
+        algorithm.createBindGroups(
+          device,
+          pipelines,
+          this.buildAlgorithmContext(view, bounds),
+          algorithmBuffers,
+        ),
+    );
+  }
+
+  /**
+   * Rebuild the collision bind groups for both parities. Call after creating
+   * or recreating the collision/grid-collision buffers, or after reallocating
+   * the simulation position or node-flag buffers.
+   *
+   * Collision binds positionsOut — the integration pass's write target — so
+   * its corrections land in the buffer that becomes next frame's read buffer.
+   */
+  private rebuildCollisionBindGroups(): void {
+    if (!this.simBuffers) return;
+
+    const { device } = this.gpuContext;
+
     if (this.collisionPipeline && this.collisionBuffers) {
-      this.collisionBindGroup = createCollisionBindGroup(
-        device,
-        this.collisionPipeline,
-        this.collisionBuffers,
-        this.simBuffers.positionsOut,
-        this.simBuffers.nodeFlags,
+      const pipeline = this.collisionPipeline;
+      const buffers = this.collisionBuffers;
+      this.collisionBindGroupSets = buildForBothParities(
+        this.simBuffers,
+        this.bufferParity,
+        (view) =>
+          createCollisionBindGroup(device, pipeline, buffers, view.positionsOut, view.nodeFlags),
       );
     }
 
-    // Rebuild grid collision bind groups
     if (this.gridCollisionPipeline && this.gridCollisionBuffers && this.collisionBuffers) {
-      this.gridCollisionBindGroups = createGridCollisionBindGroups(
-        device,
-        this.gridCollisionPipeline,
-        this.gridCollisionBuffers,
-        this.collisionBuffers.nodeSizes,
-        this.collisionBuffers.displacements,
-        this.simBuffers.positionsOut,
-        this.simBuffers.nodeFlags,
+      const pipeline = this.gridCollisionPipeline;
+      const gridBuffers = this.gridCollisionBuffers;
+      const { nodeSizes, displacements } = this.collisionBuffers;
+      this.gridCollisionBindGroupSets = buildForBothParities(
+        this.simBuffers,
+        this.bufferParity,
+        (view) =>
+          createGridCollisionBindGroups(
+            device,
+            pipeline,
+            gridBuffers,
+            nodeSizes,
+            displacements,
+            view.positionsOut,
+            view.nodeFlags,
+          ),
       );
     }
+  }
+
+  /**
+   * Rebuild every parity-dependent bind group. Used by the reallocation paths
+   * that touch more than one resource group at once.
+   */
+  private rebuildAllBindGroups(): void {
+    this.rebuildSimulationBindGroups();
+    this.rebuildAlgorithmBindGroups();
+    this.rebuildCollisionBindGroups();
+  }
+
+  /**
+   * Bounding box of the CPU position shadow over all occupied slots, or
+   * undefined when no graph is loaded or every position is non-finite.
+   */
+  private computeCurrentBounds(): BoundingBox | undefined {
+    const parsed = this.state.parsedGraph;
+    if (!parsed) return undefined;
+    return computeBoundsFromPositions(
+      parsed.positionsX,
+      parsed.positionsY,
+      this.graphState?.nodeHighWater ?? this.state.nodeCount,
+    );
+  }
+
+  /**
+   * Build the algorithm render context for one ping-pong orientation.
+   *
+   * `view` supplies the buffers; everything else is current frame state. Note
+   * that createBindGroups is contractually forbidden from capturing the
+   * non-buffer fields (see ForceAlgorithm.createBindGroups) — they exist for
+   * updateUniforms, which runs per frame.
+   */
+  private buildAlgorithmContext(
+    view: SimulationBuffers,
+    bounds: BoundingBox | undefined,
+  ): AlgorithmRenderContext {
+    const edgeCount = this.state.edgeCount;
+    return {
+      device: this.gpuContext.device,
+      positions: view.positions,
+      forces: view.forces,
+      nodeCount: this.graphState?.nodeHighWater ?? this.state.nodeCount,
+      edgeCount,
+      forceConfig: this.forceConfig,
+      bounds,
+      edgeSources: view.edgeSources,
+      edgeTargets: view.edgeTargets,
+      edgeSourcesData: this.graphState?.edgeSources.subarray(0, edgeCount),
+      edgeTargetsData: this.graphState?.edgeTargets.subarray(0, edgeCount),
+      nodeFlags: view.nodeFlags,
+    };
   }
 
   // ==========================================================================
@@ -3816,10 +3751,11 @@ export class GraphMother {
       return;
     }
 
-    // Destroy old algorithm resources
+    // Destroy old algorithm resources. Clearing the bind group sets first is
+    // what keeps the compute path from binding groups whose buffers are gone.
+    this.algorithmBindGroupSets = null;
     this.algorithmBuffers?.destroy();
     this.algorithmBuffers = null;
-    this.algorithmBindGroups = null;
 
     // Set new algorithm and create pipelines
     this.currentAlgorithm = algorithm;
@@ -3834,39 +3770,7 @@ export class GraphMother {
         algCapacity,
       );
 
-      // Compute bounds from current positions for spatial algorithms.
-      // Cover all occupied slots (nodeHighWater), not just live nodes.
-      const algNodeCount = this.graphState?.nodeHighWater ?? this.state.nodeCount;
-      const bounds = this.state.parsedGraph
-        ? computeBoundsFromPositions(
-          this.state.parsedGraph.positionsX,
-          this.state.parsedGraph.positionsY,
-          algNodeCount,
-        )
-        : undefined;
-
-      // Create bind groups
-      const context: AlgorithmRenderContext = {
-        device: this.gpuContext.device,
-        positions: this.simBuffers.positions,
-        forces: this.simBuffers.forces,
-        nodeCount: algNodeCount,
-        edgeCount: this.state.edgeCount,
-        forceConfig: this.forceConfig,
-        bounds,
-        edgeSources: this.simBuffers.edgeSources,
-        edgeTargets: this.simBuffers.edgeTargets,
-        edgeSourcesData: this.graphState?.edgeSources.subarray(0, this.state.edgeCount),
-        edgeTargetsData: this.graphState?.edgeTargets.subarray(0, this.state.edgeCount),
-        nodeFlags: this.simBuffers.nodeFlags,
-      };
-
-      this.algorithmBindGroups = algorithm.createBindGroups(
-        this.gpuContext.device,
-        this.algorithmPipelines,
-        context,
-        this.algorithmBuffers,
-      );
+      this.rebuildAlgorithmBindGroups();
 
       // Upload algorithm-specific edge data
       this.uploadAlgorithmEdgeData(this.gpuContext.device);
@@ -4074,7 +3978,7 @@ export class GraphMother {
       );
 
       this.layerManager.addLayer(heatmapLayer);
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     } else {
       const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
       if (layer) {
@@ -4138,7 +4042,7 @@ export class GraphMother {
     const layer = this.layerManager.getLayer<HeatmapLayer>(layerId);
     if (layer) {
       layer.setDataSource(source);
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     }
   }
 
@@ -4214,7 +4118,13 @@ export class GraphMother {
    */
   removeLayer(id: string): boolean {
     const removed = this.layerManager.removeLayer(id);
-    if (removed) this.markRenderDirty();
+    if (removed) {
+      // The layer's stream intensity buffer is owned here, not by the layer,
+      // so removing the layer has to release it.
+      this.streamIntensityCaches.get(id)?.destroy();
+      this.streamIntensityCaches.delete(id);
+      this.markRenderDirty();
+    }
     return removed;
   }
 
@@ -4267,10 +4177,16 @@ export class GraphMother {
   }
 
   /**
-   * Update render context for all layers.
-   * Called when graph data changes.
+   * Push fresh render contexts to every layer.
+   *
+   * Runs on every ping-pong flip (layers must bind the simulation's current
+   * read buffer, not the buffer being written) and again just before the
+   * render passes. Everything in here must therefore be cheap: the one
+   * expensive part — deriving per-node intensities from a value stream — is
+   * dirty-gated by StreamIntensityCache and only recomputes when its inputs
+   * actually changed.
    */
-  private updateLayerRenderContext(): void {
+  private refreshLayerRenderContexts(): void {
     if (!this.simBuffers || !this.state.loaded) return;
 
     // Update all heatmap layers (skip disabled to avoid wasted GPU allocation)
@@ -4278,52 +4194,14 @@ export class GraphMother {
     for (const heatmapLayer of heatmapLayers) {
       if (!heatmapLayer.enabled) continue;
 
-      const dataSource = heatmapLayer.getDataSource();
-      let nodeIntensities: GPUBuffer | null = null;
-
-      if (dataSource !== "density" && this.streamManager.hasStream(dataSource)) {
-        const stream = this.streamManager.getStream(dataSource);
-        if (stream) {
-          const intensities = new Float32Array(this.state.nodeCount);
-
-          const colorScale = stream.getColorScale();
-          const domain = colorScale.domain;
-          const domainMin = domain[0];
-          const domainRange = domain[1] - domainMin;
-
-          for (let i = 0; i < this.state.nodeCount; i++) {
-            const value = stream.getValue(i);
-            if (value !== undefined && domainRange > 0) {
-              intensities[i] = Math.max(0, Math.min(1, (value - domainMin) / domainRange));
-            } else {
-              intensities[i] = 0;
-            }
-          }
-
-          const { device } = this.gpuContext;
-          const requiredSize = this.state.nodeCount * 4;
-
-          let buffer = this.heatmapIntensityBuffers.get(heatmapLayer.id);
-          if (!buffer || buffer.size < requiredSize) {
-            buffer?.destroy();
-            buffer = device.createBuffer({
-              label: `Heatmap Intensity [${heatmapLayer.id}]`,
-              size: requiredSize,
-              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
-            this.heatmapIntensityBuffers.set(heatmapLayer.id, buffer);
-          }
-
-          device.queue.writeBuffer(buffer, 0, intensities);
-          nodeIntensities = buffer;
-        }
-      }
-
       heatmapLayer.setRenderContext({
         viewportUniformBuffer: this.viewportUniformBuffer.buffer,
         positions: this.simBuffers.positions,
         nodeCount: this.state.nodeCount,
-        nodeIntensities,
+        nodeIntensities: this.syncStreamIntensities(
+          heatmapLayer.id,
+          heatmapLayer.getDataSource(),
+        ),
       });
     }
 
@@ -4345,60 +4223,11 @@ export class GraphMother {
     if (metaballLayer) {
       const viewportState = this.viewport.state;
 
-      // Check if metaball is using a stream for per-node intensity
-      const metaballDataSource = metaballLayer.getDataSource();
-      let metaballIntensities: GPUBuffer;
-
-      if (metaballDataSource !== "density" && this.streamManager.hasStream(metaballDataSource)) {
-        // Get stream values and create intensity buffer
-        const stream = this.streamManager.getStream(metaballDataSource);
-        if (stream) {
-          // Get normalized values from stream (domain mapped to 0-1)
-          const intensities = new Float32Array(this.state.nodeCount);
-
-          // Get domain for normalization
-          const colorScale = stream.getColorScale();
-          const domain = colorScale.domain;
-          const domainMin = domain[0];
-          const domainRange = domain[1] - domainMin;
-
-          // Fill intensity array from stream data
-          for (let i = 0; i < this.state.nodeCount; i++) {
-            const value = stream.getValue(i);
-            if (value !== undefined && domainRange > 0) {
-              // Normalize to 0-1 range based on domain
-              intensities[i] = Math.max(0, Math.min(1, (value - domainMin) / domainRange));
-            } else {
-              // Nodes without values don't contribute (intensity = 0)
-              intensities[i] = 0;
-            }
-          }
-
-          // Create or update GPU buffer
-          const { device } = this.gpuContext;
-          const requiredSize = this.state.nodeCount * 4; // 1 f32 per node
-
-          // Recreate buffer if size changed
-          if (!this.metaballIntensityBuffer || this.metaballIntensityBuffer.size < requiredSize) {
-            this.metaballIntensityBuffer?.destroy();
-            this.metaballIntensityBuffer = device.createBuffer({
-              label: "Metaball Stream Intensity Buffer",
-              size: requiredSize,
-              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
-          }
-
-          // Write intensity data
-          device.queue.writeBuffer(this.metaballIntensityBuffer, 0, intensities);
-          metaballIntensities = this.metaballIntensityBuffer;
-        } else {
-          // Stream not found, use default density mode
-          metaballIntensities = this.getOrCreateDefaultIntensityBuffer();
-        }
-      } else {
-        // Density mode: all nodes contribute equally (intensity = 1.0)
-        metaballIntensities = this.getOrCreateDefaultIntensityBuffer();
-      }
+      // In density mode (or when the configured stream does not exist) every
+      // node contributes equally, so the shared all-ones buffer is bound.
+      const metaballIntensities =
+        this.syncStreamIntensities(metaballLayer.id, metaballLayer.getDataSource()) ??
+          this.getOrCreateDefaultIntensityBuffer();
 
       const metaballContext: MetaballRenderContext = {
         viewportUniformBuffer: this.viewportUniformBuffer.buffer,
@@ -4438,6 +4267,37 @@ export class GraphMother {
     }
   }
 
+  /**
+   * Returns the GPU buffer of per-node intensities for a layer bound to a
+   * value stream, or null when the layer is in density mode or names a stream
+   * that does not exist.
+   *
+   * Delegates the dirty tracking to the layer's StreamIntensityCache: the
+   * O(nodeCount) fill and the upload only happen when the bound stream, its
+   * mutation version, the node count, or the colour-scale domain changed.
+   *
+   * @param layerId - Layer the cache belongs to
+   * @param dataSource - The layer's configured data source ("density" or a stream ID)
+   */
+  private syncStreamIntensities(layerId: string, dataSource: string): GPUBuffer | null {
+    const stream = dataSource === "density" ? undefined : this.streamManager.getStream(dataSource);
+    if (!stream) return null;
+
+    let cache = this.streamIntensityCaches.get(layerId);
+    if (!cache) {
+      cache = new StreamIntensityCache(`Stream Intensity [${layerId}]`);
+      this.streamIntensityCaches.set(layerId, cache);
+    }
+
+    return cache.sync(
+      this.gpuContext.device,
+      dataSource,
+      stream,
+      this.streamManager.version,
+      this.state.nodeCount,
+    );
+  }
+
   // ==========================================================================
   // Public API - Contour Layer
   // ==========================================================================
@@ -4457,7 +4317,7 @@ export class GraphMother {
       );
 
       this.layerManager.addLayer(contourLayer);
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     } else {
       const layer = this.layerManager.getLayer<ContourLayer>(layerId);
       if (layer) {
@@ -4532,7 +4392,7 @@ export class GraphMother {
     }
 
     // Rebuild render context to update stream intensity buffer
-    this.updateLayerRenderContext();
+    this.refreshLayerRenderContexts();
   }
 
   /**
@@ -4564,7 +4424,7 @@ export class GraphMother {
       );
 
       this.layerManager.addLayer(metaballLayer);
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     } else {
       const layer = this.layerManager.getLayer<MetaballLayer>(layerId);
       if (layer) {
@@ -4630,7 +4490,7 @@ export class GraphMother {
     if (layer) {
       layer.setDataSource(source);
       // Rebuild render context to update stream data
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     }
   }
 
@@ -4666,7 +4526,7 @@ export class GraphMother {
       await labelsLayer.initialize();
 
       this.layerManager.addLayer(labelsLayer);
-      this.updateLayerRenderContext();
+      this.refreshLayerRenderContexts();
     } else {
       const layer = this.layerManager.getLayer<LabelsLayer>(layerId);
       if (layer) {
@@ -5942,7 +5802,7 @@ export class GraphMother {
   private updateHeatmapIfUsingStream(streamId: string): void {
     for (const layer of this.layerManager.getLayersByType<HeatmapLayer>("heatmap")) {
       if (layer.getDataSource() === streamId) {
-        this.updateLayerRenderContext();
+        this.refreshLayerRenderContexts();
         return;
       }
     }
@@ -6659,7 +6519,7 @@ export class GraphMother {
     this.layerManager.resize(cssWidth, cssHeight);
 
     // Update layer render contexts after resize (texture views may have changed)
-    this.updateLayerRenderContext();
+    this.refreshLayerRenderContexts();
   }
 
   /**
@@ -6700,15 +6560,11 @@ export class GraphMother {
     // Destroy stream manager
     this.streamManager.destroy();
 
-    // Destroy heatmap intensity buffers
-    for (const buffer of this.heatmapIntensityBuffers.values()) {
-      buffer.destroy();
+    // Destroy per-layer stream intensity buffers
+    for (const cache of this.streamIntensityCaches.values()) {
+      cache.destroy();
     }
-    this.heatmapIntensityBuffers.clear();
-
-    // Destroy metaball intensity buffer
-    this.metaballIntensityBuffer?.destroy();
-    this.metaballIntensityBuffer = null;
+    this.streamIntensityCaches.clear();
 
     // Destroy default intensity buffer
     this.defaultIntensityBuffer?.destroy();
@@ -6760,26 +6616,31 @@ export class GraphMother {
       this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
-    this.simBindGroups = null;
+    this.simBindGroupSets = null;
+    // The node/edge render bind groups read the simulation position buffers
+    // destroyed above, so they must go with them. rebuildSimulationBindGroups
+    // recreates them once fresh buffers exist.
+    this.nodeBindGroupSets = null;
+    this.edgeBindGroupSets = null;
 
     // Destroy algorithm-specific buffers
     this.algorithmBuffers?.destroy();
     this.algorithmBuffers = null;
-    this.algorithmBindGroups = null;
+    this.algorithmBindGroupSets = null;
 
     // Destroy collision buffers
     if (this.collisionBuffers) {
       destroyCollisionBuffers(this.collisionBuffers);
       this.collisionBuffers = null;
     }
-    this.collisionBindGroup = null;
+    this.collisionBindGroupSets = null;
 
     // Destroy grid collision buffers
     if (this.gridCollisionBuffers) {
       destroyGridCollisionBuffers(this.gridCollisionBuffers);
       this.gridCollisionBuffers = null;
     }
-    this.gridCollisionBindGroups = null;
+    this.gridCollisionBindGroupSets = null;
   }
 
   // ==========================================================================
