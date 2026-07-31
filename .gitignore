@@ -74,6 +74,10 @@ Thumbs.db
 storybook-static
 
 # =============================================================================
-# Claude Code Sessions
+# Claude Code Sessions / Agent Tooling
 # =============================================================================
 .claude/
+.jj/
+.meridian/
+.norn/
+.mcp.json
