@@ -281,7 +281,17 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       throw new Error("Community layout buffers not initialized");
     }
 
-    // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees
+    // Modulated repulsion iterates every node slot and centroid accumulation
+    // aggregates them, so both need the dead-slot mask (see the nodeFlags doc
+    // on AlgorithmRenderContext).
+    if (!context.nodeFlags) {
+      throw new Error(
+        "Community layout requires the nodeFlags buffer in AlgorithmRenderContext. " +
+          "Ensure graph.ts populates nodeFlags.",
+      );
+    }
+
+    // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees, nodeFlags
     const repulsion = device.createBindGroup({
       label: "Community: Repulsion Bind Group",
       layout: p.repulsion.getBindGroupLayout(0),
@@ -291,6 +301,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: this.communityIdsBuffer } },
         { binding: 4, resource: { buffer: this.degreesBuffer } },
+        { binding: 5, resource: { buffer: context.nodeFlags } },
       ],
     });
 
@@ -306,7 +317,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
       ],
     });
 
-    // Accumulate centroids: uniforms, positions, communityIds, centroidSumX/Y, centroidCount
+    // Accumulate centroids: uniforms, positions, communityIds, centroidSumX/Y, centroidCount, nodeFlags
     const accumulate = device.createBindGroup({
       label: "Community: Accumulate Bind Group",
       layout: p.accumulate.getBindGroupLayout(0),
@@ -317,6 +328,7 @@ export class CommunityLayoutAlgorithm implements ForceAlgorithm {
         { binding: 3, resource: { buffer: this.centroidSumXBuffer } },
         { binding: 4, resource: { buffer: this.centroidSumYBuffer } },
         { binding: 5, resource: { buffer: this.centroidCountBuffer } },
+        { binding: 6, resource: { buffer: context.nodeFlags } },
       ],
     });
 

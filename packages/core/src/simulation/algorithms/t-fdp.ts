@@ -85,11 +85,13 @@ class TFdpBuffers implements AlgorithmBuffers {
   constructor(
     public repulsionUniformBuffer: GPUBuffer,
     public attractionUniformBuffer: GPUBuffer,
+    public fallbackNodeFlags: GPUBuffer,
   ) {}
 
   destroy(): void {
     this.repulsionUniformBuffer.destroy();
     this.attractionUniformBuffer.destroy();
+    this.fallbackNodeFlags.destroy();
   }
 }
 
@@ -139,7 +141,8 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       code: T_FDP_ATTRACTION_WGSL,
     });
 
-    // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets
+    // Attraction pipeline: uniforms, positions, forces, edge_sources,
+    // edge_targets, node_flags
     const attractionLayout = device.createBindGroupLayout({
       label: "t-FDP Attraction Layout",
       entries: [
@@ -148,6 +151,7 @@ export class TFdpAlgorithm implements ForceAlgorithm {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -169,7 +173,7 @@ export class TFdpAlgorithm implements ForceAlgorithm {
     return pipelines;
   }
 
-  createBuffers(device: GPUDevice, _maxNodes: number): AlgorithmBuffers {
+  createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
     // Repulsion uniforms: { node_count: u32, gamma: f32, repulsion_scale: f32, _padding: u32 }
     const repulsionUniformBuffer = device.createBuffer({
       label: "t-FDP Repulsion Uniforms",
@@ -184,7 +188,21 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    return new TFdpBuffers(repulsionUniformBuffer, attractionUniformBuffer);
+    // Zero-filled fallback for contexts without a shared nodeFlags buffer
+    // (GPU buffers are created zero-initialized: all slots live). The
+    // attraction layout is explicit, so binding 5 must always resolve —
+    // unlike the repulsion pass, which switches entry points instead.
+    const fallbackNodeFlags = device.createBuffer({
+      label: "t-FDP Fallback Node Flags",
+      size: Math.max(maxNodes, 1) * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    return new TFdpBuffers(
+      repulsionUniformBuffer,
+      attractionUniformBuffer,
+      fallbackNodeFlags,
+    );
   }
 
   createBindGroups(
@@ -216,7 +234,8 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       entries: repulsionEntries,
     });
 
-    // Attraction bind group: uniforms, positions, forces, edge_sources, edge_targets
+    // Attraction bind group: uniforms, positions, forces, edge_sources,
+    // edge_targets, node_flags
     if (!context.edgeSources || !context.edgeTargets) {
       throw new Error(
         "t-FDP requires edge source/target buffers in AlgorithmRenderContext. " +
@@ -233,6 +252,7 @@ export class TFdpAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: context.edgeSources } },
         { binding: 4, resource: { buffer: context.edgeTargets } },
+        { binding: 5, resource: { buffer: context.nodeFlags ?? buffers.fallbackNodeFlags } },
       ],
     });
 

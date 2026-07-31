@@ -268,7 +268,17 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
       throw new Error("Codebase layout buffers not initialized");
     }
 
-    // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees
+    // Modulated repulsion iterates every node slot and centroid accumulation
+    // aggregates them, so both need the dead-slot mask (see the nodeFlags doc
+    // on AlgorithmRenderContext).
+    if (!context.nodeFlags) {
+      throw new Error(
+        "Codebase layout requires the nodeFlags buffer in AlgorithmRenderContext. " +
+          "Ensure graph.ts populates nodeFlags.",
+      );
+    }
+
+    // Degree-weighted modulated repulsion: uniforms, positions, forces, communityIds, degrees, nodeFlags
     const repulsion = device.createBindGroup({
       label: "Codebase: Repulsion Bind Group",
       layout: p.repulsion.getBindGroupLayout(0),
@@ -278,6 +288,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: this.communityIdsBuffer } },
         { binding: 4, resource: { buffer: this.degreesBuffer } },
+        { binding: 5, resource: { buffer: context.nodeFlags } },
       ],
     });
 
@@ -302,6 +313,7 @@ export class CodebaseLayoutAlgorithm implements ForceAlgorithm {
         { binding: 3, resource: { buffer: this.centroidSumXBuffer } },
         { binding: 4, resource: { buffer: this.centroidSumYBuffer } },
         { binding: 5, resource: { buffer: this.centroidCountBuffer } },
+        { binding: 6, resource: { buffer: context.nodeFlags } },
       ],
     });
 
