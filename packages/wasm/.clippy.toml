@@ -19,7 +19,7 @@ allowed-idents-below-min-chars = ["i", "j", "k", "n", "x", "y", "z", "id", "ok",
 allowed-prefixes = ["is_", "has_", "can_", "should_", "will_", "did_", "was_"]
 
 # MSRV for lint suggestions
-msrv = "1.75.0"
+msrv = "1.85.0"
 
 # Upper bound on type complexity
 type-complexity-threshold = 250

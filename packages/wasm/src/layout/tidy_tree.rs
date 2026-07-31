@@ -233,10 +233,7 @@ impl TidyTreeLayout {
 
         // Center the tree: find min x and shift everything so min_x = 0
         let min_x = final_x.iter().copied().fold(f32::INFINITY, f32::min);
-        let max_x = final_x
-            .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
+        let max_x = final_x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let x_range = max_x - min_x;
 
         // Convert to output coordinates (sentinel means "not in tree")
@@ -254,7 +251,14 @@ impl TidyTreeLayout {
             }
             CoordinateMode::Radial => {
                 let root_layout_idx = node_to_layout.get(&root).copied();
-                self.emit_radial(&layout_nodes, &final_x, min_x, x_range, root_layout_idx, &mut result);
+                self.emit_radial(
+                    &layout_nodes,
+                    &final_x,
+                    min_x,
+                    x_range,
+                    root_layout_idx,
+                    &mut result,
+                );
             }
         }
 
@@ -525,12 +529,7 @@ impl TidyTreeLayout {
     /// Apportion: resolve overlaps between v's subtree and the forest of its
     /// left siblings by walking the two facing contours level by level.
     /// This is the core of Buchheim's linear-time improvement over Walker's algorithm.
-    fn apportion(
-        &self,
-        v: usize,
-        mut default_ancestor: usize,
-        nodes: &mut [LayoutNode],
-    ) -> usize {
+    fn apportion(&self, v: usize, mut default_ancestor: usize, nodes: &mut [LayoutNode]) -> usize {
         let Some(left_sibling) = self.left_sibling(v, nodes) else {
             return default_ancestor;
         };
@@ -639,13 +638,7 @@ impl TidyTreeLayout {
     }
 
     /// Move subtree: shift node v and adjust spacing between ancestor and v.
-    fn move_subtree(
-        &self,
-        wl: usize,
-        wr: usize,
-        shift: f32,
-        nodes: &mut [LayoutNode],
-    ) {
+    fn move_subtree(&self, wl: usize, wr: usize, shift: f32, nodes: &mut [LayoutNode]) {
         let subtrees = (nodes[wr].number as f32 - nodes[wl].number as f32).max(1.0);
         let per_subtree = shift / subtrees;
 
@@ -750,7 +743,8 @@ mod tests {
 
         // Children should be separated
         assert!(
-            (child2_x - child1_x).abs() >= layout.config.sibling_separation * layout.config.level_separation,
+            (child2_x - child1_x).abs()
+                >= layout.config.sibling_separation * layout.config.level_separation,
             "Children should be separated: child1_x={child1_x}, child2_x={child2_x}"
         );
     }
@@ -771,11 +765,26 @@ mod tests {
 
         // Depth checks
         assert!(result.positions_y[0].abs() < 0.01, "Root at depth 0");
-        assert!((result.positions_y[1] - 50.0).abs() < 0.01, "Node 1 at depth 1");
-        assert!((result.positions_y[2] - 50.0).abs() < 0.01, "Node 2 at depth 1");
-        assert!((result.positions_y[3] - 100.0).abs() < 0.01, "Node 3 at depth 2");
-        assert!((result.positions_y[4] - 100.0).abs() < 0.01, "Node 4 at depth 2");
-        assert!((result.positions_y[5] - 100.0).abs() < 0.01, "Node 5 at depth 2");
+        assert!(
+            (result.positions_y[1] - 50.0).abs() < 0.01,
+            "Node 1 at depth 1"
+        );
+        assert!(
+            (result.positions_y[2] - 50.0).abs() < 0.01,
+            "Node 2 at depth 1"
+        );
+        assert!(
+            (result.positions_y[3] - 100.0).abs() < 0.01,
+            "Node 3 at depth 2"
+        );
+        assert!(
+            (result.positions_y[4] - 100.0).abs() < 0.01,
+            "Node 4 at depth 2"
+        );
+        assert!(
+            (result.positions_y[5] - 100.0).abs() < 0.01,
+            "Node 5 at depth 2"
+        );
     }
 
     #[test]
@@ -820,7 +829,10 @@ mod tests {
 
         assert_eq!(result.node_count, 3);
         // Root (0) should be at depth 0
-        assert!(result.positions_y[0].abs() < 0.01, "Auto-detected root at depth 0");
+        assert!(
+            result.positions_y[0].abs() < 0.01,
+            "Auto-detected root at depth 0"
+        );
     }
 
     #[test]
@@ -850,7 +862,10 @@ mod tests {
         // Odd-length edge array is invalid
         let edges = [0, 1, 2];
         let result = layout.compute(3, &edges, Some(0));
-        assert_eq!(result.node_count, 0, "Odd edge array should return empty result");
+        assert_eq!(
+            result.node_count, 0,
+            "Odd edge array should return empty result"
+        );
     }
 
     #[test]

@@ -7,7 +7,6 @@
 //! # Architecture
 //!
 //! - `graph`: Graph data structure using petgraph's StableGraph
-//! - `spatial`: R-tree spatial indexing for O(log n) hit testing
 //! - `layout`: Force calculation utilities (CPU-side, for validation)
 //! - `algorithms`: Graph algorithms (clustering, traversal, etc.)
 
@@ -16,7 +15,6 @@ use wasm_bindgen::prelude::*;
 
 pub mod graph;
 pub mod layout;
-pub mod spatial;
 
 use graph::{GraphEngine, NodeId};
 use layout::community::{self, CommunityLayoutConfig};
@@ -26,6 +24,31 @@ use layout::tidy_tree::{CoordinateMode, TidyTreeConfig, TidyTreeLayout};
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
+}
+
+/// Convert the engine's CSR edge encoding into flat edge pairs.
+///
+/// `csr` is laid out as `[offsets (node_bound + 1) ..., targets ...]`.
+/// Returns `[src0, tgt0, src1, tgt1, ...]`, or an empty vec when the CSR
+/// carries no edges.
+fn csr_to_edge_pairs(csr: &[u32], node_bound: usize) -> Vec<u32> {
+    if csr.len() <= node_bound + 1 {
+        return Vec::new();
+    }
+
+    let offsets = &csr[..node_bound + 1];
+    let targets = &csr[node_bound + 1..];
+
+    let mut edges = Vec::with_capacity(targets.len() * 2);
+    for src in 0..node_bound {
+        let start = offsets[src] as usize;
+        let end = offsets[src + 1] as usize;
+        for &tgt in &targets[start..end.min(targets.len())] {
+            edges.push(src as u32);
+            edges.push(tgt);
+        }
+    }
+    edges
 }
 
 /// Main entry point for the graph engine.
@@ -107,13 +130,17 @@ impl GraphMotherWasm {
     /// Get a node's X position.
     #[wasm_bindgen(js_name = getNodeX)]
     pub fn get_node_x(&self, node_id: u32) -> Option<f32> {
-        self.engine.get_node_position(NodeId(node_id)).map(|(x, _)| x)
+        self.engine
+            .get_node_position(NodeId(node_id))
+            .map(|(x, _)| x)
     }
 
     /// Get a node's Y position.
     #[wasm_bindgen(js_name = getNodeY)]
     pub fn get_node_y(&self, node_id: u32) -> Option<f32> {
-        self.engine.get_node_position(NodeId(node_id)).map(|(_, y)| y)
+        self.engine
+            .get_node_position(NodeId(node_id))
+            .map(|(_, y)| y)
     }
 
     /// Set a node's position.
@@ -239,44 +266,6 @@ impl GraphMotherWasm {
     }
 
     // =========================================================================
-    // Spatial Queries
-    // =========================================================================
-
-    /// Find the nearest node to a point.
-    ///
-    /// Returns the node ID, or None if the graph is empty.
-    #[wasm_bindgen(js_name = findNearestNode)]
-    pub fn find_nearest_node(&self, x: f32, y: f32) -> Option<u32> {
-        self.engine.find_nearest_node(x, y).map(|id| id.0)
-    }
-
-    /// Find the nearest node within a maximum distance.
-    ///
-    /// Returns the node ID, or None if no node is within the distance.
-    #[wasm_bindgen(js_name = findNearestNodeWithin)]
-    pub fn find_nearest_node_within(&self, x: f32, y: f32, max_distance: f32) -> Option<u32> {
-        self.engine
-            .find_nearest_node_within(x, y, max_distance)
-            .map(|id| id.0)
-    }
-
-    /// Find all nodes within a rectangular region.
-    ///
-    /// Returns a Uint32Array of node IDs.
-    #[wasm_bindgen(js_name = findNodesInRect)]
-    pub fn find_nodes_in_rect(&self, min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Vec<u32> {
-        self.engine.find_nodes_in_rect(min_x, min_y, max_x, max_y)
-    }
-
-    /// Rebuild the spatial index after position changes.
-    ///
-    /// Call this after bulk position updates for accurate spatial queries.
-    #[wasm_bindgen(js_name = rebuildSpatialIndex)]
-    pub fn rebuild_spatial_index(&mut self) {
-        self.engine.rebuild_spatial_index();
-    }
-
-    // =========================================================================
     // Graph Utilities
     // =========================================================================
 
@@ -285,9 +274,9 @@ impl GraphMotherWasm {
     /// Returns [min_x, min_y, max_x, max_y], or None if graph is empty.
     #[wasm_bindgen(js_name = getBounds)]
     pub fn get_bounds(&self) -> Option<Vec<f32>> {
-        self.engine.get_bounds().map(|(min_x, min_y, max_x, max_y)| {
-            vec![min_x, min_y, max_x, max_y]
-        })
+        self.engine
+            .get_bounds()
+            .map(|(min_x, min_y, max_x, max_y)| vec![min_x, min_y, max_x, max_y])
     }
 
     /// Clear all nodes and edges.
@@ -406,26 +395,13 @@ impl GraphMotherWasm {
         // Extract edges from the graph engine's CSR format
         let csr = self.engine.get_edges_csr();
         let node_bound = self.engine.node_bound() as usize;
+        let edges = csr_to_edge_pairs(&csr, node_bound);
 
-        if csr.len() <= node_bound + 1 {
+        if edges.is_empty() {
             // No edges — return sentinel-filled positions
             let sentinel = 3.402_823e+38_f32;
             let positions = vec![sentinel; node_bound * 2];
             return Float32Array::from(&positions[..]);
-        }
-
-        let offsets = &csr[..node_bound + 1];
-        let targets = &csr[node_bound + 1..];
-
-        // Convert CSR to flat edge pairs [src0, tgt0, src1, tgt1, ...]
-        let mut edges = Vec::with_capacity(targets.len() * 2);
-        for src in 0..node_bound {
-            let start = offsets[src] as usize;
-            let end = offsets[src + 1] as usize;
-            for &tgt in &targets[start..end.min(targets.len())] {
-                edges.push(src as u32);
-                edges.push(tgt);
-            }
         }
 
         self.compute_tree_layout(
@@ -512,12 +488,8 @@ impl GraphMotherWasm {
             ..CommunityLayoutConfig::default()
         };
 
-        let positions = community::compute_community_layout(
-            assignments,
-            community_count,
-            node_count,
-            &config,
-        );
+        let positions =
+            community::compute_community_layout(assignments, community_count, node_count, &config);
 
         Float32Array::from(&positions[..])
     }
@@ -603,7 +575,7 @@ impl GraphMotherWasm {
         file_padding: f32,
         spread_factor: f32,
     ) -> Float32Array {
-        use layout::codebase::{CodebaseLayoutConfig, self};
+        use layout::codebase::{self, CodebaseLayoutConfig};
 
         let node_count = self.engine.node_bound() as usize;
 
@@ -614,7 +586,11 @@ impl GraphMotherWasm {
             ..CodebaseLayoutConfig::default()
         };
 
-        let root = if root_id == u32::MAX { None } else { Some(root_id) };
+        let root = if root_id == u32::MAX {
+            None
+        } else {
+            Some(root_id)
+        };
 
         let positions = codebase::compute_codebase_layout(
             containment_edges,
@@ -648,28 +624,15 @@ impl GraphMotherWasm {
         file_padding: f32,
         spread_factor: f32,
     ) -> Float32Array {
-        // Extract edges from CSR
+        // Extract containment edges from CSR
         let csr = self.engine.get_edges_csr();
         let node_bound = self.engine.node_bound() as usize;
+        let edges = csr_to_edge_pairs(&csr, node_bound);
 
-        if csr.len() <= node_bound + 1 {
+        if edges.is_empty() {
             let sentinel = 3.402_823e+38_f32;
             let positions = vec![sentinel; node_bound * 2];
             return Float32Array::from(&positions[..]);
-        }
-
-        let offsets = &csr[..node_bound + 1];
-        let targets = &csr[node_bound + 1..];
-
-        // Convert CSR to flat containment edge pairs
-        let mut edges = Vec::with_capacity(targets.len() * 2);
-        for src in 0..node_bound {
-            let start = offsets[src] as usize;
-            let end = offsets[src + 1] as usize;
-            for &tgt in &targets[start..end.min(targets.len())] {
-                edges.push(src as u32);
-                edges.push(tgt);
-            }
         }
 
         self.compute_codebase_layout(
@@ -719,7 +682,11 @@ impl GraphMotherWasm {
             ..BubbleConfig::default()
         };
 
-        let root = if root_id == u32::MAX { None } else { Some(root_id) };
+        let root = if root_id == u32::MAX {
+            None
+        } else {
+            Some(root_id)
+        };
 
         let result = bubble::compute_bubble_data(containment_edges, node_bound, root, &config);
         Float32Array::from(&result[..])
@@ -747,26 +714,13 @@ impl GraphMotherWasm {
             return Float32Array::from(&[][..]);
         }
 
-        // Extract edges from CSR
+        // Extract containment edges from CSR
         let csr = self.engine.get_edges_csr();
+        let edges = csr_to_edge_pairs(&csr, node_bound);
 
-        if csr.len() <= node_bound + 1 {
+        if edges.is_empty() {
             // No edges — return defaults
             return self.compute_bubble_data_from_edges(&[], u32::MAX, base_radius, padding);
-        }
-
-        let offsets = &csr[..node_bound + 1];
-        let targets = &csr[node_bound + 1..];
-
-        // Convert CSR to flat containment edge pairs
-        let mut edges = Vec::with_capacity(targets.len() * 2);
-        for src in 0..node_bound {
-            let start = offsets[src] as usize;
-            let end = offsets[src + 1] as usize;
-            for &tgt in &targets[start..end.min(targets.len())] {
-                edges.push(src as u32);
-                edges.push(tgt);
-            }
         }
 
         self.compute_bubble_data_from_edges(&edges, u32::MAX, base_radius, padding)
@@ -896,18 +850,35 @@ mod integration_tests {
 
         // Check that non-sentinel positions exist
         let sentinel = 3.402_823e+38_f32;
-        let non_sentinel: Vec<_> = result.positions_x.iter()
+        let non_sentinel: Vec<_> = result
+            .positions_x
+            .iter()
             .enumerate()
             .filter(|&(_, x)| *x < sentinel)
             .collect();
-        assert_eq!(non_sentinel.len(), 5, "All 5 nodes should have non-sentinel x positions");
+        assert_eq!(
+            non_sentinel.len(),
+            5,
+            "All 5 nodes should have non-sentinel x positions"
+        );
 
         // Check that positions span a reasonable range (not all zero)
-        let min_x = result.positions_x.iter().copied().fold(f32::INFINITY, f32::min);
-        let max_x = result.positions_x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let min_x = result
+            .positions_x
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let max_x = result
+            .positions_x
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
         let range = max_x - min_x;
         println!("X range: {min_x} to {max_x} (range={range})");
-        assert!(range > 1.0, "Positions should span a non-trivial range, got {range}");
+        assert!(
+            range > 1.0,
+            "Positions should span a non-trivial range, got {range}"
+        );
     }
 
     /// Test with a larger graph mimicking mission control's hierarchical generator.
@@ -930,7 +901,10 @@ mod integration_tests {
 
         let node_bound = engine.node_bound() as usize;
         let edge_count = engine.edge_count();
-        println!("Large tree: node_bound={}, edge_count={}", node_bound, edge_count);
+        println!(
+            "Large tree: node_bound={}, edge_count={}",
+            node_bound, edge_count
+        );
         assert_eq!(node_bound, 100);
         assert_eq!(edge_count, 99); // tree has n-1 edges
 
@@ -938,7 +912,11 @@ mod integration_tests {
         let csr = engine.get_edges_csr();
         let offsets = &csr[..node_bound + 1];
         let targets = &csr[node_bound + 1..];
-        println!("CSR: offsets.len={}, targets.len={}", offsets.len(), targets.len());
+        println!(
+            "CSR: offsets.len={}, targets.len={}",
+            offsets.len(),
+            targets.len()
+        );
         println!("First 10 offsets: {:?}", &offsets[..10]);
         println!("First 10 targets: {:?}", &targets[..10.min(targets.len())]);
 
@@ -963,7 +941,10 @@ mod integration_tests {
             coordinate_mode: CoordinateMode::Radial,
         });
         let result = layout.compute(node_bound, &edges, None);
-        println!("Layout laid out {} of {} nodes", result.node_count, node_bound);
+        println!(
+            "Layout laid out {} of {} nodes",
+            result.node_count, node_bound
+        );
 
         assert_eq!(result.node_count, 100, "All 100 nodes should be laid out");
     }
@@ -994,12 +975,17 @@ mod integration_tests {
         while next_child < node_count as u32 {
             let next_queue =
                 queue_tree_level(&mut edge_pairs, &queue, &mut next_child, node_count as u32);
-            if next_queue.is_empty() { break; }
+            if next_queue.is_empty() {
+                break;
+            }
             queue = next_queue;
         }
 
         let expected_edges = edge_pairs.len() / 2;
-        println!("Bulk test: {} nodes, {} edges to add", node_count, expected_edges);
+        println!(
+            "Bulk test: {} nodes, {} edges to add",
+            node_count, expected_edges
+        );
 
         // Bulk add edges (like populateWasmEngine does)
         let added_edges = engine.add_edges_from_pairs(&edge_pairs);
@@ -1009,27 +995,49 @@ mod integration_tests {
         // Verify engine state
         let node_bound = engine.node_bound() as usize;
         let edge_count = engine.edge_count() as usize;
-        println!("Engine: node_bound={}, node_count={}, edge_count={}",
-            node_bound, engine.node_count(), edge_count);
+        println!(
+            "Engine: node_bound={}, node_count={}, edge_count={}",
+            node_bound,
+            engine.node_count(),
+            edge_count
+        );
 
         // Extract CSR (same as compute_tree_layout_from_graph)
         let csr = engine.get_edges_csr();
-        println!("CSR length: {}, expected offsets: {}, expected: offsets + targets = {}",
-            csr.len(), node_bound + 1, node_bound + 1 + edge_count);
+        println!(
+            "CSR length: {}, expected offsets: {}, expected: offsets + targets = {}",
+            csr.len(),
+            node_bound + 1,
+            node_bound + 1 + edge_count
+        );
 
         if csr.len() <= node_bound + 1 {
-            panic!("CSR has no edges! csr.len={}, node_bound+1={}", csr.len(), node_bound + 1);
+            panic!(
+                "CSR has no edges! csr.len={}, node_bound+1={}",
+                csr.len(),
+                node_bound + 1
+            );
         }
 
         let offsets = &csr[..node_bound + 1];
         let targets = &csr[node_bound + 1..];
-        println!("CSR offsets[0..10]: {:?}", &offsets[..10.min(offsets.len())]);
-        println!("CSR targets.len={}, first 10: {:?}", targets.len(), &targets[..10.min(targets.len())]);
+        println!(
+            "CSR offsets[0..10]: {:?}",
+            &offsets[..10.min(offsets.len())]
+        );
+        println!(
+            "CSR targets.len={}, first 10: {:?}",
+            targets.len(),
+            &targets[..10.min(targets.len())]
+        );
 
         // Verify total edges in CSR matches
         let total_csr_edges = offsets[node_bound] as usize;
         println!("Total edges in CSR (from last offset): {}", total_csr_edges);
-        assert_eq!(total_csr_edges, edge_count, "CSR total edges should match engine edge count");
+        assert_eq!(
+            total_csr_edges, edge_count,
+            "CSR total edges should match engine edge count"
+        );
 
         // Convert CSR to edge pairs
         let mut edges = Vec::new();
@@ -1042,7 +1050,11 @@ mod integration_tests {
             }
         }
         println!("Extracted {} edge pairs from CSR", edges.len() / 2);
-        assert_eq!(edges.len() / 2, edge_count, "CSR edge pairs should match edge count");
+        assert_eq!(
+            edges.len() / 2,
+            edge_count,
+            "CSR edge pairs should match edge count"
+        );
 
         // Run tidy tree layout
         let layout = TidyTreeLayout::new(TidyTreeConfig {
@@ -1052,7 +1064,10 @@ mod integration_tests {
             coordinate_mode: CoordinateMode::Radial,
         });
         let result = layout.compute(node_bound, &edges, None);
-        println!("Layout: {} nodes laid out of {} total", result.node_count, node_bound);
+        println!(
+            "Layout: {} nodes laid out of {} total",
+            result.node_count, node_bound
+        );
 
         // Check how many non-sentinel positions
         let sentinel = 3.402_823e+38_f32;
@@ -1060,8 +1075,11 @@ mod integration_tests {
         println!("Non-sentinel positions: {}", non_sentinel);
 
         // All connected nodes should be laid out
-        assert!(result.node_count > node_count / 2,
-            "Expected at least half the nodes laid out, got {}", result.node_count);
+        assert!(
+            result.node_count > node_count / 2,
+            "Expected at least half the nodes laid out, got {}",
+            result.node_count
+        );
     }
 
     /// Test that clear() + reload works correctly.
@@ -1084,10 +1102,14 @@ mod integration_tests {
         let mut edges1 = Vec::new();
         for i in 1..100u32 {
             edges1.push((i - 1) / 3); // parent
-            edges1.push(i);            // child
+            edges1.push(i); // child
         }
         let added1 = engine.add_edges_from_pairs(&edges1);
-        println!("First load: {} nodes, {} edges added", engine.node_count(), added1);
+        println!(
+            "First load: {} nodes, {} edges added",
+            engine.node_count(),
+            added1
+        );
         assert_eq!(added1, 99);
         assert_eq!(engine.edge_count(), 99);
 
@@ -1109,14 +1131,22 @@ mod integration_tests {
         let mut edges2 = Vec::new();
         for i in 1..500u32 {
             edges2.push((i - 1) / 4); // parent
-            edges2.push(i);            // child
+            edges2.push(i); // child
         }
         let added2 = engine.add_edges_from_pairs(&edges2);
-        println!("Second load: {} nodes, {} edges added (expected 499)", engine.node_count(), added2);
+        println!(
+            "Second load: {} nodes, {} edges added (expected 499)",
+            engine.node_count(),
+            added2
+        );
 
         // THE KEY ASSERTION: all edges should be added after clear+reload
-        assert_eq!(added2, 499, "All edges should be added after clear(). Got {}. \
-            This likely means clear() didn't reset the NodeId space, causing NodeId mismatch.", added2);
+        assert_eq!(
+            added2, 499,
+            "All edges should be added after clear(). Got {}. \
+            This likely means clear() didn't reset the NodeId space, causing NodeId mismatch.",
+            added2
+        );
         assert_eq!(engine.edge_count(), 499);
 
         // Verify CSR extraction works
@@ -1148,7 +1178,13 @@ mod integration_tests {
             coordinate_mode: CoordinateMode::Radial,
         });
         let result = layout.compute(node_bound, &edges_flat, None);
-        println!("After reload: {} nodes laid out of {}", result.node_count, node_bound);
-        assert_eq!(result.node_count, 500, "All 500 nodes should be laid out after clear+reload");
+        println!(
+            "After reload: {} nodes laid out of {}",
+            result.node_count, node_bound
+        );
+        assert_eq!(
+            result.node_count, 500,
+            "All 500 nodes should be laid out after clear+reload"
+        );
     }
 }

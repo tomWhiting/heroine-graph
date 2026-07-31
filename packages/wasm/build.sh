@@ -49,7 +49,8 @@ done
 # Clean if requested
 if [ "$CLEAN" = true ]; then
     echo "Cleaning previous build artifacts..."
-    rm -rf pkg/ target/
+    rm -rf pkg/
+    cargo clean -p graphmother-wasm
 fi
 
 # Check for required tools
@@ -59,20 +60,21 @@ if ! command -v wasm-pack &> /dev/null; then
     exit 1
 fi
 
-# Set RUSTFLAGS for SIMD if enabled
-RUSTFLAGS=""
+# Append SIMD flags to any RUSTFLAGS already set by the environment or
+# .cargo/config.toml. Never export RUSTFLAGS when we have nothing to add:
+# an empty export would clobber the ambient value.
 if [ "$SIMD_ENABLED" = true ]; then
     echo "Building with WASM SIMD enabled..."
-    RUSTFLAGS="-C target-feature=+simd128"
+    export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128"
 fi
 
 # Build
 echo "Building graphmother-wasm (profile: $PROFILE)..."
 
 if [ "$PROFILE" = "release" ]; then
-    RUSTFLAGS="$RUSTFLAGS" wasm-pack build --target web --release --out-dir pkg
+    wasm-pack build --target web --release --out-dir pkg
 else
-    RUSTFLAGS="$RUSTFLAGS" wasm-pack build --target web --dev --out-dir pkg
+    wasm-pack build --target web --dev --out-dir pkg
 fi
 
 # Post-build verification

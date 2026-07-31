@@ -446,12 +446,8 @@ pub fn detect_communities(
         // Map current levels back to original nodes and evaluate modularity
         let candidate = map_levels_to_original(&levels, node_count);
         let candidate_count = *candidate.iter().max().unwrap_or(&0) + 1;
-        let candidate_mod = compute_modularity(
-            &candidate,
-            candidate_count,
-            &orig_adj,
-            resolution_f64,
-        );
+        let candidate_mod =
+            compute_modularity(&candidate, candidate_count, &orig_adj, resolution_f64);
 
         // Keep this level if it improves modularity (and has more than 1 community)
         if candidate_mod > best_modularity && candidate_count > 1 {
@@ -593,7 +589,11 @@ pub fn compute_community_layout(
     let mut angle = 0.0f32;
 
     // Prevent division by zero for empty graphs
-    let total_arc = if total_arc < f32::EPSILON { 1.0 } else { total_arc };
+    let total_arc = if total_arc < f32::EPSILON {
+        1.0
+    } else {
+        total_arc
+    };
 
     for comm_id in 0..community_count as usize {
         let members = &community_members[comm_id];
@@ -811,14 +811,28 @@ mod tests {
     fn test_two_disconnected_components() {
         // Two cliques: {0,1,2} and {3,4,5}, fully connected within each
         let edges = [
-            (0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1),
-            (3, 4), (4, 3), (3, 5), (5, 3), (4, 5), (5, 4),
+            (0, 1),
+            (1, 0),
+            (0, 2),
+            (2, 0),
+            (1, 2),
+            (2, 1),
+            (3, 4),
+            (4, 3),
+            (3, 5),
+            (5, 3),
+            (4, 5),
+            (5, 4),
         ];
         let csr = build_csr(6, &edges);
         let result = detect_communities(&csr, 6, 1.0, 100, 0.0001);
 
         // Should detect 2 communities
-        assert_eq!(result.community_count, 2, "Expected 2 communities, got {}", result.community_count);
+        assert_eq!(
+            result.community_count, 2,
+            "Expected 2 communities, got {}",
+            result.community_count
+        );
 
         // Nodes 0,1,2 should be in same community
         assert_eq!(result.assignments[0], result.assignments[1]);
@@ -832,7 +846,11 @@ mod tests {
         assert_ne!(result.assignments[0], result.assignments[3]);
 
         // Modularity should be positive for well-separated communities
-        assert!(result.modularity > 0.0, "Modularity should be positive, got {}", result.modularity);
+        assert!(
+            result.modularity > 0.0,
+            "Modularity should be positive, got {}",
+            result.modularity
+        );
     }
 
     #[test]
@@ -842,10 +860,18 @@ mod tests {
         // in a perfectly symmetric graph. Each node may remain in its own community
         // or merge — both are valid since ΔQ ≈ 0 in either case.
         let edges = [
-            (0, 1), (0, 2), (0, 3),
-            (1, 0), (1, 2), (1, 3),
-            (2, 0), (2, 1), (2, 3),
-            (3, 0), (3, 1), (3, 2),
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 0),
+            (1, 2),
+            (1, 3),
+            (2, 0),
+            (2, 1),
+            (2, 3),
+            (3, 0),
+            (3, 1),
+            (3, 2),
         ];
         let csr = build_csr(4, &edges);
         let result = detect_communities(&csr, 4, 1.0, 100, 0.0001);
@@ -873,8 +899,18 @@ mod tests {
     fn test_resolution_affects_community_count() {
         // Two loosely connected cliques with a bridge edge
         let edges = [
-            (0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1),
-            (3, 4), (4, 3), (3, 5), (5, 3), (4, 5), (5, 4),
+            (0, 1),
+            (1, 0),
+            (0, 2),
+            (2, 0),
+            (1, 2),
+            (2, 1),
+            (3, 4),
+            (4, 3),
+            (3, 5),
+            (5, 3),
+            (4, 5),
+            (5, 4),
             (2, 3), // bridge
         ];
         let csr = build_csr(6, &edges);
@@ -929,11 +965,16 @@ mod tests {
             cx1 += positions[i * 2];
             cy1 += positions[i * 2 + 1];
         }
-        cx0 /= 3.0; cy0 /= 3.0;
-        cx1 /= 3.0; cy1 /= 3.0;
+        cx0 /= 3.0;
+        cy0 /= 3.0;
+        cx1 /= 3.0;
+        cy1 /= 3.0;
 
         let dist = ((cx1 - cx0).powi(2) + (cy1 - cy0).powi(2)).sqrt();
-        assert!(dist > 10.0, "Community centroids should be well-separated, got distance {dist}");
+        assert!(
+            dist > 10.0,
+            "Community centroids should be well-separated, got distance {dist}"
+        );
     }
 
     #[test]
@@ -1038,13 +1079,25 @@ mod tests {
         let result = detect_communities(&csr, n, 1.0, 50, 0.001);
 
         // Should detect roughly 5 communities (may merge some due to bridge edges)
-        assert!(result.community_count >= 2, "Should detect multiple communities, got {}", result.community_count);
-        assert!(result.community_count <= 20, "Should not over-segment, got {} communities", result.community_count);
-        assert!(result.modularity > 0.0, "Modularity should be positive for clustered graph");
+        assert!(
+            result.community_count >= 2,
+            "Should detect multiple communities, got {}",
+            result.community_count
+        );
+        assert!(
+            result.community_count <= 20,
+            "Should not over-segment, got {} communities",
+            result.community_count
+        );
+        assert!(
+            result.modularity > 0.0,
+            "Modularity should be positive for clustered graph"
+        );
 
         // Layout should produce valid positions
         let config = CommunityLayoutConfig::default();
-        let positions = compute_community_layout(&result.assignments, result.community_count, n, &config);
+        let positions =
+            compute_community_layout(&result.assignments, result.community_count, n, &config);
         assert_eq!(positions.len(), n * 2);
 
         let sentinel = 3.402_823e+38_f32;

@@ -4,15 +4,13 @@
 //! and maintains SoA (Structure of Arrays) buffers for positions and velocities
 //! to enable efficient GPU upload and SIMD operations.
 
-use petgraph::stable_graph::{NodeIndex, EdgeIndex, StableGraph};
+use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
 use petgraph::{Directed, Direction};
-use std::cell::Cell;
 use std::collections::HashMap;
 
 use super::edge::EdgeId;
 use super::node::{NodeId, NodeState};
-use crate::spatial::SpatialIndex;
 
 /// The core graph engine.
 ///
@@ -20,7 +18,6 @@ use crate::spatial::SpatialIndex;
 /// - Graph topology via petgraph
 /// - Position/velocity buffers in SoA layout
 /// - Node state (pinned, hidden, selected, hovered)
-/// - Spatial index for hit testing
 /// - ID mapping between stable IDs and internal indices
 ///
 /// NodeId IS the petgraph slot index: freed indices are reused exactly as
@@ -58,12 +55,6 @@ pub struct GraphEngine {
 
     /// Node states (pinned, hidden, etc.)
     states: Vec<NodeState>,
-
-    /// Spatial index for hit testing
-    spatial: SpatialIndex,
-
-    /// Whether the spatial index needs rebuilding
-    spatial_dirty: Cell<bool>,
 }
 
 impl GraphEngine {
@@ -80,8 +71,6 @@ impl GraphEngine {
             vel_x: Vec::new(),
             vel_y: Vec::new(),
             states: Vec::new(),
-            spatial: SpatialIndex::new(),
-            spatial_dirty: Cell::new(false),
         }
     }
 
@@ -98,8 +87,6 @@ impl GraphEngine {
             vel_x: Vec::with_capacity(node_capacity),
             vel_y: Vec::with_capacity(node_capacity),
             states: Vec::with_capacity(node_capacity),
-            spatial: SpatialIndex::with_capacity(node_capacity),
-            spatial_dirty: Cell::new(false),
         }
     }
 
@@ -135,7 +122,6 @@ impl GraphEngine {
         self.vel_y[i] = 0.0;
         self.states[i] = NodeState::new();
 
-        self.spatial_dirty.set(true);
         id
     }
 
@@ -157,7 +143,6 @@ impl GraphEngine {
             self.add_node(x, y);
         }
 
-        self.spatial_dirty.set(true);
         count as u32
     }
 
@@ -168,7 +153,8 @@ impl GraphEngine {
         };
 
         // Remove edges connected to this node (both incoming and outgoing)
-        let edges: Vec<_> = self.graph
+        let edges: Vec<_> = self
+            .graph
             .edges_directed(index, Direction::Outgoing)
             .chain(self.graph.edges_directed(index, Direction::Incoming))
             .map(|e| e.id())
@@ -201,7 +187,6 @@ impl GraphEngine {
         self.vel_y.truncate(bound);
         self.states.truncate(bound);
 
-        self.spatial_dirty.set(true);
         true
     }
 
@@ -231,7 +216,6 @@ impl GraphEngine {
             let i = index.index();
             self.pos_x[i] = x;
             self.pos_y[i] = y;
-            self.spatial_dirty.set(true);
         }
     }
 
@@ -346,55 +330,6 @@ impl GraphEngine {
     }
 
     // =========================================================================
-    // Spatial Queries
-    // =========================================================================
-
-    /// Find the nearest node to a point.
-    pub fn find_nearest_node(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.ensure_spatial_index_up_to_date();
-        self.spatial.nearest(x, y)
-    }
-
-    /// Find the nearest node within a maximum distance.
-    pub fn find_nearest_node_within(&self, x: f32, y: f32, max_distance: f32) -> Option<NodeId> {
-        self.ensure_spatial_index_up_to_date();
-        self.spatial.nearest_within(x, y, max_distance)
-    }
-
-    /// Find all nodes in a rectangle.
-    pub fn find_nodes_in_rect(&self, min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Vec<u32> {
-        self.ensure_spatial_index_up_to_date();
-        self.spatial
-            .in_rect(min_x, min_y, max_x, max_y)
-            .into_iter()
-            .map(|id| id.0)
-            .collect()
-    }
-
-    /// Rebuild the spatial index.
-    pub fn rebuild_spatial_index(&mut self) {
-        let points: Vec<_> = self
-            .node_id_to_index
-            .iter()
-            .map(|(&id, &index)| {
-                let i = index.index();
-                (id, self.pos_x[i], self.pos_y[i])
-            })
-            .collect();
-
-        self.spatial.rebuild(&points);
-        self.spatial_dirty.set(false);
-    }
-
-    fn ensure_spatial_index_up_to_date(&self) {
-        if self.spatial_dirty.get() {
-            // Note: spatial index rebuild requires &mut self for the spatial field.
-            // With Cell<bool> we can at least track the dirty flag through &self.
-            // Callers should call rebuild_spatial_index() when spatial_dirty is set.
-        }
-    }
-
-    // =========================================================================
     // Utilities
     // =========================================================================
 
@@ -441,8 +376,6 @@ impl GraphEngine {
         self.vel_x.clear();
         self.vel_y.clear();
         self.states.clear();
-        self.spatial.clear();
-        self.spatial_dirty.set(false);
     }
 
     /// Get edge list in CSR format.

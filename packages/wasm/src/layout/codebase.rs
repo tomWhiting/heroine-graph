@@ -367,7 +367,6 @@ fn assign_positions(root: usize, nodes: &mut [LayoutNode], config: &CodebaseLayo
             parent_x: f32,
             parent_y: f32,
             available_radius: f32,
-            max_child_radius: f32,
         },
     }
 
@@ -381,18 +380,10 @@ fn assign_positions(root: usize, nodes: &mut [LayoutNode], config: &CodebaseLayo
                 parent_x,
                 parent_y,
                 available_radius,
-                max_child_radius,
             } => {
                 // Avoid overlaps between siblings by checking pairwise distances
                 // and pushing apart if needed (single pass relaxation)
-                resolve_overlaps(
-                    &children,
-                    nodes,
-                    parent_x,
-                    parent_y,
-                    available_radius,
-                    max_child_radius,
-                );
+                resolve_overlaps(&children, nodes, parent_x, parent_y, available_radius);
                 continue;
             }
         };
@@ -429,19 +420,13 @@ fn assign_positions(root: usize, nodes: &mut [LayoutNode], config: &CodebaseLayo
         }
 
         // Sort children by radius (largest first) for better packing
-        let mut sorted_children: Vec<(usize, f32)> = children.iter()
-            .map(|&c| (c, nodes[c].radius))
-            .collect();
+        let mut sorted_children: Vec<(usize, f32)> =
+            children.iter().map(|&c| (c, nodes[c].radius)).collect();
         sorted_children.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Use sunflower spiral placement
         // The golden angle ensures approximately uniform distribution
         let golden_angle = std::f32::consts::TAU * (1.0 - 1.0 / ((1.0 + 5.0f32.sqrt()) / 2.0));
-
-        // Compute placement radius: scale based on child sizes relative to parent
-        let max_child_radius = sorted_children.iter()
-            .map(|&(_, r)| r)
-            .fold(0.0f32, f32::max);
 
         for (i, &(child_idx, child_radius)) in sorted_children.iter().enumerate() {
             // Spiral parameter: how far from center to place this child
@@ -480,7 +465,6 @@ fn assign_positions(root: usize, nodes: &mut [LayoutNode], config: &CodebaseLayo
             parent_x,
             parent_y,
             available_radius,
-            max_child_radius,
         });
         for child_idx in place_order {
             stack.push(Frame::Place(child_idx));
@@ -496,7 +480,6 @@ fn resolve_overlaps(
     parent_x: f32,
     parent_y: f32,
     available_radius: f32,
-    _max_child_radius: f32,
 ) {
     if children.len() <= 1 {
         return;
@@ -580,7 +563,8 @@ mod tests {
 
     #[test]
     fn test_empty_graph() {
-        let positions = compute_codebase_layout(&[], &[], 0, None, &CodebaseLayoutConfig::default());
+        let positions =
+            compute_codebase_layout(&[], &[], 0, None, &CodebaseLayoutConfig::default());
         assert!(positions.is_empty());
     }
 
@@ -588,7 +572,13 @@ mod tests {
     fn test_single_root() {
         let edges: [u32; 0] = [];
         let categories = [0u8]; // Repository
-        let positions = compute_codebase_layout(&edges, &categories, 1, Some(0), &CodebaseLayoutConfig::default());
+        let positions = compute_codebase_layout(
+            &edges,
+            &categories,
+            1,
+            Some(0),
+            &CodebaseLayoutConfig::default(),
+        );
         // No edges, so no tree — returns sentinel
         assert_eq!(positions.len(), 2);
     }
@@ -612,7 +602,10 @@ mod tests {
                 positions[i * 2]
             );
             assert!(positions[i * 2].is_finite(), "Node {i} x should be finite");
-            assert!(positions[i * 2 + 1].is_finite(), "Node {i} y should be finite");
+            assert!(
+                positions[i * 2 + 1].is_finite(),
+                "Node {i} y should be finite"
+            );
         }
 
         // Root should be at origin (approximately, after spread_factor)
@@ -659,7 +652,10 @@ mod tests {
             }
         }
         // With 4 files, they shouldn't all be at the exact same position
-        assert!(!all_same, "Files should be distributed, not all at same position");
+        assert!(
+            !all_same,
+            "Files should be distributed, not all at same position"
+        );
     }
 
     #[test]
@@ -697,7 +693,10 @@ mod tests {
         let positions = compute_codebase_layout(&edges, &categories, 2, Some(0), &config);
         let sentinel = 3.402_823e+38_f32;
         for i in 0..2 {
-            assert!(positions[i * 2] < sentinel, "Node {i} should have valid position");
+            assert!(
+                positions[i * 2] < sentinel,
+                "Node {i} should have valid position"
+            );
         }
     }
 
@@ -723,7 +722,10 @@ mod tests {
         let positions = compute_codebase_layout(&edges, &categories, 3, None, &config);
         // Should return sentinel positions (no valid edges)
         let sentinel = 3.402_823e+38_f32;
-        assert!(positions[0] >= sentinel, "Invalid edge array should produce sentinel");
+        assert!(
+            positions[0] >= sentinel,
+            "Invalid edge array should produce sentinel"
+        );
     }
 
     /// Append `count` children of `category` under `parent`, allocating
@@ -775,10 +777,12 @@ mod tests {
         assert_eq!(positions.len(), n * 2);
 
         let sentinel = 3.402_823e+38_f32;
-        let valid_count = (0..n)
-            .filter(|&i| positions[i * 2] < sentinel)
-            .count();
-        assert_eq!(valid_count, n, "All {} nodes should have valid positions", n);
+        let valid_count = (0..n).filter(|&i| positions[i * 2] < sentinel).count();
+        assert_eq!(
+            valid_count, n,
+            "All {} nodes should have valid positions",
+            n
+        );
 
         // Verify all positions are finite
         for i in 0..n {
@@ -841,7 +845,12 @@ mod tests {
             assert!(
                 dist < 200.0,
                 "Child {} should be near parent (dist={}), positions: ({}, {}) vs ({}, {})",
-                i, dist, cx, cy, px, py
+                i,
+                dist,
+                cx,
+                cy,
+                px,
+                py
             );
         }
     }
