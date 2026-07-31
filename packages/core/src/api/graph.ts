@@ -23,7 +23,11 @@ import type {
   Vec2,
   ViewportState,
 } from "../types.ts";
-import type { GPUContext } from "../webgpu/context.ts";
+import {
+  destroyGPUContext,
+  type GPUContext,
+  resizeGPUContext,
+} from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createEventEmitter, type EventEmitter, Events } from "../events/emitter.ts";
@@ -233,6 +237,19 @@ interface WasmEngine extends SpatialQueryEngine {
   ): Float32Array;
   /** Compute bubble data (wellRadius + depth) for nested bubble layout mode */
   computeBubbleData(baseRadius: number, padding: number): Float32Array;
+  /**
+   * Compute bubble data (wellRadius + depth) from containment-only edges.
+   * Returns [wellRadius_0..n-1, depth_0..n-1]. Pass 0xFFFFFFFF as rootId
+   * for auto-detection.
+   */
+  computeBubbleDataFromEdges(
+    containmentEdges: Uint32Array,
+    rootId: number,
+    baseRadius: number,
+    padding: number,
+  ): Float32Array;
+  /** Release the WASM-side engine and its linear-memory allocations */
+  free(): void;
 }
 
 /**
@@ -1025,6 +1042,20 @@ export class GraphMother {
   private renderFrame(_deltaTime: number, _stats: FrameStats): void {
     if (this.disposed || !this.state.loaded) return;
 
+    // A lost device cannot record or submit work. Stop the loops and tell the
+    // host once instead of throwing (and logging) at 60fps forever.
+    if (this.gpuContext.isDeviceLost) {
+      this.renderLoop.stop();
+      this.simulationController.stop();
+      this.events.emit({
+        type: "device:lost",
+        timestamp: performance.now(),
+        reason: "unknown",
+        message: "GPU device was lost; recreate the graph to continue rendering",
+      });
+      return;
+    }
+
     // Skip rendering if canvas has no valid dimensions
     if (this.canvas.width === 0 || this.canvas.height === 0) return;
 
@@ -1748,23 +1779,24 @@ export class GraphMother {
       // computeBubbleDataFromEdges takes the same containment-only edges as the
       // BFS above; the deprecated computeBubbleData derived the hierarchy from
       // ALL engine edges and was corrupted by dependency edges.
-      // deno-lint-ignore no-explicit-any
-      const wasmAny = this.wasmEngine as any;
-      const hasComputeBubble = this.forceConfig.relativityBubbleMode &&
-        this.wasmEngine &&
-        typeof wasmAny.computeBubbleDataFromEdges === "function";
-      if (hasComputeBubble) {
-        const bubbleData = wasmAny.computeBubbleDataFromEdges(
+      if (this.forceConfig.relativityBubbleMode && this.wasmEngine) {
+        const bubbleData = this.wasmEngine.computeBubbleDataFromEdges(
           containmentEdges,
           0xFFFFFFFF, // root auto-detect
           this.forceConfig.relativityBubbleBaseRadius,
           this.forceConfig.relativityBubblePadding,
-        ) as Float32Array;
+        );
         if (bubbleData.length >= nodeCount * 2) {
           const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
           device.queue.writeBuffer(b.wellRadius, 0, toArrayBuffer(wellRadii));
         }
       } else {
+        if (this.forceConfig.relativityBubbleMode) {
+          console.warn(
+            "[GraphMother] relativityBubbleMode is enabled but no WASM engine is available; " +
+              "falling back to uniform well radii (bubble collision will be ineffective)",
+          );
+        }
         const defaultWellRadii = new Float32Array(nodeCount);
         defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
         device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
@@ -6506,12 +6538,19 @@ export class GraphMother {
   // ==========================================================================
 
   /**
-   * Resize the graph canvas
+   * Resize the graph canvas.
+   *
+   * With explicit dimensions, sets the drawing-buffer size directly (the
+   * caller owns devicePixelRatio scaling). With no arguments, measures the
+   * canvas's CSS size and sizes the drawing buffer to
+   * `clientSize × devicePixelRatio` — the right call from a ResizeObserver.
    */
   resize(width?: number, height?: number): void {
     if (width !== undefined && height !== undefined) {
       this.canvas.width = width;
       this.canvas.height = height;
+    } else if (this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
+      resizeGPUContext(this.gpuContext, this.canvas.clientWidth, this.canvas.clientHeight);
     }
     // Update viewport with CSS dimensions for coordinate transforms
     const cssWidth = this.canvas.clientWidth || this.canvas.width;
@@ -6585,6 +6624,15 @@ export class GraphMother {
 
     // Destroy viewport uniform buffer
     this.viewportUniformBuffer.destroy();
+
+    // Release the WASM engine's linear-memory allocations (the JS GC cannot
+    // reclaim wasm-bindgen objects, and WASM memory never shrinks)
+    this.wasmEngine?.free();
+
+    // Unconfigure the canvas context and destroy the GPU device. Each
+    // instance requests its own device, so skipping this leaks a GPUDevice
+    // per mount/unmount cycle.
+    destroyGPUContext(this.gpuContext);
 
     // Clear event listeners
     this.events.clear();

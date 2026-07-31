@@ -525,6 +525,15 @@ export interface SimulationEndEvent extends GraphEvent {
   readonly iterations: number;
 }
 
+/** GPU device lost event — the graph can no longer render and must be recreated */
+export interface DeviceLostEvent extends GraphEvent {
+  readonly type: "device:lost";
+  /** Reason reported by WebGPU ("destroyed" is expected during dispose) */
+  readonly reason: string;
+  /** Human-readable message from the browser */
+  readonly message: string;
+}
+
 /** Selection change event */
 export interface SelectionChangeEvent extends GraphEvent {
   readonly type: "selection:change";
@@ -619,7 +628,8 @@ export type GraphMotherEvent =
   | NodeRemoveEvent
   | EdgeAddEvent
   | EdgeRemoveEvent
-  | GraphMutateEvent;
+  | GraphMutateEvent
+  | DeviceLostEvent;
 
 /** Event handler function */
 export type EventHandler<E extends GraphEvent> = (event: E) => void;
@@ -649,4 +659,5 @@ export interface EventMap {
   "edge:add": EdgeAddEvent;
   "edge:remove": EdgeRemoveEvent;
   "graph:mutate": GraphMutateEvent;
+  "device:lost": DeviceLostEvent;
 }
