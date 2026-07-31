@@ -3,10 +3,17 @@
 // Uses spatial hashing with per-cell atomic linked lists for O(n·k) collision
 // detection where k is the average number of nodes per cell neighborhood.
 //
-// Pipeline (3 dispatches per iteration):
+// Pipeline (4 dispatches per iteration):
 // 1. clear_cells  - Reset all cell head pointers to EMPTY
 // 2. build_lists  - Each node atomically prepends itself to its cell's list
 // 3. resolve_grid - Walk linked lists in 3x3 cell neighborhood for overlaps
+// 4. apply        - collision_apply.comp.wgsl folds displacements into positions
+//
+// Positions are read-only in every phase here: resolve_grid reads the
+// positions of neighbours it finds in the cell lists, so writing its own
+// position in the same dispatch would be a cross-workgroup data race and the
+// outcome would depend on workgroup scheduling. It writes a per-node
+// displacement instead, applied by the separate apply pass.
 //
 // Cell size = 2 * max_radius * radius_multiplier, guaranteeing that any two
 // overlapping nodes (distance < r_i + r_j <= 2 * max_radius) are in the same
@@ -28,7 +35,7 @@ struct GridCollisionUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: GridCollisionUniforms;
-@group(0) @binding(1) var<storage, read_write> positions: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read> node_sizes: array<f32>;
 @group(0) @binding(3) var<storage, read_write> cell_head: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read_write> node_next: array<u32>;
@@ -38,6 +45,10 @@ struct GridCollisionUniforms {
 // Pinned nodes are inserted into cell lists (they push others away) but are
 // never displaced themselves; dead slots never enter any list.
 @group(0) @binding(6) var<storage, read> node_flags: array<u32>;
+
+// Per-node displacement accumulated by resolve_grid, consumed by the apply
+// pass. Each thread writes only its own slot.
+@group(0) @binding(7) var<storage, read_write> displacements: array<vec2<f32>>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
@@ -96,20 +107,18 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
     node_next[idx] = old_head;
 }
 
-// Phase 3: Resolve collisions using spatial grid.
-// For each node, walks the linked lists in its cell and 8 adjacent cells,
-// checking for overlapping neighbors and accumulating displacement.
-@compute @workgroup_size(256)
-fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let node_idx = gid.x;
+// Accumulated separation for one node against the nodes in its 3x3 cell
+// neighborhood, or zero when the node takes no displacement (out of range,
+// dead slot, or pinned).
+fn grid_displacement(node_idx: u32) -> vec2<f32> {
     if (node_idx >= uniforms.node_count) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
 
     // Dead slots don't exist; pinned nodes are never displaced (they are in
     // the cell lists, so other nodes still get pushed away from them).
     if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
 
     let pos = positions[node_idx];
@@ -117,7 +126,7 @@ fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Get this node's radius (negative = dead slot, not in any cell list)
     var radius_i = node_sizes[node_idx];
     if (radius_i < 0.0) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
     if (radius_i <= EPSILON) {
         radius_i = uniforms.default_radius;
@@ -190,8 +199,23 @@ fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Apply accumulated displacement
-    if (any(abs(disp) > vec2<f32>(EPSILON))) {
-        positions[node_idx] = pos + disp;
+    return disp;
+}
+
+// Phase 3: Resolve collisions using spatial grid.
+// For each node, walks the linked lists in its cell and 8 adjacent cells,
+// checking for overlapping neighbors and accumulating displacement.
+@compute @workgroup_size(256)
+fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let node_idx = gid.x;
+
+    // Every thread within the buffer writes its slot — including the padding
+    // threads past node_count that the workgroup round-up adds — so the apply
+    // pass can never pick up a displacement left by an earlier iteration or an
+    // earlier (larger) node count.
+    if (node_idx >= arrayLength(&displacements)) {
+        return;
     }
+
+    displacements[node_idx] = grid_displacement(node_idx);
 }

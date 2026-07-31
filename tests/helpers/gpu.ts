@@ -135,11 +135,14 @@ interface CollisionModule {
   createCollisionPipeline(context: unknown): {
     resolve: GPUComputePipeline;
     resolveTiled: GPUComputePipeline;
+    apply: GPUComputePipeline;
     bindGroupLayout: GPUBindGroupLayout;
+    applyLayout: GPUBindGroupLayout;
   };
   createCollisionBuffers(device: GPUDevice, maxNodes: number): {
     uniforms: GPUBuffer;
     nodeSizes: GPUBuffer;
+    displacements: GPUBuffer;
     fallbackNodeFlags: GPUBuffer;
     maxNodes: number;
   };
@@ -149,7 +152,7 @@ interface CollisionModule {
     collisionBuffers: unknown,
     positions: GPUBuffer,
     nodeFlags?: GPUBuffer,
-  ): { bindGroup: GPUBindGroup };
+  ): { bindGroup: GPUBindGroup; applyBindGroup: GPUBindGroup };
   updateCollisionUniforms(
     device: GPUDevice,
     collisionBuffers: unknown,
@@ -174,7 +177,9 @@ interface CollisionModule {
     clearCells: GPUComputePipeline;
     buildLists: GPUComputePipeline;
     resolveGrid: GPUComputePipeline;
+    apply: GPUComputePipeline;
     gridLayout: GPUBindGroupLayout;
+    applyLayout: GPUBindGroupLayout;
   };
   createGridCollisionBuffers(device: GPUDevice, maxNodes: number): {
     gridUniforms: GPUBuffer;
@@ -190,9 +195,10 @@ interface CollisionModule {
     pipeline: unknown,
     gridBuffers: unknown,
     nodeSizes: GPUBuffer,
+    displacements: GPUBuffer,
     positions: GPUBuffer,
     nodeFlags?: GPUBuffer,
-  ): { grid: GPUBindGroup };
+  ): { grid: GPUBindGroup; apply: GPUBindGroup };
   updateGridCollisionUniforms(
     device: GPUDevice,
     gridBuffers: unknown,
@@ -250,6 +256,159 @@ export function loadCollisionModule(): Promise<CollisionModule> {
     new URL("../../packages/core/src/simulation/collision.ts", import.meta.url),
   );
   return collisionModulePromise;
+}
+
+/** Collision code path driven by {@link runCollision}. */
+export type CollisionVariant = "main" | "tiled" | "grid";
+
+/** One collision run over a hand-built position buffer. */
+export interface CollisionRunInput {
+  /** Node positions, interleaved x,y */
+  positions: Float32Array;
+  /** Radius per node; DEAD_SLOT_RADIUS marks a dead slot */
+  sizes: Float32Array;
+  /** Which pipeline to drive */
+  variant: CollisionVariant;
+  /**
+   * Per-node state flags (NODE_FLAG_DEAD / NODE_FLAG_PINNED).
+   * Defaults to all-live, all-unpinned.
+   */
+  flags?: Uint32Array;
+  /** Collision resolution iterations (default 1) */
+  iterations?: number;
+  /** Force config overrides (collisionStrength, collisionRadiusMultiplier) */
+  config?: Partial<FullForceConfig>;
+  /**
+   * Grid variant only: bounds used to size the spatial hash. Defaults to the
+   * bounding box of `positions`.
+   */
+  bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/**
+ * Drives the real collision pipeline over a hand-built position buffer and
+ * returns the resolved positions (interleaved x,y). Every call builds and
+ * destroys its own GPU resources, so repeated calls with identical input are
+ * genuinely independent runs.
+ */
+export async function runCollision(
+  device: GPUDevice,
+  input: CollisionRunInput,
+): Promise<Float32Array> {
+  const mod = await loadCollisionModule();
+  const { positions, sizes, variant } = input;
+  const nodeCount = sizes.length;
+  const iterations = input.iterations ?? 1;
+  const flags = input.flags ?? new Uint32Array(nodeCount);
+  const forceConfig = validateForceConfig(input.config ?? {});
+
+  const positionBuffer = device.createBuffer({
+    label: "Collision Run Positions",
+    size: positions.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  const flagsBuffer = device.createBuffer({
+    label: "Collision Run Node Flags",
+    size: flags.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const readback = device.createBuffer({
+    label: "Collision Run Readback",
+    size: positions.byteLength,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  device.queue.writeBuffer(positionBuffer, 0, positions.slice().buffer);
+  device.queue.writeBuffer(flagsBuffer, 0, flags.slice().buffer);
+
+  // The grid path reuses the O(n^2) module's nodeSizes and displacements
+  // buffers, exactly as graph.ts does.
+  const buffers = mod.createCollisionBuffers(device, nodeCount);
+  mod.uploadNodeSizes(device, buffers, sizes);
+
+  const encoder = device.createCommandEncoder();
+  let disposeVariant: () => void;
+
+  if (variant === "grid") {
+    const pipeline = mod.createGridCollisionPipeline({ device });
+    const gridBuffers = mod.createGridCollisionBuffers(device, nodeCount);
+    const bindGroups = mod.createGridCollisionBindGroups(
+      device,
+      pipeline,
+      gridBuffers,
+      buffers.nodeSizes,
+      buffers.displacements,
+      positionBuffer,
+      flagsBuffer,
+    );
+    let maxRadius = 0;
+    for (const size of sizes) {
+      if (size > maxRadius) maxRadius = size;
+    }
+    mod.updateGridCollisionUniforms(
+      device,
+      gridBuffers,
+      nodeCount,
+      forceConfig,
+      input.bounds ?? boundsOf(positions),
+      maxRadius,
+    );
+    mod.recordGridCollisionPass(
+      encoder,
+      pipeline,
+      bindGroups,
+      gridBuffers,
+      nodeCount,
+      iterations,
+    );
+    disposeVariant = () => mod.destroyGridCollisionBuffers(gridBuffers);
+  } else {
+    const pipeline = mod.createCollisionPipeline({ device });
+    mod.updateCollisionUniforms(device, buffers, nodeCount, forceConfig);
+    const bindGroup = mod.createCollisionBindGroup(
+      device,
+      pipeline,
+      buffers,
+      positionBuffer,
+      flagsBuffer,
+    );
+    mod.recordCollisionPass(
+      encoder,
+      pipeline,
+      bindGroup,
+      nodeCount,
+      iterations,
+      variant === "tiled",
+    );
+    disposeVariant = () => {};
+  }
+
+  encoder.copyBufferToBuffer(positionBuffer, 0, readback, 0, positions.byteLength);
+  device.queue.submit([encoder.finish()]);
+
+  await readback.mapAsync(GPUMapMode.READ);
+  const result = new Float32Array(readback.getMappedRange().slice(0));
+  readback.unmap();
+
+  disposeVariant();
+  mod.destroyCollisionBuffers(buffers);
+  positionBuffer.destroy();
+  flagsBuffer.destroy();
+  readback.destroy();
+  return result;
+}
+
+/** Bounding box of an interleaved x,y position array. */
+function boundsOf(
+  positions: Float32Array,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < positions.length; i += 2) {
+    if (positions[i] < minX) minX = positions[i];
+    if (positions[i] > maxX) maxX = positions[i];
+    if (positions[i + 1] < minY) minY = positions[i + 1];
+    if (positions[i + 1] > maxY) maxY = positions[i + 1];
+  }
+  return { minX, minY, maxX, maxY };
 }
 
 // Matches `import NAME from "./x.wgsl";` and the Vite-style

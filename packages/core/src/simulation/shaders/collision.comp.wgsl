@@ -6,7 +6,14 @@
 // partitioning for larger graphs.
 //
 // Uses vec2<f32> layout for consolidated position data.
-// NOTE: positions are read-write since collision directly modifies positions.
+//
+// This is pass 1 of 2: positions are READ-ONLY here and every thread writes
+// its own slot of `displacements`. Writing positions in place while other
+// threads read them is a cross-workgroup data race (no ordering exists
+// between workgroups within a dispatch), which made the resolved layout
+// depend on GPU scheduling. collision_apply.comp.wgsl runs as pass 2 and
+// adds the displacements to the positions, so every thread in an iteration
+// sees the same position snapshot.
 
 struct CollisionUniforms {
     node_count: u32,
@@ -21,8 +28,8 @@ struct CollisionUniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: CollisionUniforms;
 
-// Node positions (read-write for in-place update) - vec2<f32> per node
-@group(0) @binding(1) var<storage, read_write> positions: array<vec2<f32>>;
+// Node positions (read-only snapshot for this iteration) - vec2<f32> per node
+@group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 
 // Node sizes/radii (read-only, optional - uses default if all zeros).
 // A negative radius marks a dead slot (hole from removal) — those slots
@@ -35,35 +42,37 @@ struct CollisionUniforms {
 // but they still push other nodes away.
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
 
+// Per-node displacement accumulated by this iteration, consumed by the apply
+// pass. Every thread of the dispatch writes its own slot and no other, so
+// there is no cross-thread hazard.
+@group(0) @binding(4) var<storage, read_write> displacements: array<vec2<f32>>;
+
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 
-// Main collision detection and resolution
-// Uses iterative relaxation to separate overlapping nodes
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
+// Accumulated separation for one node against every other node, or zero when
+// the node takes no displacement (out of range, dead slot, or pinned).
+fn resolve_displacement(node_idx: u32) -> vec2<f32> {
     if (node_idx >= uniforms.node_count) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
 
     // Dead slots don't exist; pinned nodes are never displaced (they still
     // push others away — other threads read this node's position and size).
     if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
 
     // Get this node's position and radius
-    var pos = positions[node_idx];
+    let pos = positions[node_idx];
 
     // Get node radius (negative = dead slot, use default if size buffer has zero)
     var radius_i = node_sizes[node_idx];
     if (radius_i < 0.0) {
-        return;
+        return vec2<f32>(0.0, 0.0);
     }
     if (radius_i <= EPSILON) {
         radius_i = uniforms.default_radius;
@@ -72,7 +81,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Accumulated displacement
     var disp = vec2<f32>(0.0, 0.0);
-    var collision_count = 0u;
 
     // Check against all other nodes
     for (var j = 0u; j < uniforms.node_count; j++) {
@@ -115,20 +123,32 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             // Only move this node half the distance (other node handles its half)
             let push = overlap * 0.5 * uniforms.collision_strength;
             disp += n * push;
-            collision_count += 1u;
         } else if (dist <= EPSILON && j > node_idx) {
             // Nodes are at exactly the same position
             // Use a deterministic offset based on indices to break symmetry
             let angle = f32(node_idx) * 0.618033988749895 * 6.28318530718;  // Golden ratio
             disp += vec2<f32>(cos(angle), sin(angle)) * uniforms.default_radius * uniforms.collision_strength;
-            collision_count += 1u;
         }
     }
 
-    // Apply accumulated displacement
-    if (collision_count > 0u) {
-        positions[node_idx] = pos + disp;
+    return disp;
+}
+
+// Main collision detection and resolution
+// Uses iterative relaxation to separate overlapping nodes
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let node_idx = global_id.x;
+
+    // Every thread within the buffer writes its slot — including the
+    // padding threads past node_count that the workgroup round-up adds —
+    // so the apply pass can never pick up a displacement left by an
+    // earlier iteration or an earlier (larger) node count.
+    if (node_idx >= arrayLength(&displacements)) {
+        return;
     }
+
+    displacements[node_idx] = resolve_displacement(node_idx);
 }
 
 // Workgroup-optimized version using shared memory for positions
@@ -233,8 +253,11 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
         workgroupBarrier();
     }
 
-    // Apply displacement (only valid threads write)
-    if (is_valid) {
-        positions[node_idx] = pos + disp;
+    // Record the displacement. Every thread within the buffer writes its
+    // slot (disp is still zero for out-of-range, dead and pinned nodes) so
+    // the apply pass never reads a value left over from a previous
+    // iteration — see the header note on the two-pass split.
+    if (node_idx < arrayLength(&displacements)) {
+        displacements[node_idx] = disp;
     }
 }

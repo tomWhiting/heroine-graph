@@ -15,12 +15,11 @@ import {
   createSimHarness,
   DEAD_SLOT_RADIUS,
   GPU_SKIP_MESSAGE,
-  loadCollisionModule,
   NODE_FLAG_DEAD,
   NODE_FLAG_PINNED,
   probeAdapter,
+  runCollision,
 } from "../helpers/gpu.ts";
-import { validateForceConfig } from "../../packages/core/src/simulation/config.ts";
 
 const adapter = await probeAdapter();
 if (!adapter) {
@@ -148,67 +147,7 @@ gpuTest(
 // Collision pass (post-integration position resolution)
 // ---------------------------------------------------------------------------
 
-/** Drives the real collision pipeline over a hand-built position buffer. */
-async function runCollision(
-  device: GPUDevice,
-  positions: Float32Array, // interleaved x,y
-  sizes: Float32Array,
-  flags: Uint32Array,
-  useTiled: boolean,
-): Promise<Float32Array> {
-  const mod = await loadCollisionModule();
-  const nodeCount = sizes.length;
-
-  const positionBuffer = device.createBuffer({
-    label: "Test Positions",
-    size: positions.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  const flagsBuffer = device.createBuffer({
-    label: "Test Node Flags",
-    size: flags.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const readback = device.createBuffer({
-    label: "Test Readback",
-    size: positions.byteLength,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-
-  device.queue.writeBuffer(positionBuffer, 0, positions.slice().buffer);
-  device.queue.writeBuffer(flagsBuffer, 0, flags.slice().buffer);
-
-  const pipeline = mod.createCollisionPipeline({ device });
-  const buffers = mod.createCollisionBuffers(device, nodeCount);
-  mod.uploadNodeSizes(device, buffers, sizes);
-  mod.updateCollisionUniforms(device, buffers, nodeCount, validateForceConfig({}));
-  const bindGroup = mod.createCollisionBindGroup(
-    device,
-    pipeline,
-    buffers,
-    positionBuffer,
-    flagsBuffer,
-  );
-
-  const encoder = device.createCommandEncoder();
-  mod.recordCollisionPass(encoder, pipeline, bindGroup, nodeCount, 1, useTiled);
-  encoder.copyBufferToBuffer(positionBuffer, 0, readback, 0, positions.byteLength);
-  device.queue.submit([encoder.finish()]);
-
-  await readback.mapAsync(GPUMapMode.READ);
-  const result = new Float32Array(readback.getMappedRange().slice(0));
-  readback.unmap();
-
-  mod.destroyCollisionBuffers(buffers);
-  positionBuffer.destroy();
-  flagsBuffer.destroy();
-  readback.destroy();
-  return result;
-}
-
-for (const useTiled of [false, true]) {
-  const variant = useTiled ? "tiled" : "main";
-
+for (const variant of ["main", "tiled"] as const) {
   gpuTest(
     `GPU collision (${variant}): pinned node is never displaced but still pushes; dead slots inert`,
     async (device) => {
@@ -217,13 +156,12 @@ for (const useTiled of [false, true]) {
       // wedged between them — it must neither move nor push.
       // Expected: node 1 displaced by overlap * 0.5 * strength(0.7) = 2.45
       // (exactly the two-node result), node 0 bit-exact at the origin.
-      const result = await runCollision(
-        device,
-        new Float32Array([0, 0, 3, 0, 2, 0]),
-        new Float32Array([5, 5, DEAD_SLOT_RADIUS]),
-        new Uint32Array([NODE_FLAG_PINNED, 0, NODE_FLAG_DEAD]),
-        useTiled,
-      );
+      const result = await runCollision(device, {
+        positions: new Float32Array([0, 0, 3, 0, 2, 0]),
+        sizes: new Float32Array([5, 5, DEAD_SLOT_RADIUS]),
+        flags: new Uint32Array([NODE_FLAG_PINNED, 0, NODE_FLAG_DEAD]),
+        variant,
+      });
 
       // Pinned node: bit-exact hold
       assertEquals(result[0], 0, "pinned node displaced in x");
@@ -251,68 +189,13 @@ gpuTest(
     // Same scenario as the O(n^2) variants, driven through the spatial-hash
     // grid pipeline. The dead slot keeps a live-looking radius so the grid
     // path must exclude it via NODE_FLAG_DEAD alone (not the size sentinel).
-    const mod = await loadCollisionModule();
-    const nodeCount = 3;
-    const positions = new Float32Array([0, 0, 3, 0, 2, 0]);
-    const sizes = new Float32Array([5, 5, 5]);
-    const flags = new Uint32Array([NODE_FLAG_PINNED, 0, NODE_FLAG_DEAD]);
-    const forceConfig = validateForceConfig({});
-
-    const positionBuffer = device.createBuffer({
-      label: "Test Positions",
-      size: positions.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    const result = await runCollision(device, {
+      positions: new Float32Array([0, 0, 3, 0, 2, 0]),
+      sizes: new Float32Array([5, 5, 5]),
+      flags: new Uint32Array([NODE_FLAG_PINNED, 0, NODE_FLAG_DEAD]),
+      variant: "grid",
+      bounds: { minX: -10, minY: -10, maxX: 10, maxY: 10 },
     });
-    const flagsBuffer = device.createBuffer({
-      label: "Test Node Flags",
-      size: flags.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const readback = device.createBuffer({
-      label: "Test Readback",
-      size: positions.byteLength,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    device.queue.writeBuffer(positionBuffer, 0, positions.slice().buffer);
-    device.queue.writeBuffer(flagsBuffer, 0, flags.slice().buffer);
-
-    // Grid collision reuses the O(n^2) module's nodeSizes buffer, as production does
-    const collisionBuffers = mod.createCollisionBuffers(device, nodeCount);
-    mod.uploadNodeSizes(device, collisionBuffers, sizes);
-
-    const gridPipeline = mod.createGridCollisionPipeline({ device });
-    const gridBuffers = mod.createGridCollisionBuffers(device, nodeCount);
-    const bindGroups = mod.createGridCollisionBindGroups(
-      device,
-      gridPipeline,
-      gridBuffers,
-      collisionBuffers.nodeSizes,
-      positionBuffer,
-      flagsBuffer,
-    );
-    mod.updateGridCollisionUniforms(
-      device,
-      gridBuffers,
-      nodeCount,
-      forceConfig,
-      { minX: -10, minY: -10, maxX: 10, maxY: 10 },
-      5,
-    );
-
-    const encoder = device.createCommandEncoder();
-    mod.recordGridCollisionPass(encoder, gridPipeline, bindGroups, gridBuffers, nodeCount, 1);
-    encoder.copyBufferToBuffer(positionBuffer, 0, readback, 0, positions.byteLength);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(GPUMapMode.READ);
-    const result = new Float32Array(readback.getMappedRange().slice(0));
-    readback.unmap();
-
-    mod.destroyGridCollisionBuffers(gridBuffers);
-    mod.destroyCollisionBuffers(collisionBuffers);
-    positionBuffer.destroy();
-    flagsBuffer.destroy();
-    readback.destroy();
 
     // Pinned node: bit-exact hold
     assertEquals(result[0], 0, "pinned node displaced in x");

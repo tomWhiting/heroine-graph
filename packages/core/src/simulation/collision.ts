@@ -4,6 +4,13 @@
  * Provides GPU-accelerated collision detection and resolution for node overlap
  * prevention. Runs as an optional post-integration pass.
  *
+ * Every collision iteration is two dispatches: a resolve pass that reads the
+ * position snapshot and writes a per-node displacement, then an apply pass
+ * that adds those displacements to the positions. Resolving in place would
+ * mean threads read neighbour positions other threads are concurrently
+ * writing — a cross-workgroup race with no ordering guarantee, which made the
+ * resolved layout depend on how the driver scheduled workgroups.
+ *
  * @module
  */
 
@@ -15,6 +22,7 @@ import type { BoundingBox } from "../types.ts";
 // Import shader sources
 import COLLISION_WGSL from "./shaders/collision.comp.wgsl";
 import COLLISION_GRID_WGSL from "./shaders/collision_grid.comp.wgsl";
+import COLLISION_APPLY_WGSL from "./shaders/collision_apply.comp.wgsl";
 
 const WORKGROUP_SIZE = 256;
 const DEFAULT_RADIUS = 5.0;
@@ -26,12 +34,16 @@ const MAX_GRID_DIM = 256;
  * Collision pipeline resources
  */
 export interface CollisionPipeline {
-  /** Main collision resolution pipeline */
+  /** Main collision resolution pipeline (pass 1: positions -> displacements) */
   resolve: GPUComputePipeline;
-  /** Tiled version for larger graphs */
+  /** Tiled version for larger graphs (pass 1) */
   resolveTiled: GPUComputePipeline;
-  /** Bind group layout */
+  /** Pass 2: adds the accumulated displacements to the positions */
+  apply: GPUComputePipeline;
+  /** Bind group layout for the resolve passes */
   bindGroupLayout: GPUBindGroupLayout;
+  /** Bind group layout for the apply pass */
+  applyLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -42,6 +54,14 @@ export interface CollisionBuffers {
   uniforms: GPUBuffer;
   /** Node sizes/radii buffer */
   nodeSizes: GPUBuffer;
+  /**
+   * Per-node displacement handed from the resolve pass to the apply pass
+   * (vec2<f32> per node). Scratch space only: the resolve pass overwrites
+   * every slot it dispatches over, so nothing carries across iterations.
+   * Shared with the grid collision path, which accumulates into the same
+   * buffer.
+   */
+  displacements: GPUBuffer;
   /**
    * Zeroed fallback for the node_flags binding, used when the caller does
    * not pass the simulation's nodeFlags buffer (all slots treated as live
@@ -57,8 +77,64 @@ export interface CollisionBuffers {
  * Collision bind group
  */
 export interface CollisionBindGroup {
-  /** Bind group for collision pass */
+  /** Bind group for the resolve pass */
   bindGroup: GPUBindGroup;
+  /** Bind group for the apply pass (positions + displacements) */
+  applyBindGroup: GPUBindGroup;
+}
+
+/**
+ * Creates the pass-2 pipeline that folds accumulated displacements into
+ * positions. Both the O(n^2) and the grid collision path build their own
+ * instance: the resolve shaders declare positions read-only, so the write
+ * has to live in a separate WGSL module with its own bind group layout.
+ */
+function createApplyPipeline(
+  device: GPUDevice,
+): { apply: GPUComputePipeline; applyLayout: GPUBindGroupLayout } {
+  const shaderModule = device.createShaderModule({
+    label: "Collision Apply Shader",
+    code: COLLISION_APPLY_WGSL,
+  });
+
+  // Bindings: positions (vec2, read-write), displacements (vec2, read-only)
+  const applyLayout = device.createBindGroupLayout({
+    label: "Collision Apply Bind Group Layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+    ],
+  });
+
+  const apply = device.createComputePipeline({
+    label: "Collision Apply Pipeline",
+    layout: device.createPipelineLayout({
+      label: "Collision Apply Pipeline Layout",
+      bindGroupLayouts: [applyLayout],
+    }),
+    compute: { module: shaderModule, entryPoint: "apply_displacements" },
+  });
+
+  return { apply, applyLayout };
+}
+
+/**
+ * Builds the apply-pass bind group for a (positions, displacements) pair.
+ */
+function createApplyBindGroup(
+  device: GPUDevice,
+  applyLayout: GPUBindGroupLayout,
+  positions: GPUBuffer,
+  displacements: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: "Collision Apply Bind Group",
+    layout: applyLayout,
+    entries: [
+      { binding: 0, resource: { buffer: positions } },
+      { binding: 1, resource: { buffer: displacements } },
+    ],
+  });
 }
 
 /**
@@ -75,15 +151,17 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
     code: COLLISION_WGSL,
   });
 
-  // Bind group layout for collision pass
-  // Bindings: uniforms, positions (vec2, read-write), node_sizes, node_flags
+  // Bind group layout for the resolve pass
+  // Bindings: uniforms, positions (vec2, read-only), node_sizes, node_flags,
+  // displacements (vec2, read-write)
   const bindGroupLayout = device.createBindGroupLayout({
     label: "Collision Bind Group Layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
 
@@ -104,10 +182,14 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
     compute: { module: shaderModule, entryPoint: "resolve_tiled" },
   });
 
+  const { apply, applyLayout } = createApplyPipeline(device);
+
   return {
     resolve,
     resolveTiled,
+    apply,
     bindGroupLayout,
+    applyLayout,
   };
 }
 
@@ -139,6 +221,14 @@ export function createCollisionBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Resolve -> apply hand-off, one vec2<f32> per node. Never uploaded from
+  // the CPU: the resolve pass writes every slot before the apply pass reads it.
+  const displacements = device.createBuffer({
+    label: "Collision Displacements",
+    size: safeMaxNodes * 8,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
   // Zeroed fallback flags (all live/unpinned) for callers without a
   // simulation nodeFlags buffer
   const fallbackNodeFlags = device.createBuffer({
@@ -150,6 +240,7 @@ export function createCollisionBuffers(
   return {
     uniforms,
     nodeSizes,
+    displacements,
     fallbackNodeFlags,
     maxNodes: safeMaxNodes,
   };
@@ -158,15 +249,18 @@ export function createCollisionBuffers(
 /**
  * Creates collision bind group
  *
+ * Builds both bind groups an iteration needs: the resolve pass (positions
+ * read-only, displacements written) and the apply pass (positions written).
+ *
  * @param device - GPU device
  * @param pipeline - Collision pipeline
  * @param collisionBuffers - Collision-specific buffers
- * @param positions - Position buffer (vec2, read-write)
+ * @param positions - Position buffer (vec2; read in resolve, written in apply)
  * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
  *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so collision skips dead
  *   slots and never displaces pinned nodes. Falls back to an all-zero buffer
  *   (all live/unpinned) when omitted.
- * @returns Collision bind group
+ * @returns Collision bind groups
  */
 export function createCollisionBindGroup(
   device: GPUDevice,
@@ -183,10 +277,18 @@ export function createCollisionBindGroup(
       { binding: 1, resource: { buffer: positions } },
       { binding: 2, resource: { buffer: collisionBuffers.nodeSizes } },
       { binding: 3, resource: { buffer: nodeFlags ?? collisionBuffers.fallbackNodeFlags } },
+      { binding: 4, resource: { buffer: collisionBuffers.displacements } },
     ],
   });
 
-  return { bindGroup };
+  const applyBindGroup = createApplyBindGroup(
+    device,
+    pipeline.applyLayout,
+    positions,
+    collisionBuffers.displacements,
+  );
+
+  return { bindGroup, applyBindGroup };
 }
 
 /**
@@ -238,11 +340,16 @@ export function uploadNodeSizes(
 }
 
 /**
- * Records collision detection pass(es) to command encoder
+ * Records collision detection pass(es) to command encoder.
+ *
+ * Each iteration is a resolve dispatch followed by an apply dispatch. Both
+ * cover the same threads, so every displacement the resolve pass writes is
+ * consumed by the apply pass that follows it, and each iteration starts from
+ * the previous iteration's fully applied positions.
  *
  * @param encoder - Command encoder
  * @param pipeline - Collision pipeline
- * @param bindGroup - Collision bind group
+ * @param bindGroup - Collision bind groups
  * @param nodeCount - Number of nodes
  * @param iterations - Number of collision resolution iterations
  * @param useTiled - Use tiled version for large graphs (>5000 nodes)
@@ -259,13 +366,24 @@ export function recordCollisionPass(
   const selectedPipeline = useTiled ? pipeline.resolveTiled : pipeline.resolve;
 
   for (let i = 0; i < iterations; i++) {
-    const pass = encoder.beginComputePass({
-      label: `Collision Resolution ${i + 1}/${iterations}`,
-    });
-    pass.setPipeline(selectedPipeline);
-    pass.setBindGroup(0, bindGroup.bindGroup);
-    pass.dispatchWorkgroups(workgroups);
-    pass.end();
+    {
+      const pass = encoder.beginComputePass({
+        label: `Collision Resolution ${i + 1}/${iterations}`,
+      });
+      pass.setPipeline(selectedPipeline);
+      pass.setBindGroup(0, bindGroup.bindGroup);
+      pass.dispatchWorkgroups(workgroups);
+      pass.end();
+    }
+    {
+      const pass = encoder.beginComputePass({
+        label: `Collision Apply ${i + 1}/${iterations}`,
+      });
+      pass.setPipeline(pipeline.apply);
+      pass.setBindGroup(0, bindGroup.applyBindGroup);
+      pass.dispatchWorkgroups(workgroups);
+      pass.end();
+    }
   }
 }
 
@@ -277,6 +395,7 @@ export function recordCollisionPass(
 export function destroyCollisionBuffers(buffers: CollisionBuffers): void {
   buffers.uniforms.destroy();
   buffers.nodeSizes.destroy();
+  buffers.displacements.destroy();
   buffers.fallbackNodeFlags.destroy();
 }
 
@@ -298,8 +417,12 @@ export interface GridCollisionPipeline {
   buildLists: GPUComputePipeline;
   /** Resolve collisions by walking linked lists in 3x3 neighborhood */
   resolveGrid: GPUComputePipeline;
-  /** Bind group layout (6 bindings) */
+  /** Adds the accumulated displacements to the positions */
+  apply: GPUComputePipeline;
+  /** Bind group layout for the three grid phases (8 bindings) */
   gridLayout: GPUBindGroupLayout;
+  /** Bind group layout for the apply pass */
+  applyLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -330,8 +453,10 @@ export interface GridCollisionBuffers {
  * Grid collision bind groups.
  */
 export interface GridCollisionBindGroups {
-  /** Single bind group for all 3 entry points (6 bindings) */
+  /** Single bind group for the 3 grid entry points (8 bindings) */
   grid: GPUBindGroup;
+  /** Bind group for the apply pass (positions + displacements) */
+  apply: GPUBindGroup;
 }
 
 /**
@@ -350,17 +475,18 @@ export function createGridCollisionPipeline(
     code: COLLISION_GRID_WGSL,
   });
 
-  // All 3 entry points share this layout (6 bindings).
+  // All 3 grid entry points share this layout (8 bindings).
   const gridLayout = device.createBindGroupLayout({
     label: "Grid Collision Layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // positions (rw)
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // positions (ro)
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_sizes
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // cell_head (atomic rw)
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // node_next (rw)
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // node_cell (rw)
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // displacements (rw)
     ],
   });
 
@@ -387,11 +513,15 @@ export function createGridCollisionPipeline(
     compute: { module: shaderModule, entryPoint: "resolve_grid" },
   });
 
+  const { apply, applyLayout } = createApplyPipeline(device);
+
   return {
     clearCells,
     buildLists,
     resolveGrid,
+    apply,
     gridLayout,
+    applyLayout,
   };
 }
 
@@ -461,6 +591,8 @@ export function createGridCollisionBuffers(
  * @param pipeline - Grid collision pipeline
  * @param gridBuffers - Grid collision buffers
  * @param nodeSizes - Node sizes buffer (from CollisionBuffers)
+ * @param displacements - Resolve -> apply scratch buffer (from CollisionBuffers;
+ *   the two collision paths never run in the same frame, so they share it)
  * @param positions - Position buffer (positionsOut for ping-pong consistency)
  * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
  *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so grid collision skips
@@ -473,6 +605,7 @@ export function createGridCollisionBindGroups(
   pipeline: GridCollisionPipeline,
   gridBuffers: GridCollisionBuffers,
   nodeSizes: GPUBuffer,
+  displacements: GPUBuffer,
   positions: GPUBuffer,
   nodeFlags?: GPUBuffer,
 ): GridCollisionBindGroups {
@@ -487,10 +620,18 @@ export function createGridCollisionBindGroups(
       { binding: 4, resource: { buffer: gridBuffers.nodeNext } },
       { binding: 5, resource: { buffer: gridBuffers.nodeCell } },
       { binding: 6, resource: { buffer: nodeFlags ?? gridBuffers.fallbackNodeFlags } },
+      { binding: 7, resource: { buffer: displacements } },
     ],
   });
 
-  return { grid };
+  const apply = createApplyBindGroup(
+    device,
+    pipeline.applyLayout,
+    positions,
+    displacements,
+  );
+
+  return { grid, apply };
 }
 
 /**
@@ -576,10 +717,12 @@ export function updateGridCollisionUniforms(
 /**
  * Records grid-based collision detection pass(es).
  *
- * Per iteration (3 GPU dispatches):
+ * Per iteration (4 GPU dispatches):
  * 1. clear_cells  — reset all cell head pointers to EMPTY
  * 2. build_lists  — each node atomically prepends itself to its cell's list
- * 3. resolve_grid — walk linked lists in 3x3 neighborhood for overlaps
+ * 3. resolve_grid — walk linked lists in 3x3 neighborhood for overlaps,
+ *                   accumulating a per-node displacement
+ * 4. apply        — add the displacements to the positions
  *
  * @param encoder - GPU command encoder
  * @param pipeline - Grid collision pipeline
@@ -636,6 +779,18 @@ export function recordGridCollisionPass(
       });
       pass.setPipeline(pipeline.resolveGrid);
       pass.setBindGroup(0, bindGroups.grid);
+      pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.end();
+    }
+
+    // Phase 4: Fold the displacements into the positions. Same thread
+    // coverage as phase 3, so every displacement written is consumed here.
+    {
+      const pass = encoder.beginComputePass({
+        label: `GridCollision Apply ${iter + 1}/${iterations}`,
+      });
+      pass.setPipeline(pipeline.apply);
+      pass.setBindGroup(0, bindGroups.apply);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }

@@ -1056,6 +1056,7 @@ export class GraphMother {
         this.gridCollisionPipeline,
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
+        this.collisionBuffers.displacements,
         this.simBuffers.positionsOut,
         this.simBuffers.nodeFlags,
       );
@@ -1685,6 +1686,7 @@ export class GraphMother {
         this.gridCollisionPipeline,
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
+        this.collisionBuffers.displacements,
         this.simBuffers.positionsOut,
         this.simBuffers.nodeFlags,
       );
@@ -3564,6 +3566,7 @@ export class GraphMother {
         this.gridCollisionPipeline,
         this.gridCollisionBuffers,
         this.collisionBuffers.nodeSizes,
+        this.collisionBuffers.displacements,
         this.simBuffers.positionsOut,
         this.simBuffers.nodeFlags,
       );
