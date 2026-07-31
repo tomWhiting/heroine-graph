@@ -11,8 +11,8 @@
 import type { GPUContext } from "../../webgpu/context.ts";
 
 // Import shader source code
-import contourVertSource from "./shaders/contour.vert.wgsl?raw";
-import contourFragSource from "./shaders/contour.frag.wgsl?raw";
+import contourVertSource from "./shaders/contour.vert.wgsl";
+import contourFragSource from "./shaders/contour.frag.wgsl";
 
 /**
  * Contour uniform data

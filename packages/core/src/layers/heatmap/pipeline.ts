@@ -13,10 +13,10 @@ import type { DensityTexture } from "./texture.ts";
 import type { ColorScaleTexture } from "./colorscale.ts";
 
 // Import shader source code
-import splatVertSource from "./shaders/splat.vert.wgsl?raw";
-import splatFragSource from "./shaders/splat.frag.wgsl?raw";
-import colormapVertSource from "./shaders/colormap.vert.wgsl?raw";
-import colormapFragSource from "./shaders/colormap.frag.wgsl?raw";
+import splatVertSource from "./shaders/splat.vert.wgsl";
+import splatFragSource from "./shaders/splat.frag.wgsl";
+import colormapVertSource from "./shaders/colormap.vert.wgsl";
+import colormapFragSource from "./shaders/colormap.frag.wgsl";
 
 /**
  * Heatmap uniform buffer data

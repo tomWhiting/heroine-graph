@@ -3,14 +3,11 @@
  *
  * Provides spatial queries for node and edge hit testing.
  *
- * By default queries brute-force over the position provider (the CPU shadow
- * of GPU positions), which is the freshest CPU-side data available — node
- * positions live on the GPU and are read back periodically. An optional
- * SpatialQueryEngine (WASM R-tree) can be wired via setSpatialEngine(), but
- * the caller is then responsible for keeping the engine's positions in sync
- * with the simulation and rebuilding the index; graphmother core does not
- * wire it because syncing + rebuilding every readback would cost more than
- * the per-pointer-event scan.
+ * Queries brute-force over the position provider (the CPU shadow of GPU
+ * positions), which is the freshest CPU-side data available — node positions
+ * live on the GPU and are read back periodically. An index would have to be
+ * re-synced and rebuilt on every readback, which costs more than the
+ * per-pointer-event scan it would replace.
  *
  * @module
  */
@@ -74,19 +71,6 @@ export const DEFAULT_HIT_TESTER_CONFIG: Required<HitTesterConfig> = {
 };
 
 /**
- * Interface for WASM spatial queries.
- * This matches the GraphMotherWasm API.
- */
-export interface SpatialQueryEngine {
-  /** Find nearest node within distance */
-  findNearestNodeWithin(x: number, y: number, maxDistance: number): number | undefined;
-  /** Find all nodes in rectangle */
-  findNodesInRect(minX: number, minY: number, maxX: number, maxY: number): number[];
-  /** Rebuild spatial index */
-  rebuildSpatialIndex(): void;
-}
-
-/**
  * Node position provider interface.
  */
 export interface PositionProvider {
@@ -113,25 +97,16 @@ export interface EdgeProvider {
 /**
  * Hit tester for graph elements.
  *
- * Node hit testing scans the position provider (or an optional spatial
- * engine, if the caller wires one and keeps its index fresh).
+ * Node hit testing scans the position provider.
  * Edge hit testing uses line-point distance calculations.
  */
 export class HitTester {
   private readonly config: Required<HitTesterConfig>;
-  private spatialEngine: SpatialQueryEngine | null = null;
   private positionProvider: PositionProvider | null = null;
   private edgeProvider: EdgeProvider | null = null;
 
   constructor(config: HitTesterConfig = {}) {
     this.config = { ...DEFAULT_HIT_TESTER_CONFIG, ...config };
-  }
-
-  /**
-   * Set the spatial query engine (WASM).
-   */
-  setSpatialEngine(engine: SpatialQueryEngine): void {
-    this.spatialEngine = engine;
   }
 
   /**
@@ -163,27 +138,7 @@ export class HitTester {
   ): NodeHitResult | null {
     const radius = hitRadius ?? this.config.nodeHitRadius;
 
-    // Try WASM spatial index first (most efficient)
-    if (this.spatialEngine) {
-      const nodeId = this.spatialEngine.findNearestNodeWithin(graphX, graphY, radius);
-      if (nodeId !== undefined) {
-        const position = this.positionProvider?.getNodePosition(nodeId);
-        if (position) {
-          const dx = graphX - position.x;
-          const dy = graphY - position.y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          return {
-            type: "node",
-            nodeId,
-            distance,
-            position,
-          };
-        }
-      }
-    }
-
-    // Fallback: brute force search if no spatial engine
-    if (this.positionProvider && !this.spatialEngine) {
+    if (this.positionProvider) {
       return this.bruteForceNodeHitTest(graphX, graphY, radius);
     }
 
@@ -286,11 +241,6 @@ export class HitTester {
     maxX: number,
     maxY: number,
   ): NodeId[] {
-    if (this.spatialEngine) {
-      return this.spatialEngine.findNodesInRect(minX, minY, maxX, maxY);
-    }
-
-    // Fallback: brute force
     if (this.positionProvider) {
       const results: NodeId[] = [];
       for (const nodeId of this.positionProvider.getNodeIds()) {
@@ -306,15 +256,7 @@ export class HitTester {
   }
 
   /**
-   * Rebuild the spatial index.
-   * Call this after bulk position updates.
-   */
-  rebuildIndex(): void {
-    this.spatialEngine?.rebuildSpatialIndex();
-  }
-
-  /**
-   * Brute force node hit test (fallback when no spatial engine).
+   * Brute force node hit test over the position provider.
    */
   private bruteForceNodeHitTest(
     graphX: number,

@@ -275,6 +275,14 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       );
     }
 
+    // Validate edge count doesn't exceed buffer capacity
+    if (context.edgeCount > buffers.maxEdges) {
+      throw new Error(
+        `ForceAtlas2 buffer overflow: edgeCount (${context.edgeCount}) exceeds buffer capacity (${buffers.maxEdges}). ` +
+          `Buffers must be recreated with createBuffers() when edge count increases.`,
+      );
+    }
+
     // FA2 force model calibration:
     // FA2 uses 1/d repulsion (not 1/d² like Coulomb) with degree-weighted mass,
     // producing inherently stronger forces. The 0.1 factor calibrates FA2's kr
@@ -343,7 +351,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     device.queue.writeBuffer(buffers.degreesBuffer, 0, degrees);
 
     // Upload edge weights (all 1.0 for unweighted graphs)
-    if (context.edgeCount > 0 && context.edgeCount <= buffers.maxEdges) {
+    if (context.edgeCount > 0) {
       const weights = new Float32Array(context.edgeCount);
       weights.fill(1.0);
       device.queue.writeBuffer(buffers.edgeWeightsBuffer, 0, weights);

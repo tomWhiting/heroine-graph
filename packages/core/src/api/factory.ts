@@ -9,16 +9,8 @@
 
 import { ErrorCode, GraphMotherError, wrapAsync } from "../errors.ts";
 import { checkWebGPU, hasWebGPU } from "../webgpu/check.ts";
-import {
-  createGPUContext,
-  type GPUContext,
-  type GPUContextOptions,
-} from "../webgpu/context.ts";
-import {
-  createWasmEngine,
-  isWasmLoaded,
-  loadWasmModule,
-} from "../wasm/loader.ts";
+import { createGPUContext, type GPUContext, type GPUContextOptions } from "../webgpu/context.ts";
+import { createWasmEngine, isWasmLoaded, loadWasmModule } from "../wasm/loader.ts";
 import { GraphMother, type GraphMotherConfig } from "./graph.ts";
 import type { GraphConfig } from "../types.ts";
 
@@ -29,7 +21,10 @@ export interface CreateGraphMotherOptions {
   /** Canvas element or selector to render into */
   canvas: HTMLCanvasElement | string;
 
-  /** WASM module URL (optional, uses default if not provided) */
+  /**
+   * URL of the .wasm binary (optional). When omitted the wasm-bindgen glue
+   * resolves the binary relative to itself, which is what bundlers expect.
+   */
   wasmUrl?: string;
 
   /** GPU context options */
@@ -90,7 +85,7 @@ export async function createGraphMother(
 ): Promise<GraphMother> {
   const {
     canvas,
-    wasmUrl: _wasmUrl,
+    wasmUrl,
     gpu = {},
     config = {},
     debug = false,
@@ -111,7 +106,7 @@ export async function createGraphMother(
   // Load WASM module if not already loaded
   if (!isWasmLoaded()) {
     await wrapAsync(
-      () => loadWasmModule(),
+      () => loadWasmModule(wasmUrl),
       ErrorCode.WASM_LOAD_FAILED,
       "Failed to load WASM module",
     );
@@ -204,8 +199,7 @@ export async function getSupportInfo(): Promise<{
   const webgpuStatus = await checkWebGPU();
 
   // Check WASM support
-  const wasmSupported =
-    typeof WebAssembly !== "undefined" &&
+  const wasmSupported = typeof WebAssembly !== "undefined" &&
     typeof WebAssembly.instantiate === "function";
 
   return {
@@ -217,17 +211,12 @@ export async function getSupportInfo(): Promise<{
 }
 
 /**
- * Default WASM module URL
- */
-export const DEFAULT_WASM_URL = "/graphmother_wasm_bg.wasm";
-
-/**
  * Version information
  */
 export const VERSION = {
   major: 0,
-  minor: 1,
-  patch: 0,
+  minor: 2,
+  patch: 1,
   toString() {
     return `${this.major}.${this.minor}.${this.patch}`;
   },

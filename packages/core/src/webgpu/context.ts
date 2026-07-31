@@ -237,35 +237,3 @@ export function resizeGPUContext(
 export function getCurrentTexture(ctx: GPUContext): GPUTexture {
   return ctx.context.getCurrentTexture();
 }
-
-/**
- * Create a depth texture for the canvas.
- *
- * @param ctx The GPU context
- * @returns A depth texture matching the canvas size
- */
-export function createDepthTexture(ctx: GPUContext): GPUTexture {
-  return ctx.device.createTexture({
-    size: {
-      width: ctx.canvas.width,
-      height: ctx.canvas.height,
-    },
-    format: "depth24plus",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    label: "Depth Texture",
-  });
-}
-
-/**
- * Calculate the maximum number of nodes the GPU can handle.
- *
- * @param ctx The GPU context
- * @returns Estimated maximum node count
- */
-export function estimateMaxNodes(ctx: GPUContext): number {
-  // Each node needs: 2 floats for position, 2 for velocity = 16 bytes
-  // Plus attributes, selection state, etc. = ~32 bytes total
-  const bytesPerNode = 32;
-  const maxBufferSize = ctx.limits.maxStorageBufferBindingSize;
-  return Math.floor(maxBufferSize / bytesPerNode);
-}

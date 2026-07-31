@@ -266,6 +266,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       );
     }
 
+    // Validate edge count doesn't exceed buffer capacity
+    if (context.edgeCount > buffers.maxEdges) {
+      throw new Error(
+        `LinLog buffer overflow: edgeCount (${context.edgeCount}) exceeds buffer capacity (${buffers.maxEdges}). ` +
+          `Buffers must be recreated with createBuffers() when edge count increases.`,
+      );
+    }
+
     const fc = context.forceConfig;
 
     // LinLog force model calibration:
@@ -319,7 +327,7 @@ export class LinLogAlgorithm implements ForceAlgorithm {
     device.queue.writeBuffer(buffers.degreesBuffer, 0, degrees);
 
     // Upload edge weights (all 1.0 for unweighted graphs)
-    if (context.edgeCount > 0 && context.edgeCount <= buffers.maxEdges) {
+    if (context.edgeCount > 0) {
       const weights = new Float32Array(context.edgeCount);
       weights.fill(1.0);
       device.queue.writeBuffer(buffers.edgeWeightsBuffer, 0, weights);

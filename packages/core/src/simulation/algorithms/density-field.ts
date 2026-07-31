@@ -24,7 +24,7 @@ import type {
 } from "./types.ts";
 
 // Import shader source
-import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl?raw";
+import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl";
 
 /**
  * Density Field algorithm info

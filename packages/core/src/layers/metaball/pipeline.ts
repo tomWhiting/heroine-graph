@@ -10,8 +10,8 @@
 import type { GPUContext } from "../../webgpu/context.ts";
 
 // Import shader source code
-import sdfVertSource from "./shaders/sdf.vert.wgsl?raw";
-import sdfFragSource from "./shaders/sdf.frag.wgsl?raw";
+import sdfVertSource from "./shaders/sdf.vert.wgsl";
+import sdfFragSource from "./shaders/sdf.frag.wgsl";
 
 /**
  * Metaball uniform data

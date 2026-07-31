@@ -34,7 +34,7 @@ import DEGREES_WGSL from "../shaders/relativity_degrees.comp.wgsl";
 import MASS_WGSL from "../shaders/relativity_mass.comp.wgsl";
 import SIBLING_WGSL from "../shaders/relativity_sibling.comp.wgsl";
 import GRAVITY_WGSL from "../shaders/relativity_gravity.comp.wgsl";
-import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl?raw";
+import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl";
 import FA2_ATTRACTION_WGSL from "../shaders/fa2_attraction.comp.wgsl";
 
 /**

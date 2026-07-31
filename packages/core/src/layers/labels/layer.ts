@@ -23,8 +23,8 @@ import { DEFAULT_LABEL_CONFIG, type LabelConfig, parseColor } from "./config.ts"
 import { type LabelViewState, shouldRebuildLabels } from "./cache.ts";
 
 // Import shaders as strings
-import labelVertexShader from "./shaders/label.vert.wgsl?raw";
-import labelFragmentShader from "./shaders/label.frag.wgsl?raw";
+import labelVertexShader from "./shaders/label.vert.wgsl";
+import labelFragmentShader from "./shaders/label.frag.wgsl";
 
 // Re-export PositionProvider for convenience
 export type { PositionProvider } from "./manager.ts";

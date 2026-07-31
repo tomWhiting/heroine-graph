@@ -500,6 +500,13 @@ export function validateForceConfig(
   result.relativityDepthDecay = Math.max(0, Math.min(1, result.relativityDepthDecay));
   result.relativityBubbleOrbitScale = Math.max(0.1, Math.min(2, result.relativityBubbleOrbitScale));
 
+  // Bubble mode implies phantom zones: the per-node wellRadius that bubble mode
+  // computes is only read by the shaders behind the phantom_enabled gate, so
+  // enabling bubble mode alone would be a silent no-op.
+  if (result.relativityBubbleMode) {
+    result.relativityPhantomZone = true;
+  }
+
   // Validate LinLog parameters
   result.linlogEdgeWeightInfluence = Math.max(0, Math.min(2, result.linlogEdgeWeightInfluence));
   result.linlogScaling = Math.max(0.001, Math.min(100, result.linlogScaling));
@@ -547,34 +554,6 @@ export function validateForceConfig(
 }
 
 /**
- * Convert force config to GPU uniform buffer data
- *
- * @param config - Force configuration
- * @returns Float32Array for uniform buffer
- */
-export function forceConfigToUniformData(config: FullForceConfig): Float32Array {
-  // Layout: 16 floats (64 bytes, aligned to 16-byte boundary)
-  return new Float32Array([
-    config.repulsionStrength,
-    config.repulsionDistanceMax,
-    config.repulsionDistanceMin,
-    config.theta,
-    config.springStrength,
-    config.springLength,
-    config.centerStrength,
-    0, // padding
-    config.centerX,
-    config.centerY,
-    config.velocityDecay,
-    config.maxVelocity,
-    config.timeStep,
-    config.collisionEnabled ? 1.0 : 0.0,
-    config.collisionStrength,
-    config.collisionRadiusMultiplier,
-  ]);
-}
-
-/**
  * Merge partial config with defaults
  *
  * @param partial - Partial configuration
@@ -583,5 +562,12 @@ export function forceConfigToUniformData(config: FullForceConfig): Float32Array 
 export function mergeForceConfig(
   partial: Partial<FullForceConfig>,
 ): FullForceConfig {
-  return { ...DEFAULT_FORCE_CONFIG, ...partial };
+  const merged = { ...DEFAULT_FORCE_CONFIG, ...partial };
+
+  // Bubble mode implies phantom zones — see validateForceConfig for why.
+  if (merged.relativityBubbleMode) {
+    merged.relativityPhantomZone = true;
+  }
+
+  return merged;
 }

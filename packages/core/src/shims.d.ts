@@ -1,10 +1,5 @@
-/** WGSL shader imports — bare .wgsl and Vite-style ?raw suffix */
+/** WGSL shader imports — bundlers load these as text (esbuild `--loader:.wgsl=text`) */
 declare module "*.wgsl" {
-  const source: string;
-  export default source;
-}
-
-declare module "*.wgsl?raw" {
   const source: string;
   export default source;
 }

@@ -23,18 +23,14 @@ import type {
   Vec2,
   ViewportState,
 } from "../types.ts";
-import {
-  destroyGPUContext,
-  type GPUContext,
-  resizeGPUContext,
-} from "../webgpu/context.ts";
+import { destroyGPUContext, type GPUContext, resizeGPUContext } from "../webgpu/context.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createEventEmitter, type EventEmitter, Events } from "../events/emitter.ts";
 import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
-import { type ParsedGraph, parseGraphInput } from "../graph/parser.ts";
-import { parseGraphTypedInput } from "../graph/typed_parser.ts";
+import { type ParsedGraph, parseGraphInput, type ParserConfig } from "../graph/parser.ts";
+import { parseGraphTypedInput, type TypedParserConfig } from "../graph/typed_parser.ts";
 import { initializePositions, needsInitialization } from "../graph/initialize.ts";
 import {
   createNodeBindGroup,
@@ -59,7 +55,7 @@ import {
   EDGE_FLOW_PRESETS,
   type EdgeFlowPreset,
 } from "../renderer/edge_flow.ts";
-import { parseColorToRGB } from "../utils/color.ts";
+import { parseColorToRGB, parseColorToRGBA } from "../utils/color.ts";
 import {
   DEFAULT_NODE_BORDER_CONFIG as _DEFAULT_NODE_BORDER_CONFIG,
   type NodeBorderConfig as _NodeBorderConfig,
@@ -113,11 +109,7 @@ import {
   updateGridCollisionUniforms,
   uploadNodeSizes,
 } from "../simulation/collision.ts";
-import {
-  createHitTester,
-  type HitTester,
-  type SpatialQueryEngine,
-} from "../interaction/hit_test.ts";
+import { createHitTester, type HitTester } from "../interaction/hit_test.ts";
 import { createPointerManager, type PointerManager } from "../interaction/pointer.ts";
 import {
   type ColorScaleName,
@@ -136,6 +128,7 @@ import {
   // Labels layer
   LabelsLayer,
   type LabelsRenderContext,
+  type Layer as VisualizationLayer,
   type LayerInfo,
   type LayerManager,
   type MetaballConfig,
@@ -180,11 +173,10 @@ import { MutableGraphState, NODE_ATTR_BYTES, NODE_ATTR_FLOATS } from "./graph_st
 const DEFAULT_WELL_RADIUS = 0.0;
 
 /**
- * WASM engine interface for spatial queries and graph structure.
+ * WASM engine interface for graph structure and layout.
  * This matches the GraphMotherWasm API exposed by the WASM module.
  */
-interface WasmEngine extends SpatialQueryEngine {
-  findNearestNode(x: number, y: number): number | undefined;
+interface WasmEngine {
   /** Clear all graph data */
   clear(): void;
   /**
@@ -417,6 +409,12 @@ export class GraphMother {
     a: 1.0,
   };
 
+  // Visual defaults seeded from the constructor `config` (GraphConfig) option.
+  // Held rather than applied once because the parsers consume them on every
+  // load(), so a reload keeps the caller's defaults.
+  private parserConfig: ParserConfig = {};
+  private typedParserConfig: TypedParserConfig = {};
+
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
   private simBindGroups: SimulationBindGroups | null = null;
@@ -596,11 +594,50 @@ export class GraphMother {
     // Note: render loop starts on first load() call, not here
     // This prevents rendering before canvas has valid dimensions
 
+    // Apply caller-supplied graph-wide visual defaults
+    this.applyGraphConfig(config.config);
+
     // Set up visibility change handling - pause simulation when tab is hidden
     this.setupVisibilityChangeHandler();
 
     if (this.debug) {
       console.log("GraphMother instance created");
+    }
+  }
+
+  /**
+   * Seed graph-wide visual defaults from the constructor `config` option.
+   *
+   * `backgroundColor` is applied immediately; the node/edge defaults are
+   * stashed for the parsers, which consume them on every load().
+   */
+  private applyGraphConfig(config: Partial<GraphConfig> | undefined): void {
+    if (!config) return;
+
+    if (config.backgroundColor !== undefined) {
+      this.setBackgroundColor(config.backgroundColor);
+    }
+
+    if (config.nodeDefaultRadius !== undefined) {
+      this.parserConfig.defaultNodeRadius = config.nodeDefaultRadius;
+      this.typedParserConfig.defaultNodeRadius = config.nodeDefaultRadius;
+    }
+
+    if (config.nodeDefaultColor !== undefined) {
+      const [r, g, b, a] = parseColorToRGBA(config.nodeDefaultColor);
+      this.parserConfig.defaultNodeColor = { r, g, b, a };
+      this.typedParserConfig.defaultNodeColor = [r, g, b];
+    }
+
+    if (config.edgeDefaultWidth !== undefined) {
+      this.parserConfig.defaultEdgeWidth = config.edgeDefaultWidth;
+      this.typedParserConfig.defaultEdgeWidth = config.edgeDefaultWidth;
+    }
+
+    if (config.edgeDefaultColor !== undefined) {
+      const [r, g, b, a] = parseColorToRGBA(config.edgeDefaultColor);
+      this.parserConfig.defaultEdgeColor = { r, g, b, a };
+      this.typedParserConfig.defaultEdgeColor = [r, g, b];
     }
   }
 
@@ -1318,6 +1355,28 @@ export class GraphMother {
     this.prevSyncPositionsY.set(posY.subarray(0, nodeCount));
   }
 
+  /**
+   * Reset interaction, styling and convergence state that is scoped to a
+   * single loaded graph.
+   *
+   * Every field cleared here is keyed by node/edge slot index or holds a
+   * per-graph animation timestamp, so carrying it across a load() would
+   * apply it to unrelated nodes of the new graph (stale selection/hover
+   * highlights, colors restored onto the wrong nodes, a convergence
+   * comparison against the previous graph's positions).
+   */
+  private resetPerGraphState(): void {
+    this.selectedNodes.clear();
+    this.selectedEdges.clear();
+    this.hoveredNode = null;
+    this.hoveredEdge = null;
+    this.streamColorBackups.clear();
+    this.prevSyncPositionsX = null;
+    this.prevSyncPositionsY = null;
+    this.convergenceCheckCount = 0;
+    this.lastBirthTime = 0;
+  }
+
   // ==========================================================================
   // Public API - Data Loading
   // ==========================================================================
@@ -1339,12 +1398,15 @@ export class GraphMother {
     // Parse input
     const isTyped = "nodeCount" in data;
     const parsed = isTyped
-      ? parseGraphTypedInput(data as GraphTypedInput)
-      : parseGraphInput(data as GraphInput);
+      ? parseGraphTypedInput(data as GraphTypedInput, this.typedParserConfig)
+      : parseGraphInput(data as GraphInput, this.parserConfig);
 
     // Pins reference slots of the previous graph — the fresh nodeFlags buffer
     // is zero-filled, so the CPU set must reset to match
     this.pinnedNodes.clear();
+
+    // Every other slot-indexed interaction/animation cache is equally stale
+    this.resetPerGraphState();
 
     // Handle empty graph gracefully
     if (parsed.nodeCount === 0) {
@@ -4127,6 +4189,33 @@ export class GraphMother {
   }
 
   /**
+   * Register a custom visualization layer.
+   *
+   * This is the plugin seam for layers the library does not ship: implement
+   * the `Layer` interface (exported as `VisualizationLayer`) and register it
+   * here. Layers render in `order` sequence after the base graph.
+   *
+   * @param layer - Layer instance to register
+   * @throws Error if the layer ID is already registered or the layer limit is reached
+   */
+  addLayer(layer: VisualizationLayer): void {
+    this.layerManager.addLayer(layer);
+    this.markRenderDirty();
+  }
+
+  /**
+   * Remove a layer by ID, destroying its GPU resources.
+   *
+   * @param id - Layer ID
+   * @returns True if a layer was removed, false if no layer had that ID
+   */
+  removeLayer(id: string): boolean {
+    const removed = this.layerManager.removeLayer(id);
+    if (removed) this.markRenderDirty();
+    return removed;
+  }
+
+  /**
    * Toggle a layer's visibility.
    */
   toggleLayer(layerId: string): boolean {
@@ -5862,9 +5951,11 @@ export class GraphMother {
 
   /**
    * Subscribe to an event
+   *
+   * @returns Unsubscribe function — call it to remove the handler
    */
-  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
-    this.events.on(event, handler);
+  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): () => void {
+    return this.events.on(event, handler);
   }
 
   /**
@@ -5876,9 +5967,11 @@ export class GraphMother {
 
   /**
    * Subscribe to an event once
+   *
+   * @returns Unsubscribe function — call it to remove the handler before it fires
    */
-  once<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
-    this.events.once(event, handler);
+  once<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): () => void {
+    return this.events.once(event, handler);
   }
 
   // ==========================================================================

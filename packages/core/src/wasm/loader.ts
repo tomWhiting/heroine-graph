@@ -30,10 +30,16 @@ const state: WasmState = {
  * This function is idempotent - calling it multiple times returns the same module.
  * The WASM module is loaded lazily on first use.
  *
+ * @param wasmUrl Optional URL of the .wasm binary. Defaults to the location
+ *   the wasm-bindgen glue resolves relative to itself, which is correct for
+ *   bundlers but not for setups that serve the binary from a separate origin
+ *   or a hashed asset path.
  * @returns Promise resolving to the WASM module exports
  * @throws GraphMotherError if WASM loading fails
  */
-export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
+export function loadWasmModule(
+  wasmUrl?: string,
+): Promise<typeof import("@graphmother/wasm")> {
   // Already loaded
   if (state.module) {
     return Promise.resolve(state.module);
@@ -51,7 +57,7 @@ export function loadWasmModule(): Promise<typeof import("@graphmother/wasm")> {
       const wasmModule = await import("@graphmother/wasm");
 
       // Initialize the module (calls wasm_bindgen start function)
-      await wasmModule.default();
+      await wasmModule.default(wasmUrl ? { module_or_path: wasmUrl } : undefined);
 
       state.module = wasmModule;
       state.loading = false;
