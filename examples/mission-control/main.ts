@@ -832,7 +832,7 @@ async function main(): Promise<void> {
     console.log(`Loaded JSON: ${state.nodeCount} nodes, ${state.edgeCount} edges`);
   }
 
-  async function loadIndexData(filename = "index-data.json") {
+  async function loadIndexData(filename = "indexer-data.json") {
     try {
       const resp = await fetch(`./${filename}?t=${Date.now()}`, { cache: "no-store" });
       if (!resp.ok) {
@@ -1063,7 +1063,7 @@ async function main(): Promise<void> {
     cbBtn.addEventListener("click", () => loadCodebase().catch(console.error));
     panel.appendChild(cbBtn);
 
-    const idxBtn = el("button", "btn", "Load index-data.json");
+    const idxBtn = el("button", "btn", "Load indexer-data.json");
     idxBtn.addEventListener("click", () => loadIndexData().catch(console.error));
     panel.appendChild(idxBtn);
 
@@ -2628,7 +2628,7 @@ async function main(): Promise<void> {
     // Load data based on generator type
     const genType = g?.type ? String(g.type) : "hierarchical";
     if (genType === "json") {
-      const file = g?.file ? String(g.file) : "index-data.json";
+      const file = g?.file ? String(g.file) : "indexer-data.json";
       const loaded = await loadIndexData(file);
       if (!loaded) {
         await loadNodes(1000);

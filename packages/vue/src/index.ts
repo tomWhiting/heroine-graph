@@ -8,7 +8,7 @@
 
 // Main component
 export { default as GraphMother } from "./GraphMother.vue";
-export type { GraphMotherProps } from "./GraphMother.vue";
+export type { GraphMotherProps } from "./types";
 
 // Composables
 export { useGraph } from "./composables/useGraph";

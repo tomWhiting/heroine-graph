@@ -65,7 +65,6 @@
       "**/dist/",
       "**/pkg/",
       "**/*.wgsl",
-      "examples/mission-control/index-data.json",
       "examples/mission-control/indexer-data.json"
     ]
   },
