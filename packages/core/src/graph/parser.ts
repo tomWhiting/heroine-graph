@@ -12,6 +12,7 @@ import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createIdMap, type IdLike, type IdMap } from "./id_map.ts";
 import { parseColorToRGB, type RgbaColor } from "../utils/color.ts";
 import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
+import type { HierarchyColumns } from "./hierarchy.ts";
 
 // Re-export RgbaColor for backwards compatibility
 export type { RgbaColor } from "../utils/color.ts";
@@ -53,8 +54,17 @@ export interface ParsedGraph {
 
   /** Node types (for type-based styling) */
   nodeTypes?: string[] | undefined;
-  /** Edge types (for type-based styling) */
+  /** Edge types (for type-based styling, and containment selection) */
   edgeTypes?: string[] | undefined;
+
+  /**
+   * Producer-supplied containment hierarchy, indexed by slot.
+   *
+   * Only the typed input path carries this: its slots are the producer's, so
+   * the columns are meaningful as given. The object path assigns slots itself
+   * during parsing, and derives the hierarchy from the parsed edges instead.
+   */
+  hierarchy?: HierarchyColumns | undefined;
 }
 
 /**

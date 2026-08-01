@@ -645,14 +645,25 @@ impl GraphMotherWasm {
         )
     }
 
-    /// Compute bubble data (well radii + depths) from explicit containment edges.
+    /// Derive the containment hierarchy columns from explicit containment edges.
     ///
     /// Mirrors `computeCodebaseLayout`: only the containment (parent→child)
     /// edges define the hierarchy, so cross-cutting dependency edges (imports,
     /// tests) stored in the same graph cannot corrupt well radii or depths.
     ///
-    /// Returns a `Float32Array` of length `2 * node_bound`:
-    /// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0, ..., depth_{n-1}]`.
+    /// Returns a `Float32Array` of length `4 * node_bound` — four concatenated
+    /// per-slot columns:
+    /// `[wellRadius…, depth…, parent…, subtreeSize…]`.
+    ///
+    /// `parent` is `-1.0` for a forest root and the parent's slot index
+    /// otherwise. The integer columns are `f32`-encoded because a single
+    /// `Float32Array` keeps the whole hierarchy to one tree walk and one
+    /// wasm-bindgen copy; slot indices and subtree sizes round-trip exactly
+    /// through `f32` up to 2^24 (16 777 216), three orders of magnitude above
+    /// the 220K target.
+    ///
+    /// The output is a spanning **forest**: every component root gets a real
+    /// tree, so orphan config files are not flattened to depth 0.
     ///
     /// # Arguments
     ///
@@ -692,15 +703,16 @@ impl GraphMotherWasm {
         Float32Array::from(&result[..])
     }
 
-    /// Compute bubble data (well radii + depths) from the graph's containment hierarchy.
+    /// Derive the containment hierarchy columns from the graph's own edges.
     ///
     /// **Deprecated:** this derives the hierarchy from ALL graph edges, so any
     /// non-containment edge (imports, tests, configs) corrupts the tree — a
     /// file can attach under a module that imports it instead of its directory.
     /// Use `computeBubbleDataFromEdges` with containment-only edges instead.
     ///
-    /// Returns a `Float32Array` of length `2 * node_bound`:
-    /// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0, ..., depth_{n-1}]`.
+    /// Returns a `Float32Array` of length `4 * node_bound`:
+    /// `[wellRadius…, depth…, parent…, subtreeSize…]` — see
+    /// `computeBubbleDataFromEdges` for the column encoding.
     ///
     /// # Arguments
     ///

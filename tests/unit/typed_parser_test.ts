@@ -11,6 +11,7 @@ import {
 } from "../../packages/core/src/graph/typed_parser.ts";
 import { NODE_ATTR_FLOATS } from "../../packages/core/src/api/graph_state.ts";
 import { GraphMotherError } from "../../packages/core/src/errors.ts";
+import { HIERARCHY_ROOT } from "../../packages/core/src/graph/hierarchy.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
 
 Deno.test("parseGraphTypedInput: deinterleaves positions and edge pairs", () => {
@@ -136,4 +137,149 @@ Deno.test("mergeTypedInputs: offsets edge indices by preceding node counts", () 
   // Identity cases
   assertEquals(mergeTypedInputs([]).nodeCount, 0);
   assertEquals(mergeTypedInputs([a]), a);
+});
+
+// ===========================================================================
+// Containment on the fast path (§5.9 EdgeColumns) and the `edges` alias
+// ===========================================================================
+
+Deno.test("parseGraphTypedInput: honours the deprecated `edges` alias for edgePairs", () => {
+  // `edges` is documented as an alias and accepted by the frame contract, but
+  // the parser used to read `edgePairs` only — a producer sending `edges` got
+  // an all-zeros edge list, i.e. every edge silently pointing at node 0.
+  const parsed = parseGraphTypedInput({
+    nodeCount: 3,
+    edgeCount: 2,
+    edges: new Uint32Array([0, 1, 1, 2]),
+  });
+
+  assertEquals([...parsed.edgeSources], [0, 1]);
+  assertEquals([...parsed.edgeTargets], [1, 2]);
+});
+
+Deno.test("parseGraphTypedInput: rejects edgePairs and edges together", () => {
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 3,
+        edgeCount: 1,
+        edgePairs: new Uint32Array([0, 1]),
+        edges: new Uint32Array([1, 2]),
+      }),
+    GraphMotherError,
+    "supply exactly one",
+  );
+});
+
+Deno.test("parseGraphTypedInput: maps the containment kind onto edge types", () => {
+  const parsed = parseGraphTypedInput({
+    nodeCount: 4,
+    edgeCount: 3,
+    edgePairs: new Uint32Array([0, 1, 0, 2, 1, 2]),
+    edgeKinds: new Uint16Array([7, 7, 3]),
+    containmentKind: 7,
+  });
+
+  // Only the containment kind is materialised: the producer's kind table is
+  // opaque to core and nothing in v1 reads any other value.
+  assertEquals(Array.from(parsed.edgeTypes ?? []), ["contains", "contains", undefined]);
+});
+
+Deno.test("parseGraphTypedInput: leaves edge types unset without a kind column", () => {
+  const parsed = parseGraphTypedInput({
+    nodeCount: 2,
+    edgeCount: 1,
+    edgePairs: new Uint32Array([0, 1]),
+  });
+
+  assertEquals(parsed.edgeTypes, undefined);
+});
+
+Deno.test("parseGraphTypedInput: rejects kinds without a containmentKind, and vice versa", () => {
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 2,
+        edgeCount: 1,
+        edgePairs: new Uint32Array([0, 1]),
+        edgeKinds: new Uint16Array([1]),
+      }),
+    GraphMotherError,
+    "requires containmentKind",
+  );
+
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 2,
+        edgeCount: 1,
+        edgePairs: new Uint32Array([0, 1]),
+        containmentKind: 1,
+      }),
+    GraphMotherError,
+    "requires an edgeKinds column",
+  );
+});
+
+Deno.test("parseGraphTypedInput: rejects an edgeKinds column of the wrong length", () => {
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 3,
+        edgeCount: 2,
+        edgePairs: new Uint32Array([0, 1, 0, 2]),
+        edgeKinds: new Uint16Array([1]),
+        containmentKind: 1,
+      }),
+    GraphMotherError,
+    "edgeKinds length",
+  );
+});
+
+Deno.test("parseGraphTypedInput: passes a supplied hierarchy through, and ignores revision", () => {
+  const hierarchy = {
+    parent: new Uint32Array([HIERARCHY_ROOT, 0]),
+    wellRadius: new Float32Array([20, 10]),
+    depth: new Uint16Array([0, 1]),
+    subtreeSize: new Uint32Array([2, 1]),
+  };
+
+  const parsed = parseGraphTypedInput({
+    nodeCount: 2,
+    edgeCount: 1,
+    revision: "sha256:deadbeef",
+    edgePairs: new Uint32Array([0, 1]),
+    hierarchy,
+  });
+
+  assertEquals(parsed.hierarchy, hierarchy);
+});
+
+Deno.test("validateGraphTypedInput: covers the alias and the kind column", () => {
+  assertEquals(
+    validateGraphTypedInput({
+      nodeCount: 2,
+      edgeCount: 1,
+      edges: new Uint32Array([0, 1]),
+    }).valid,
+    true,
+  );
+
+  const both = validateGraphTypedInput({
+    nodeCount: 2,
+    edgeCount: 1,
+    edgePairs: new Uint32Array([0, 1]),
+    edges: new Uint32Array([0, 1]),
+  });
+  assertEquals(both.valid, false);
+  assertEquals(both.errors.some((e) => e.includes("not both")), true);
+
+  const kinds = validateGraphTypedInput({
+    nodeCount: 2,
+    edgeCount: 1,
+    edgePairs: new Uint32Array([0, 1]),
+    edgeKinds: new Uint16Array([1, 1]),
+  });
+  assertEquals(kinds.valid, false);
+  assertEquals(kinds.errors.length, 2); // wrong length + missing containmentKind
 });

@@ -12,6 +12,7 @@ import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createIdMap, type IdLike } from "./id_map.ts";
 import type { ParsedGraph } from "./parser.ts";
 import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
+import { CONTAINMENT_EDGE_TYPE } from "./hierarchy.ts";
 
 /**
  * Typed parser configuration
@@ -41,11 +42,81 @@ export const DEFAULT_TYPED_PARSER_CONFIG: Required<TypedParserConfig> = {
 };
 
 /**
+ * Resolve the edge-pair column, honouring the deprecated `edges` alias.
+ *
+ * `edges` is documented as an alias for `edgePairs` and is accepted by the
+ * frame contract, but the parser used to read `edgePairs` only — a producer
+ * sending `edges` got a silently all-zeros edge list, which renders as every
+ * node bound to node 0. Honouring the alias makes the documented contract true
+ * without breaking those producers; supplying both is rejected, because there
+ * is no way to know which one was meant.
+ */
+function resolveEdgePairs(input: GraphTypedInput): Uint32Array | undefined {
+  if (input.edgePairs && input.edges) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      "GraphTypedInput carries both `edgePairs` and its deprecated alias `edges`; " +
+        "supply exactly one",
+    );
+  }
+  return input.edgePairs ?? input.edges;
+}
+
+/**
+ * Map the per-edge kind column onto the edge-type strings the rest of the
+ * pipeline selects containment with.
+ *
+ * Only the containment kind is retained: the producer's kind table is opaque to
+ * core and nothing in v1 reads any other value, so materialising it would be
+ * storage no consumer touches.
+ *
+ * @returns Edge types, or `undefined` when the input carries no usable kinds.
+ */
+function edgeTypesFromKinds(
+  input: GraphTypedInput,
+  edgeCount: number,
+): string[] | undefined {
+  const { edgeKinds, containmentKind } = input;
+  if (!edgeKinds) {
+    if (containmentKind !== undefined) {
+      throw new GraphMotherError(
+        ErrorCode.INVALID_GRAPH_DATA,
+        "GraphTypedInput.containmentKind requires an edgeKinds column",
+      );
+    }
+    return undefined;
+  }
+  if (containmentKind === undefined) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      "GraphTypedInput.edgeKinds requires containmentKind, naming which kind means " +
+        "containment; without it core cannot tell a containment edge from a dependency",
+    );
+  }
+  if (edgeKinds.length !== edgeCount) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `edgeKinds length (${edgeKinds.length}) must equal edgeCount (${edgeCount})`,
+    );
+  }
+
+  const edgeTypes: string[] = new Array(edgeCount);
+  for (let i = 0; i < edgeCount; i++) {
+    if (edgeKinds[i] === containmentKind) {
+      edgeTypes[i] = CONTAINMENT_EDGE_TYPE;
+    }
+  }
+  return edgeTypes;
+}
+
+/**
  * Parses GraphTypedInput into GPU-ready format
  *
  * This parser is optimized for large graphs where data is already
  * in typed array format. It minimizes allocations by referencing
  * or copying directly from input arrays.
+ *
+ * `revision` is accepted and ignored (reserved for snapshot reconciliation).
  *
  * @param input - Graph typed input data
  * @param config - Parser configuration
@@ -67,6 +138,8 @@ export function parseGraphTypedInput(
 
   const nodeCount = input.nodeCount;
   const edgeCount = input.edgeCount ?? 0;
+  const inputEdgePairs = resolveEdgePairs(input);
+  const edgeTypes = edgeTypesFromKinds(input, edgeCount);
 
   // Create ID maps (accepts string or number IDs)
   const nodeIdMap = createIdMap<IdLike>();
@@ -152,13 +225,13 @@ export function parseGraphTypedInput(
   let edgeSources: Uint32Array;
   let edgeTargets: Uint32Array;
 
-  if (input.edgePairs) {
+  if (inputEdgePairs) {
     // Deinterleave [src0, tgt0, src1, tgt1, ...]
     edgeSources = new Uint32Array(edgeCount);
     edgeTargets = new Uint32Array(edgeCount);
     for (let i = 0; i < edgeCount; i++) {
-      edgeSources[i] = input.edgePairs[i * 2];
-      edgeTargets[i] = input.edgePairs[i * 2 + 1];
+      edgeSources[i] = inputEdgePairs[i * 2];
+      edgeTargets[i] = inputEdgePairs[i * 2 + 1];
     }
   } else {
     edgeSources = new Uint32Array(edgeCount);
@@ -211,6 +284,8 @@ export function parseGraphTypedInput(
     edgeAttributes,
     nodeMetadata: new Map(),
     edgeMetadata: new Map(),
+    edgeTypes,
+    hierarchy: input.hierarchy,
   };
 }
 
@@ -236,7 +311,16 @@ export function validateGraphTypedInput(input: unknown): {
   const positionsVal = obj["positions"];
   const nodeRadiiVal = obj["nodeRadii"];
   const nodeColorsVal = obj["nodeColors"];
-  const edgePairsVal = obj["edgePairs"];
+  const edgesVal = obj["edges"];
+  // `edges` is the deprecated alias for `edgePairs`; validate whichever is
+  // present, and flag the ambiguous case the parser rejects.
+  const edgePairsVal = obj["edgePairs"] ?? edgesVal;
+  const edgeKindsVal = obj["edgeKinds"];
+  const containmentKindVal = obj["containmentKind"];
+
+  if (obj["edgePairs"] !== undefined && edgesVal !== undefined) {
+    errors.push("supply either edgePairs or its deprecated alias edges, not both");
+  }
 
   // Check nodeCount
   if (typeof nodeCountVal !== "number" || nodeCountVal < 0) {
@@ -279,6 +363,19 @@ export function validateGraphTypedInput(input: unknown): {
     }
   }
 
+  if (edgeKindsVal instanceof Uint16Array) {
+    if (edgeKindsVal.length !== edgeCount) {
+      errors.push(
+        `edgeKinds length (${edgeKindsVal.length}) must equal edgeCount (${edgeCount})`,
+      );
+    }
+    if (typeof containmentKindVal !== "number") {
+      errors.push("edgeKinds requires containmentKind naming which kind means containment");
+    }
+  } else if (containmentKindVal !== undefined) {
+    errors.push("containmentKind requires an edgeKinds column");
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -318,7 +415,10 @@ export function createTypedInput(
 /**
  * Merge multiple typed inputs into one
  *
- * Useful for combining graphs from multiple sources.
+ * Useful for combining graphs from multiple sources. Only node count,
+ * positions and edge pairs are merged — ids, styling columns, metadata,
+ * `edgeKinds`/`containmentKind` and a supplied `hierarchy` are dropped, so the
+ * result's hierarchy is derived from the merged edges rather than inherited.
  *
  * @param inputs - Array of typed inputs to merge
  * @returns Merged typed input

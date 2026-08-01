@@ -365,6 +365,20 @@ export {
 export type { TypedParserConfig } from "./src/graph/typed_parser.ts";
 
 export {
+  buildChildrenCsr,
+  CONTAINMENT_EDGE_TYPE,
+  HIERARCHY_ROOT,
+  MAX_HIERARCHY_DEPTH,
+  validateHierarchyColumns,
+} from "./src/graph/hierarchy.ts";
+export type {
+  ChildrenCsr,
+  HierarchyColumns,
+  HierarchySource,
+  RetainedHierarchy,
+} from "./src/graph/hierarchy.ts";
+
+export {
   createIdMap,
   createIdMapFromArray,
   createSequentialIdMap,

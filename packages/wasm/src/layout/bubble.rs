@@ -1,15 +1,38 @@
-//! Bubble radius and depth computation for nested bubble layout mode.
+//! Containment hierarchy derivation for nested bubble layout and semantic LOD.
 //!
-//! Computes two per-node values from the graph's containment hierarchy:
-//! - **Well radius** (bubble size): Bottom-up from subtree, leaves get a base
-//!   radius, internal nodes get `sqrt(sum_child_areas / (pi * packing_eff)) + padding`.
-//! - **Depth**: BFS distance from the auto-detected root.
+//! Derives four per-slot columns from the graph's containment (parent→child)
+//! edges:
 //!
-//! These values are uploaded to GPU buffers and used by the Relativity Atlas
-//! algorithm's bubble mode for depth-decaying gravity, wellRadius-based phantom
-//! zones, and scaled orbit springs.
+//! - **parent**: the slot's containment parent, or [`HIERARCHY_ROOT`] for a
+//!   root. This is what makes "walk up to the lowest visible ancestor"
+//!   possible and what makes a *forest* representable.
+//! - **depth**: distance from the slot's own root (roots are depth 0).
+//! - **wellRadius** (bubble size): bottom-up from the subtree — leaves get a
+//!   base radius, internal nodes get
+//!   `sqrt(sum_child_areas / (pi * packing_eff)) + padding`.
+//! - **subtreeSize**: node count of the subtree rooted at the slot, itself
+//!   included. Drives collapse priority and edge-bundle weight.
+//!
+//! # Forest, not tree
+//!
+//! Every slot in `0..node_count` belongs to exactly one tree. A slot with no
+//! incoming containment edge is the root of its own tree; a repo-root plus a
+//! handful of orphan config files is exactly that shape, and an implementation
+//! that walks only the largest component leaves the orphans invisible to any
+//! tree-walk consumer. Slots reachable only through a containment cycle are
+//! rooted at their lowest slot index, so the output is a spanning forest of the
+//! whole dense slot space under every input.
+//!
+//! # Consumers
+//!
+//! The columns feed the Relativity Atlas bubble mode on the GPU (depth-decaying
+//! gravity, wellRadius phantom zones, scaled orbit springs) and the CPU-side
+//! `HierarchyColumns` the LOD cut walks. [`compute_bubble_hierarchy`] carries no
+//! `wasm_bindgen` in its signature, so a native indexer can precompute the same
+//! columns offline and ship them with the graph.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+/// Parent value marking a forest root: the slot has no containment parent.
+pub const HIERARCHY_ROOT: u32 = u32::MAX;
 
 /// Configuration for bubble radius computation.
 pub struct BubbleConfig {
@@ -31,263 +54,283 @@ impl Default for BubbleConfig {
     }
 }
 
-/// Internal node for tree traversal.
-struct TreeNode {
-    /// Original graph slot index.
-    slot: usize,
-    /// Children indices (into tree_nodes vec).
-    children: Vec<usize>,
-    /// Computed bubble radius.
-    radius: f32,
-    /// Tree depth (0 = root).
-    depth: u32,
+/// Per-slot containment hierarchy columns over a dense slot space.
+///
+/// Every vector has exactly `node_count` entries, indexed by slot.
+pub struct BubbleHierarchy {
+    /// Bubble radius per slot (bottom-up over the subtree).
+    pub well_radius: Vec<f32>,
+    /// Depth from the slot's own root; roots are 0.
+    pub depth: Vec<u32>,
+    /// Containment parent slot, or [`HIERARCHY_ROOT`].
+    pub parent: Vec<u32>,
+    /// Subtree node count including the slot itself; leaves are 1.
+    pub subtree_size: Vec<u32>,
 }
 
-/// Compute bubble data (well radii + depths) from containment hierarchy.
+/// Parent→children CSR over the dense slot space.
+///
+/// `offsets` has `node_count + 1` entries; the children of slot `n` are
+/// `children[offsets[n]..offsets[n + 1]]`. A `Vec`-indexed CSR replaces a
+/// `HashMap<u32, Vec<u32>>` here: the slot space is dense and known, so the
+/// hashing (and one heap allocation per parent) buys nothing.
+struct ChildrenCsr {
+    offsets: Vec<u32>,
+    children: Vec<u32>,
+}
+
+impl ChildrenCsr {
+    /// Build from flat `[parent0, child0, parent1, child1, ...]` pairs.
+    ///
+    /// Pairs referencing a slot outside `0..node_count`, and self-edges, are
+    /// dropped. A trailing unpaired element is ignored. `has_parent[c]` is set
+    /// for every child of a retained pair.
+    fn build(containment_edges: &[u32], node_count: usize, has_parent: &mut [bool]) -> Self {
+        let mut offsets = vec![0u32; node_count + 1];
+        let pair_count = containment_edges.len() / 2;
+
+        for i in 0..pair_count {
+            let parent = containment_edges[i * 2] as usize;
+            let child = containment_edges[i * 2 + 1] as usize;
+            if parent >= node_count || child >= node_count || parent == child {
+                continue;
+            }
+            offsets[parent + 1] += 1;
+            has_parent[child] = true;
+        }
+
+        for i in 0..node_count {
+            offsets[i + 1] += offsets[i];
+        }
+
+        let mut children = vec![0u32; offsets[node_count] as usize];
+        let mut cursor = offsets[..node_count].to_vec();
+        for i in 0..pair_count {
+            let parent = containment_edges[i * 2] as usize;
+            let child = containment_edges[i * 2 + 1] as usize;
+            if parent >= node_count || child >= node_count || parent == child {
+                continue;
+            }
+            children[cursor[parent] as usize] = child as u32;
+            cursor[parent] += 1;
+        }
+
+        Self { offsets, children }
+    }
+}
+
+/// Traversal scratch shared by every root walk.
+struct Walk {
+    parent: Vec<u32>,
+    depth: Vec<u32>,
+    visited: Vec<bool>,
+    /// Discovery order: a topological order of the spanning forest, so a
+    /// reverse sweep visits every node after all of its tree children.
+    order: Vec<u32>,
+    stack: Vec<u32>,
+}
+
+impl Walk {
+    /// Claim `slot` for the forest under `parent` at `depth` and stage it for
+    /// expansion. Returns `false` when the slot was already claimed — by a
+    /// second containment parent (the first one wins) or by a cycle folding
+    /// back into this tree.
+    fn claim(&mut self, slot: u32, parent: u32, depth: u32) -> bool {
+        let idx = slot as usize;
+        if self.visited[idx] {
+            return false;
+        }
+        self.visited[idx] = true;
+        self.parent[idx] = parent;
+        self.depth[idx] = depth;
+        self.order.push(slot);
+        self.stack.push(slot);
+        true
+    }
+
+    /// Depth-first walk rooting a tree at `root`, recording parents and depths.
+    ///
+    /// A no-op if `root` was already claimed by an earlier walk. Iterative by
+    /// construction: a recursive walk overflows the stack on a deep chain, and
+    /// a stack overflow in WASM is an uncatchable trap.
+    ///
+    /// A child is claimed when it is *pushed*, not when it is popped, so a slot
+    /// enters the stack at most once and the stack is bounded by `node_count`
+    /// rather than by the edge count. Children are pushed in reverse CSR order
+    /// so the first-listed child's subtree is explored first — the conventional
+    /// depth-first order, and the one that decides which parent wins when a
+    /// slot has more than one incoming containment edge.
+    fn root_tree_at(&mut self, root: u32, csr: &ChildrenCsr) {
+        if !self.claim(root, HIERARCHY_ROOT, 0) {
+            return;
+        }
+
+        while let Some(node) = self.stack.pop() {
+            let node_idx = node as usize;
+            let child_depth = self.depth[node_idx] + 1;
+            let lo = csr.offsets[node_idx] as usize;
+            let hi = csr.offsets[node_idx + 1] as usize;
+
+            for i in (lo..hi).rev() {
+                self.claim(csr.children[i], node, child_depth);
+            }
+        }
+    }
+}
+
+/// Derive the containment hierarchy columns from containment-only edges.
 ///
 /// # Arguments
 ///
-/// * `containment_edges` - Flat `[parent0, child0, parent1, child1, ...]`
-/// * `node_count` - Total number of node slots (node_bound)
-/// * `root_id` - Optional root node ID (None = auto-detect)
-/// * `config` - Bubble configuration
+/// * `containment_edges` - Flat `[parent0, child0, parent1, child1, ...]`.
+///   Must be containment edges only: a cross-cutting dependency edge (an
+///   import, a test reference) reparents its target and skews every column.
+/// * `node_count` - Total number of node slots (node_bound).
+/// * `root_id` - Optional slot to root first. It becomes a root even if it has
+///   a containment parent; the rest of the forest is derived around it. `None`
+///   (and an out-of-range id) leaves root selection to the edges alone.
+/// * `config` - Bubble radius configuration.
+pub fn compute_bubble_hierarchy(
+    containment_edges: &[u32],
+    node_count: usize,
+    root_id: Option<u32>,
+    config: &BubbleConfig,
+) -> BubbleHierarchy {
+    if node_count == 0 {
+        return BubbleHierarchy {
+            well_radius: Vec::new(),
+            depth: Vec::new(),
+            parent: Vec::new(),
+            subtree_size: Vec::new(),
+        };
+    }
+
+    let mut has_parent = vec![false; node_count];
+    let csr = ChildrenCsr::build(containment_edges, node_count, &mut has_parent);
+
+    let mut walk = Walk {
+        parent: vec![HIERARCHY_ROOT; node_count],
+        depth: vec![0u32; node_count],
+        visited: vec![false; node_count],
+        order: Vec::with_capacity(node_count),
+        stack: Vec::new(),
+    };
+
+    // 1. The caller's explicit root, so it outranks the edge-derived ones.
+    if let Some(root) = root_id
+        && (root as usize) < node_count
+    {
+        walk.root_tree_at(root, &csr);
+    }
+
+    // 2. Every slot with no containment parent roots its own tree. This is what
+    //    makes the output a forest: orphan config files, a second repo root and
+    //    isolated slots all get real trees instead of a flat depth-0 fallback.
+    for (slot, &parented) in has_parent.iter().enumerate() {
+        if !parented {
+            walk.root_tree_at(slot as u32, &csr);
+        }
+    }
+
+    // 3. Anything still unclaimed sits in a containment cycle with no entry
+    //    point. Root it at its lowest slot so the forest spans the slot space.
+    for slot in 0..node_count {
+        if !walk.visited[slot] {
+            walk.root_tree_at(slot as u32, &csr);
+        }
+    }
+
+    // Bottom-up sweep. Reverse discovery order visits every node after all of
+    // its tree children, so one linear pass computes radii and subtree sizes
+    // and pushes both into the parent's accumulators. Contributions are keyed
+    // on the node (not on the edge), so duplicate containment edges and
+    // second parents cannot double-count.
+    let packing = config.packing_efficiency.max(f32::MIN_POSITIVE);
+    let mut well_radius = vec![config.base_radius; node_count];
+    let mut subtree_size = vec![1u32; node_count];
+    let mut child_area = vec![0f32; node_count];
+    let mut child_count = vec![0u32; node_count];
+
+    for &node in walk.order.iter().rev() {
+        let idx = node as usize;
+        let radius = if child_count[idx] == 0 {
+            config.base_radius
+        } else {
+            let enclosing = (child_area[idx] / (std::f32::consts::PI * packing)).sqrt();
+            enclosing.max(config.base_radius) + config.padding
+        };
+        well_radius[idx] = radius;
+
+        let parent = walk.parent[idx];
+        if parent != HIERARCHY_ROOT {
+            let parent_idx = parent as usize;
+            child_area[parent_idx] += std::f32::consts::PI * radius * radius;
+            subtree_size[parent_idx] += subtree_size[idx];
+            child_count[parent_idx] += 1;
+        }
+    }
+
+    BubbleHierarchy {
+        well_radius,
+        depth: walk.depth,
+        parent: walk.parent,
+        subtree_size,
+    }
+}
+
+/// Flat `f32` encoding of [`compute_bubble_hierarchy`] for the JS boundary.
 ///
 /// # Returns
 ///
-/// `Vec<f32>` of length `2 * node_count`:
-/// `[wellRadius_0, ..., wellRadius_{n-1}, depth_0_as_f32, ..., depth_{n-1}_as_f32]`
+/// `Vec<f32>` of length `4 * node_count`, four concatenated columns:
+/// `[wellRadius…, depth…, parent…, subtreeSize…]`.
+///
+/// `parent` is `-1.0` for a forest root and the parent's slot index otherwise.
+/// Slot indices and subtree sizes round-trip exactly through `f32` up to
+/// 2^24 (16 777 216) — three orders of magnitude above the 220K target, and
+/// the same bound the existing depth column already carried.
 pub fn compute_bubble_data(
     containment_edges: &[u32],
     node_count: usize,
     root_id: Option<u32>,
     config: &BubbleConfig,
 ) -> Vec<f32> {
-    if node_count == 0 {
-        return Vec::new();
-    }
+    let hierarchy = compute_bubble_hierarchy(containment_edges, node_count, root_id, config);
 
-    // Default values: base_radius for wellRadius, 0.0 for depth
-    let mut well_radii = vec![config.base_radius; node_count];
-    let mut depths = vec![0.0_f32; node_count];
-
-    if containment_edges.len() < 2 || containment_edges.len() % 2 != 0 {
-        let mut result = well_radii;
-        result.extend_from_slice(&depths);
-        return result;
-    }
-
-    // Build parent→children adjacency
-    let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut has_parent: HashSet<u32> = HashSet::new();
-    let mut all_nodes: HashSet<u32> = HashSet::new();
-
-    let edge_count = containment_edges.len() / 2;
-    for i in 0..edge_count {
-        let parent = containment_edges[i * 2];
-        let child = containment_edges[i * 2 + 1];
-
-        if parent as usize >= node_count || child as usize >= node_count {
-            continue;
-        }
-        if parent == child {
-            continue;
-        }
-
-        children_map.entry(parent).or_default().push(child);
-        has_parent.insert(child);
-        all_nodes.insert(parent);
-        all_nodes.insert(child);
-    }
-
-    if all_nodes.is_empty() {
-        let mut result = well_radii;
-        result.extend_from_slice(&depths);
-        return result;
-    }
-
-    // Find root (same heuristic as codebase.rs)
-    let root = if let Some(r) = root_id {
-        r
-    } else {
-        let roots: Vec<u32> = all_nodes
-            .iter()
-            .filter(|n| !has_parent.contains(n))
-            .copied()
-            .collect();
-
-        if roots.is_empty() {
-            *all_nodes.iter().min().unwrap_or(&0)
-        } else if roots.len() == 1 {
-            roots[0]
-        } else {
-            roots
-                .iter()
-                .max_by_key(|&&r| count_descendants(r, &children_map))
-                .copied()
-                .unwrap_or(roots[0])
-        }
-    };
-
-    // Build tree via DFS with cycle detection
-    let mut tree_nodes: Vec<TreeNode> = Vec::new();
-    let mut slot_to_tree: HashMap<u32, usize> = HashMap::new();
-    let mut visited: HashSet<u32> = HashSet::new();
-
-    build_tree(
-        root,
-        node_count,
-        &children_map,
-        &mut tree_nodes,
-        &mut slot_to_tree,
-        &mut visited,
-    );
-
-    if tree_nodes.is_empty() {
-        let mut result = well_radii;
-        result.extend_from_slice(&depths);
-        return result;
-    }
-
-    // Compute depths via BFS from root (index 0 in tree_nodes)
-    compute_depths(&mut tree_nodes);
-
-    // Bottom-up radius computation
-    compute_radii(&mut tree_nodes, config);
-
-    // Write results back to per-slot arrays
-    for node in &tree_nodes {
-        if node.slot < node_count {
-            well_radii[node.slot] = node.radius;
-            depths[node.slot] = node.depth as f32;
-        }
-    }
-
-    // Concatenate: [wellRadii..., depths...]
-    let mut result = well_radii;
-    result.extend_from_slice(&depths);
+    let mut result = Vec::with_capacity(node_count * 4);
+    result.extend_from_slice(&hierarchy.well_radius);
+    result.extend(hierarchy.depth.iter().map(|&d| d as f32));
+    result.extend(hierarchy.parent.iter().map(
+        |&p| {
+            if p == HIERARCHY_ROOT { -1.0 } else { p as f32 }
+        },
+    ));
+    result.extend(hierarchy.subtree_size.iter().map(|&s| s as f32));
     result
-}
-
-/// Count descendants for root selection heuristic.
-fn count_descendants(node: u32, children_map: &HashMap<u32, Vec<u32>>) -> usize {
-    let mut count = 0;
-    let mut stack = vec![node];
-    let mut visited = HashSet::new();
-    visited.insert(node);
-    while let Some(n) = stack.pop() {
-        let Some(children) = children_map.get(&n) else {
-            continue;
-        };
-        for &child in children {
-            if visited.insert(child) {
-                count += 1;
-                stack.push(child);
-            }
-        }
-    }
-    count
-}
-
-/// Build tree nodes via DFS with cycle detection.
-/// Uses an explicit stack so tree depth cannot overflow the call stack
-/// (a fatal, uncatchable trap in WASM).
-fn build_tree(
-    root: u32,
-    node_count: usize,
-    children_map: &HashMap<u32, Vec<u32>>,
-    tree_nodes: &mut Vec<TreeNode>,
-    slot_to_tree: &mut HashMap<u32, usize>,
-    visited: &mut HashSet<u32>,
-) {
-    // (node_id, parent tree index)
-    let mut stack: Vec<(u32, Option<usize>)> = vec![(root, None)];
-
-    while let Some((node_id, parent_idx)) = stack.pop() {
-        if !visited.insert(node_id) {
-            continue;
-        }
-
-        let slot = node_id as usize;
-        if slot >= node_count {
-            continue;
-        }
-
-        let tree_idx = tree_nodes.len();
-        slot_to_tree.insert(node_id, tree_idx);
-
-        tree_nodes.push(TreeNode {
-            slot,
-            children: Vec::new(),
-            radius: 0.0,
-            depth: 0,
-        });
-
-        if let Some(parent_idx) = parent_idx {
-            tree_nodes[parent_idx].children.push(tree_idx);
-        }
-
-        if let Some(children) = children_map.get(&node_id) {
-            // Push in reverse so children pop in insertion order.
-            for &child_id in children.iter().rev() {
-                stack.push((child_id, Some(tree_idx)));
-            }
-        }
-    }
-}
-
-/// Compute depths via BFS from root (tree_nodes[0]).
-fn compute_depths(tree_nodes: &mut [TreeNode]) {
-    if tree_nodes.is_empty() {
-        return;
-    }
-
-    let mut queue = VecDeque::new();
-    tree_nodes[0].depth = 0;
-    queue.push_back(0_usize);
-
-    while let Some(idx) = queue.pop_front() {
-        let depth = tree_nodes[idx].depth;
-        let children: Vec<usize> = tree_nodes[idx].children.clone();
-        for child_idx in children {
-            tree_nodes[child_idx].depth = depth + 1;
-            queue.push_back(child_idx);
-        }
-    }
-}
-
-/// Bottom-up radius computation.
-///
-/// Leaf nodes get `base_radius`. Internal nodes get a radius that encloses
-/// all children circles: `sqrt(sum_areas / (pi * packing_eff)) + padding`.
-///
-/// `build_tree` assigns indices in DFS preorder, so every child index is
-/// greater than its parent's; a reverse index sweep is therefore a valid
-/// post-order (children before parents) without recursion.
-fn compute_radii(nodes: &mut [TreeNode], config: &BubbleConfig) {
-    for idx in (0..nodes.len()).rev() {
-        if nodes[idx].children.is_empty() {
-            nodes[idx].radius = config.base_radius;
-        } else {
-            let total_area: f32 = nodes[idx]
-                .children
-                .iter()
-                .map(|&c| {
-                    let r = nodes[c].radius;
-                    std::f32::consts::PI * r * r
-                })
-                .sum();
-
-            let enclosing_radius =
-                (total_area / (std::f32::consts::PI * config.packing_efficiency)).sqrt();
-
-            nodes[idx].radius = enclosing_radius.max(config.base_radius) + config.padding;
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Column views over the flat `compute_bubble_data` result.
+    struct Columns<'a> {
+        radii: &'a [f32],
+        depths: &'a [f32],
+        parents: &'a [f32],
+        subtree: &'a [f32],
+    }
+
+    fn columns(data: &[f32], n: usize) -> Columns<'_> {
+        assert_eq!(data.len(), n * 4);
+        Columns {
+            radii: &data[0..n],
+            depths: &data[n..n * 2],
+            parents: &data[n * 2..n * 3],
+            subtree: &data[n * 3..],
+        }
+    }
 
     #[test]
     fn test_empty_graph() {
@@ -298,9 +341,12 @@ mod tests {
     #[test]
     fn test_single_node_no_edges() {
         let result = compute_bubble_data(&[], 1, None, &BubbleConfig::default());
-        assert_eq!(result.len(), 2); // [wellRadius, depth]
-        assert_eq!(result[0], 10.0); // base_radius
-        assert_eq!(result[1], 0.0); // depth
+        assert_eq!(result.len(), 4);
+        let c = columns(&result, 1);
+        assert_eq!(c.radii[0], 10.0); // base_radius
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.parents[0], -1.0); // root sentinel
+        assert_eq!(c.subtree[0], 1.0);
     }
 
     #[test]
@@ -308,18 +354,19 @@ mod tests {
         // Node 0 -> Node 1
         let edges = [0u32, 1];
         let result = compute_bubble_data(&edges, 2, None, &BubbleConfig::default());
-        assert_eq!(result.len(), 4); // 2 radii + 2 depths
-
-        let radii = &result[0..2];
-        let depths = &result[2..4];
+        let c = columns(&result, 2);
 
         // Parent (0) should have larger radius than child (1)
-        assert!(radii[0] > radii[1]);
+        assert!(c.radii[0] > c.radii[1]);
         // Child is leaf, gets base_radius
-        assert_eq!(radii[1], 10.0);
+        assert_eq!(c.radii[1], 10.0);
         // Root depth = 0, child depth = 1
-        assert_eq!(depths[0], 0.0);
-        assert_eq!(depths[1], 1.0);
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.depths[1], 1.0);
+        assert_eq!(c.parents[0], -1.0);
+        assert_eq!(c.parents[1], 0.0);
+        assert_eq!(c.subtree[0], 2.0);
+        assert_eq!(c.subtree[1], 1.0);
     }
 
     #[test]
@@ -327,19 +374,18 @@ mod tests {
         // Node 0 -> [1, 2, 3, 4, 5] (root with 5 children)
         let edges = [0u32, 1, 0, 2, 0, 3, 0, 4, 0, 5];
         let result = compute_bubble_data(&edges, 6, None, &BubbleConfig::default());
-        assert_eq!(result.len(), 12);
-
-        let radii = &result[0..6];
-        let depths = &result[6..12];
+        let c = columns(&result, 6);
 
         // Root should have much larger radius (encloses 5 children)
-        assert!(radii[0] > radii[1]);
-        // All children are leaves
+        assert!(c.radii[0] > c.radii[1]);
         for i in 1..6 {
-            assert_eq!(radii[i], 10.0);
-            assert_eq!(depths[i], 1.0);
+            assert_eq!(c.radii[i], 10.0);
+            assert_eq!(c.depths[i], 1.0);
+            assert_eq!(c.parents[i], 0.0);
+            assert_eq!(c.subtree[i], 1.0);
         }
-        assert_eq!(depths[0], 0.0);
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.subtree[0], 6.0);
     }
 
     #[test]
@@ -352,31 +398,128 @@ mod tests {
             ..Default::default()
         };
         let result = compute_bubble_data(&edges, 5, None, &config);
-        assert_eq!(result.len(), 10);
-
-        let radii = &result[0..5];
-        let depths = &result[5..10];
+        let c = columns(&result, 5);
 
         // Radii should decrease as we go deeper (less subtree)
-        assert!(radii[0] > radii[1]);
-        assert!(radii[1] > radii[2]);
-        assert!(radii[2] > radii[3]);
+        assert!(c.radii[0] > c.radii[1]);
+        assert!(c.radii[1] > c.radii[2]);
+        assert!(c.radii[2] > c.radii[3]);
         // Node 4 is leaf
-        assert_eq!(radii[4], 5.0);
+        assert_eq!(c.radii[4], 5.0);
 
-        // Depths should increase
-        for (i, &depth) in depths.iter().enumerate() {
+        for (i, &depth) in c.depths.iter().enumerate() {
             assert_eq!(depth, i as f32);
+            assert_eq!(c.subtree[i], (5 - i) as f32);
         }
     }
 
     #[test]
     fn test_cycle_handling() {
-        // 0 -> 1 -> 2 -> 0 (cycle)
+        // 0 -> 1 -> 2 -> 0 (cycle, no node without a parent)
         let edges = [0u32, 1, 1, 2, 2, 0];
         let result = compute_bubble_data(&edges, 3, None, &BubbleConfig::default());
-        assert_eq!(result.len(), 6);
-        // Should not panic or infinite loop
+        let c = columns(&result, 3);
+
+        // The cycle is broken at the lowest slot, deterministically.
+        assert_eq!(c.parents[0], -1.0);
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.parents[1], 0.0);
+        assert_eq!(c.depths[1], 1.0);
+        assert_eq!(c.parents[2], 1.0);
+        assert_eq!(c.depths[2], 2.0);
+        assert_eq!(c.subtree[0], 3.0);
+    }
+
+    #[test]
+    fn test_forest_of_components() {
+        // Two real trees plus two isolated slots — a repo root, an orphan
+        // config directory, and two loose files. Before forest handling the
+        // orphan component was flattened to depth 0 / base radius, which made
+        // it invisible to every tree-walk consumer.
+        //   Component A: 0 -> {1, 2}, 1 -> {3, 4}
+        //   Component B: 5 -> {6, 7}
+        //   Isolated:    8, 9
+        let edges = [0u32, 1, 0, 2, 1, 3, 1, 4, 5, 6, 5, 7];
+        let n = 10;
+        let result = compute_bubble_data(&edges, n, None, &BubbleConfig::default());
+        let c = columns(&result, n);
+
+        // Component A
+        assert_eq!(c.parents[0], -1.0);
+        assert_eq!(c.depths[3], 2.0);
+        assert_eq!(c.parents[3], 1.0);
+        assert_eq!(c.subtree[0], 5.0);
+        assert_eq!(c.subtree[1], 3.0);
+
+        // Component B is a real tree, not a flattened orphan
+        assert_eq!(c.parents[5], -1.0);
+        assert_eq!(c.depths[6], 1.0);
+        assert_eq!(c.depths[7], 1.0);
+        assert_eq!(c.parents[6], 5.0);
+        assert_eq!(c.subtree[5], 3.0);
+        assert!(
+            c.radii[5] > 10.0,
+            "orphan component root must get a real bubble radius, got {}",
+            c.radii[5]
+        );
+
+        // Isolated slots are singleton roots
+        for slot in [8usize, 9] {
+            assert_eq!(c.parents[slot], -1.0);
+            assert_eq!(c.depths[slot], 0.0);
+            assert_eq!(c.subtree[slot], 1.0);
+            assert_eq!(c.radii[slot], 10.0);
+        }
+
+        // Subtree sizes partition the slot space exactly once per root.
+        let root_total: f32 = (0..n)
+            .filter(|&i| c.parents[i] < 0.0)
+            .map(|i| c.subtree[i])
+            .sum();
+        assert_eq!(root_total, n as f32);
+    }
+
+    #[test]
+    fn test_component_is_rooted_at_its_parentless_slot_not_its_lowest_slot() {
+        // Containment pointing "backwards" in slot order: 3 → {1, 2}. Slot 3 is
+        // the only parentless slot in the component, so it must root it — even
+        // though slot 1 is the lowest slot there. Rooting components by lowest
+        // slot instead would make 1 and 2 depth-0 roots and leave 3 childless,
+        // which is the same invisible-orphan failure in a different disguise.
+        let edges = [3u32, 1, 3, 2];
+        let result = compute_bubble_data(&edges, 4, None, &BubbleConfig::default());
+        let c = columns(&result, 4);
+
+        assert_eq!(c.parents[3], -1.0);
+        assert_eq!(c.parents[1], 3.0);
+        assert_eq!(c.parents[2], 3.0);
+        assert_eq!(c.depths[1], 1.0);
+        assert_eq!(c.depths[2], 1.0);
+        assert_eq!(c.subtree[3], 3.0);
+        assert!(c.radii[3] > 10.0);
+
+        // Slot 0 is in no component at all: a singleton root.
+        assert_eq!(c.parents[0], -1.0);
+        assert_eq!(c.subtree[0], 1.0);
+    }
+
+    #[test]
+    fn test_forest_root_radii_match_isolated_computation() {
+        // A component's columns must not depend on what else is in the graph.
+        let solo = compute_bubble_data(&[5u32, 6, 5, 7], 8, None, &BubbleConfig::default());
+        let mixed = compute_bubble_data(
+            &[0u32, 1, 0, 2, 1, 3, 1, 4, 5, 6, 5, 7],
+            8,
+            None,
+            &BubbleConfig::default(),
+        );
+        let solo_c = columns(&solo, 8);
+        let mixed_c = columns(&mixed, 8);
+        for slot in [5usize, 6, 7] {
+            assert_eq!(solo_c.radii[slot], mixed_c.radii[slot]);
+            assert_eq!(solo_c.depths[slot], mixed_c.depths[slot]);
+            assert_eq!(solo_c.subtree[slot], mixed_c.subtree[slot]);
+        }
     }
 
     #[test]
@@ -384,29 +527,63 @@ mod tests {
         // Only 0 -> 1, nodes 2 and 3 are disconnected
         let edges = [0u32, 1];
         let result = compute_bubble_data(&edges, 4, None, &BubbleConfig::default());
-        assert_eq!(result.len(), 8);
+        let c = columns(&result, 4);
 
-        let radii = &result[0..4];
-        let depths = &result[4..8];
-
-        // Disconnected nodes get base_radius and depth 0
-        assert_eq!(radii[2], 10.0);
-        assert_eq!(radii[3], 10.0);
-        assert_eq!(depths[2], 0.0);
-        assert_eq!(depths[3], 0.0);
+        // Disconnected nodes get base_radius, depth 0 and root parents
+        for slot in [2usize, 3] {
+            assert_eq!(c.radii[slot], 10.0);
+            assert_eq!(c.depths[slot], 0.0);
+            assert_eq!(c.parents[slot], -1.0);
+            assert_eq!(c.subtree[slot], 1.0);
+        }
     }
 
     #[test]
     fn test_explicit_root() {
-        // 0 -> 1, 0 -> 2, but we specify root as 1
+        // 0 -> 1, 0 -> 2, root pinned to 0
         let edges = [0u32, 1, 0, 2];
         let result = compute_bubble_data(&edges, 3, Some(0), &BubbleConfig::default());
-        assert_eq!(result.len(), 6);
+        let c = columns(&result, 3);
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.depths[1], 1.0);
+        assert_eq!(c.depths[2], 1.0);
+    }
 
-        let depths = &result[3..6];
-        assert_eq!(depths[0], 0.0); // root
-        assert_eq!(depths[1], 1.0);
-        assert_eq!(depths[2], 1.0);
+    #[test]
+    fn test_explicit_root_overrides_containment_parent() {
+        // 0 -> 1 -> 2, but the caller pins 1 as the root: 1 becomes a root and
+        // 0 roots its own (now childless-of-1) tree.
+        let edges = [0u32, 1, 1, 2];
+        let result = compute_bubble_data(&edges, 3, Some(1), &BubbleConfig::default());
+        let c = columns(&result, 3);
+        assert_eq!(c.parents[1], -1.0);
+        assert_eq!(c.depths[1], 0.0);
+        assert_eq!(c.depths[2], 1.0);
+        assert_eq!(c.parents[0], -1.0);
+        assert_eq!(c.subtree[0], 1.0);
+        assert_eq!(c.subtree[1], 2.0);
+    }
+
+    #[test]
+    fn test_out_of_range_and_self_edges_are_dropped() {
+        let edges = [0u32, 1, 0, 99, 42, 1, 2, 2];
+        let result = compute_bubble_data(&edges, 3, None, &BubbleConfig::default());
+        let c = columns(&result, 3);
+        assert_eq!(c.parents[1], 0.0);
+        assert_eq!(c.parents[2], -1.0);
+        assert_eq!(c.subtree[0], 2.0);
+    }
+
+    #[test]
+    fn test_duplicate_containment_edges_do_not_double_count() {
+        let once = compute_bubble_data(&[0u32, 1, 0, 2], 3, None, &BubbleConfig::default());
+        let twice = compute_bubble_data(
+            &[0u32, 1, 0, 2, 0, 1, 0, 2],
+            3,
+            None,
+            &BubbleConfig::default(),
+        );
+        assert_eq!(once, twice);
     }
 
     #[test]
@@ -421,13 +598,12 @@ mod tests {
         }
 
         let result = compute_bubble_data(&edges, n as usize, Some(0), &BubbleConfig::default());
-        assert_eq!(result.len(), n as usize * 2);
-
-        let depths = &result[n as usize..];
-        assert_eq!(depths[0], 0.0);
-        assert_eq!(depths[n as usize - 1], (n - 1) as f32);
-        // The tail of the chain is a leaf
-        assert_eq!(result[n as usize - 1], 10.0);
+        let c = columns(&result, n as usize);
+        assert_eq!(c.depths[0], 0.0);
+        assert_eq!(c.depths[n as usize - 1], (n - 1) as f32);
+        assert_eq!(c.radii[n as usize - 1], 10.0);
+        assert_eq!(c.subtree[0], n as f32);
+        assert_eq!(c.subtree[n as usize - 1], 1.0);
     }
 
     #[test]
@@ -443,15 +619,30 @@ mod tests {
         mixed.extend_from_slice(&[3, 5]);
         let corrupted = compute_bubble_data(&mixed, 7, Some(0), &BubbleConfig::default());
 
-        let clean_depths = &clean[7..];
-        let corrupted_depths = &corrupted[7..];
-        assert_eq!(clean_depths[5], 2.0);
-        // Documents why callers must pass containment-only edges: the DFS
+        let clean_c = columns(&clean, 7);
+        let corrupted_c = columns(&corrupted, 7);
+        assert_eq!(clean_c.depths[5], 2.0);
+        // Documents why callers must pass containment-only edges: the walk
         // attaches 5 under whichever neighbor reaches it first.
-        assert_eq!(corrupted_depths[5], 3.0);
+        assert_eq!(corrupted_c.depths[5], 3.0);
         // Node 3 is a leaf in the clean tree but an internal node when the
         // dependency edge is included, inflating its well radius.
-        assert!(corrupted[3] > clean[3]);
+        assert!(corrupted_c.radii[3] > clean_c.radii[3]);
+    }
+
+    #[test]
+    fn test_first_listed_child_subtree_wins_a_contested_slot() {
+        // 0 → {1, 2}, and both 1 and 2 claim 3. Depth-first order means 1's
+        // whole subtree is walked before 2 is reached, so 1 claims 3. Pinning
+        // this makes the "first containment parent wins" rule reproducible
+        // instead of an accident of stack order.
+        let edges = [0u32, 1, 0, 2, 1, 3, 2, 3];
+        let result = compute_bubble_data(&edges, 4, None, &BubbleConfig::default());
+        let c = columns(&result, 4);
+        assert_eq!(c.parents[3], 1.0);
+        assert_eq!(c.depths[3], 2.0);
+        assert_eq!(c.subtree[1], 2.0);
+        assert_eq!(c.subtree[2], 1.0);
     }
 
     #[test]
@@ -469,26 +660,148 @@ mod tests {
         }
         let node_count = 61;
         let result = compute_bubble_data(&edges, node_count, Some(0), &BubbleConfig::default());
-        assert_eq!(result.len(), node_count * 2);
-
-        let radii = &result[0..node_count];
-        let depths = &result[node_count..];
+        let c = columns(&result, node_count);
 
         // Root has the largest radius
-        let max_radius = radii.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert_eq!(radii[0], max_radius);
+        let max_radius = c.radii.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(c.radii[0], max_radius);
+        assert_eq!(c.subtree[0], node_count as f32);
 
         // All leaf files get base_radius
         for file in 11..61 {
-            assert_eq!(radii[file], 10.0);
-            assert_eq!(depths[file], 2.0);
+            assert_eq!(c.radii[file], 10.0);
+            assert_eq!(c.depths[file], 2.0);
+            assert_eq!(c.subtree[file], 1.0);
         }
 
         // Dirs are at depth 1
         for dir in 1..=10 {
-            assert_eq!(depths[dir as usize], 1.0);
-            // Dir radius > leaf radius (has 5 children)
-            assert!(radii[dir as usize] > 10.0);
+            assert_eq!(c.depths[dir as usize], 1.0);
+            assert!(c.radii[dir as usize] > 10.0);
+            assert_eq!(c.subtree[dir as usize], 6.0);
         }
+    }
+
+    // =========================================================================
+    // CSR parity against the HashMap adjacency it replaced
+    // =========================================================================
+
+    /// Seeded LCG — a fixed tree shape without pulling in a dependency.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % bound
+        }
+    }
+
+    /// Random forest: every slot above 0 attaches to an earlier slot, except
+    /// one in eight which roots its own component.
+    fn seeded_forest(n: usize, seed: u64) -> Vec<u32> {
+        let mut rng = Lcg(seed);
+        let mut edges = Vec::with_capacity(n * 2);
+        for child in 1..n {
+            if rng.below(8) == 0 {
+                continue; // orphan root
+            }
+            let parent = rng.below(child);
+            edges.push(parent as u32);
+            edges.push(child as u32);
+        }
+        edges
+    }
+
+    /// The adjacency the CSR replaced: a SipHash `HashMap<u32, Vec<u32>>` with
+    /// one heap allocation per parent, built from the same pair list.
+    fn hashmap_children(containment_edges: &[u32], node_count: usize) -> HashMap<u32, Vec<u32>> {
+        let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
+        for i in 0..containment_edges.len() / 2 {
+            let parent = containment_edges[i * 2];
+            let child = containment_edges[i * 2 + 1];
+            if parent as usize >= node_count || child as usize >= node_count || parent == child {
+                continue;
+            }
+            map.entry(parent).or_default().push(child);
+        }
+        map
+    }
+
+    #[test]
+    fn test_csr_matches_hashmap_adjacency_on_seeded_forest() {
+        let n = 5_000;
+        let edges = seeded_forest(n, 0xC0FFEE);
+
+        let mut has_parent = vec![false; n];
+        let csr = ChildrenCsr::build(&edges, n, &mut has_parent);
+        let map = hashmap_children(&edges, n);
+
+        // Same child multiset per parent, same has_parent set.
+        let mut expected_has_parent = vec![false; n];
+        for children in map.values() {
+            for &c in children {
+                expected_has_parent[c as usize] = true;
+            }
+        }
+        assert_eq!(has_parent, expected_has_parent);
+
+        for slot in 0..n {
+            let lo = csr.offsets[slot] as usize;
+            let hi = csr.offsets[slot + 1] as usize;
+            let from_csr = &csr.children[lo..hi];
+            let empty: Vec<u32> = Vec::new();
+            let from_map = map.get(&(slot as u32)).unwrap_or(&empty);
+            assert_eq!(
+                from_csr,
+                &from_map[..],
+                "children of slot {slot} diverge between CSR and HashMap"
+            );
+        }
+        assert_eq!(
+            csr.children.len(),
+            map.values().map(Vec::len).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn test_seeded_forest_columns_are_self_consistent() {
+        let n = 5_000;
+        let edges = seeded_forest(n, 0x5EED);
+        let h = compute_bubble_hierarchy(&edges, n, None, &BubbleConfig::default());
+
+        assert_eq!(h.parent.len(), n);
+        assert_eq!(h.depth.len(), n);
+        assert_eq!(h.well_radius.len(), n);
+        assert_eq!(h.subtree_size.len(), n);
+
+        // Every slot is in exactly one tree: depth[c] == depth[parent] + 1,
+        // and subtree sizes sum to n over the roots.
+        let mut root_total = 0u32;
+        let mut seen: HashSet<u32> = HashSet::new();
+        for slot in 0..n {
+            let parent = h.parent[slot];
+            if parent == HIERARCHY_ROOT {
+                assert_eq!(h.depth[slot], 0);
+                root_total += h.subtree_size[slot];
+            } else {
+                assert_eq!(h.depth[slot], h.depth[parent as usize] + 1);
+                assert!(seen.insert(slot as u32));
+            }
+            assert!(h.subtree_size[slot] >= 1);
+        }
+        assert_eq!(root_total, n as u32);
+
+        // subtree_size[p] == 1 + sum of children's subtree sizes.
+        let mut summed = vec![1u32; n];
+        for slot in 0..n {
+            let parent = h.parent[slot];
+            if parent != HIERARCHY_ROOT {
+                summed[parent as usize] += h.subtree_size[slot];
+            }
+        }
+        assert_eq!(summed, h.subtree_size);
     }
 }

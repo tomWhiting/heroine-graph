@@ -9,6 +9,8 @@
 // Identifiers
 // =============================================================================
 
+import type { HierarchyColumns } from "./graph/hierarchy.ts";
+
 /** Stable node identifier (survives graph mutations) */
 export type NodeId = number;
 
@@ -398,12 +400,54 @@ export interface GraphTypedInput {
   readonly nodeCount: number;
   /** Number of edges */
   readonly edgeCount?: number | undefined;
+  /**
+   * Producer's revision identifier for this snapshot.
+   *
+   * Reserved: accepted and **ignored in v1**. The field exists now so that
+   * content-addressed transport and snapshot reconciliation have somewhere to
+   * land without a breaking input change.
+   */
+  readonly revision?: string | undefined;
   /** Positions as [x0, y0, x1, y1, ...] */
   readonly positions?: Float32Array | undefined;
-  /** Edge pairs as [src0, tgt0, src1, tgt1, ...] - alias for edges */
+  /** Edge pairs as [src0, tgt0, src1, tgt1, ...] */
   readonly edgePairs?: Uint32Array | undefined;
-  /** Edges as [src0, tgt0, src1, tgt1, ...] */
+  /**
+   * Edges as [src0, tgt0, src1, tgt1, ...].
+   *
+   * @deprecated Alias for {@link GraphTypedInput.edgePairs}, honoured for
+   * producers already sending it. Supplying both is an error, since there is no
+   * way to tell which one the producer meant. Prefer `edgePairs`.
+   */
   readonly edges?: Uint32Array | undefined;
+  /**
+   * Optional per-edge kind index, consumer-defined.
+   *
+   * Core interprets exactly one value — {@link GraphTypedInput.containmentKind}
+   * — and never reads the producer's kind table. Requires `containmentKind`;
+   * without it the column carries no meaning core can act on.
+   */
+  readonly edgeKinds?: Uint16Array | undefined;
+  /**
+   * Which {@link GraphTypedInput.edgeKinds} value means containment
+   * (parent → child).
+   *
+   * This is what makes a containment hierarchy expressible on the typed fast
+   * path: without it, every edge is treated as containment and cross-cutting
+   * dependency edges corrupt depths and bubble radii.
+   */
+  readonly containmentKind?: number | undefined;
+  /**
+   * Precomputed containment hierarchy, indexed by slot.
+   *
+   * Supplied-or-computed: when present it is validated and retained as-is;
+   * when absent the hierarchy is derived in WASM from the containment edges.
+   * Slot `i` here is node `i` of this input.
+   *
+   * Producers SHOULD emit slots in depth-first order so that each subtree is a
+   * contiguous slot range; core neither verifies nor reorders.
+   */
+  readonly hierarchy?: HierarchyColumns | undefined;
   /** Optional node IDs (string or number) */
   readonly nodeIds?: readonly (string | number)[] | undefined;
   /** Optional edge IDs (string or number) */

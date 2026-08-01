@@ -33,6 +33,15 @@ import { type ParsedGraph, parseGraphInput, type ParserConfig } from "../graph/p
 import { parseGraphTypedInput, type TypedParserConfig } from "../graph/typed_parser.ts";
 import { initializePositions, needsInitialization } from "../graph/initialize.ts";
 import {
+  bubbleUploadChanged,
+  deriveHierarchy,
+  HIERARCHY_ROOT,
+  type HierarchyColumns,
+  type RetainedHierarchy,
+  retainSuppliedHierarchy,
+  selectContainmentEdges,
+} from "../graph/hierarchy.ts";
+import {
   createNodeBindGroup,
   createNodeRenderPipeline,
   createRenderConfigBindGroup,
@@ -234,12 +243,19 @@ interface WasmEngine {
     filePadding: number,
     spreadFactor: number,
   ): Float32Array;
-  /** Compute bubble data (wellRadius + depth) for nested bubble layout mode */
+  /**
+   * Derive the containment hierarchy from the engine's own edges.
+   *
+   * Corrupted by any non-containment edge — prefer
+   * {@link WasmEngine.computeBubbleDataFromEdges}. Same 4-column return.
+   */
   computeBubbleData(baseRadius: number, padding: number): Float32Array;
   /**
-   * Compute bubble data (wellRadius + depth) from containment-only edges.
-   * Returns [wellRadius_0..n-1, depth_0..n-1]. Pass 0xFFFFFFFF as rootId
-   * for auto-detection.
+   * Derive the containment hierarchy from containment-only edges.
+   *
+   * Returns `4 * nodeBound` floats in four concatenated per-slot columns:
+   * `[wellRadius…, depth…, parent…, subtreeSize…]`, where the parent column
+   * holds -1 for a forest root. Pass 0xFFFFFFFF as rootId for auto-detection.
    */
   computeBubbleDataFromEdges(
     containmentEdges: Uint32Array,
@@ -369,6 +385,24 @@ export class GraphMother {
   private state: GraphState;
   private graphState: MutableGraphState | null = null;
   private disposed: boolean = false;
+
+  /**
+   * Retained containment hierarchy, or null when it has not been built since
+   * the last topology change. Rebuilt lazily by {@link getHierarchy}.
+   */
+  private hierarchy: RetainedHierarchy | null = null;
+  /** Producer-supplied columns from the last load, if any. */
+  private suppliedHierarchy: HierarchyColumns | null = null;
+  /**
+   * Node and edge counts the supplied columns arrived with.
+   *
+   * Supplied columns describe the snapshot as loaded. Any add or remove — of a
+   * node or an edge — moves one of these counts, at which point the producer's
+   * tree no longer describes the graph and core derives its own instead.
+   */
+  private suppliedHierarchyStamp: { nodes: number; edges: number } | null = null;
+  /** Whether the "no WASM engine, no hierarchy" warning has already been issued. */
+  private hierarchyUnavailableWarned = false;
 
   // Components
   private viewport: Viewport;
@@ -1435,6 +1469,16 @@ export class GraphMother {
     // Every other slot-indexed interaction/animation cache is equally stale
     this.resetPerGraphState();
 
+    // The containment hierarchy is per-graph: drop the previous one, and adopt
+    // the producer's columns when this input carries them (typed path only —
+    // the object path assigns slots itself, so supplied columns would be
+    // indexed against slots the producer never saw).
+    this.hierarchy = null;
+    this.suppliedHierarchy = parsed.hierarchy ?? null;
+    this.suppliedHierarchyStamp = parsed.hierarchy
+      ? { nodes: parsed.nodeCount, edges: parsed.edgeCount }
+      : null;
+
     // Handle empty graph gracefully
     if (parsed.nodeCount === 0) {
       // Clear existing state
@@ -1692,13 +1736,94 @@ export class GraphMother {
   }
 
   /**
+   * The retained containment hierarchy for the loaded graph, or null when none
+   * can be built (no graph, or no producer-supplied columns and no WASM engine
+   * to derive them from).
+   *
+   * Algorithm-independent and CPU-side: the hierarchy exists whether or not any
+   * force algorithm consumes it. Built lazily on first access after a topology
+   * change, then reused — the LOD cut, the hit-test broad phase and DOM culling
+   * all read the same instance.
+   *
+   * Producers SHOULD emit slots in depth-first order so that a subtree is a
+   * contiguous slot range; core neither verifies nor reorders.
+   */
+  getHierarchy(): RetainedHierarchy | null {
+    if (!this.hierarchy) {
+      this.hierarchy = this.buildHierarchy();
+    }
+    return this.hierarchy;
+  }
+
+  /**
+   * Build the containment hierarchy: producer-supplied when available,
+   * WASM-derived from the containment edges otherwise.
+   *
+   * There is deliberately no TypeScript derivation. A second implementation is
+   * a second root-selection rule, and the two disagreed: the old CPU BFS rooted
+   * every zero-indegree node while WASM picked a single component by descendant
+   * count, so depths and radii described different trees.
+   */
+  private buildHierarchy(): RetainedHierarchy | null {
+    const gs = this.graphState;
+    if (!gs || gs.nodeHighWater === 0) return null;
+
+    const nodeCount = gs.nodeHighWater;
+
+    if (this.suppliedHierarchy && this.suppliedHierarchyStamp) {
+      const stamp = this.suppliedHierarchyStamp;
+      if (stamp.nodes === nodeCount && stamp.edges === gs.edgeCount) {
+        return retainSuppliedHierarchy(this.suppliedHierarchy, nodeCount);
+      }
+      this.suppliedHierarchy = null;
+      this.suppliedHierarchyStamp = null;
+      console.warn(
+        "[GraphMother] the graph has been mutated since load, so the producer-supplied " +
+          "hierarchy columns no longer describe it; deriving the hierarchy instead.",
+      );
+    }
+
+    if (!this.wasmEngine) {
+      if (!this.hierarchyUnavailableWarned) {
+        this.hierarchyUnavailableWarned = true;
+        console.warn(
+          "[GraphMother] no WASM engine and no supplied hierarchy columns; the containment " +
+            "hierarchy is unavailable. Bubble mode, depth-decaying gravity and any hierarchy " +
+            "consumer will fall back to flat defaults.",
+        );
+      }
+      return null;
+    }
+
+    const containmentEdges = selectContainmentEdges(
+      gs.edgeSources,
+      gs.edgeTargets,
+      gs.edgeCount,
+      gs.edgeTypes,
+    );
+
+    return deriveHierarchy(this.wasmEngine, containmentEdges, nodeCount, {
+      baseRadius: this.forceConfig.relativityBubbleBaseRadius,
+      padding: this.forceConfig.relativityBubblePadding,
+      rootId: HIERARCHY_ROOT,
+    });
+  }
+
+  /**
    * Upload edge data for algorithm-specific formats (CSR for Relativity Atlas).
    *
    * CSR data is generated from MutableGraphState's edge arrays, which are the
    * source of truth for GPU buffer slot indices. This ensures the CSR indices
    * match the actual position buffer layout.
+   *
+   * Also the topology-change signal for the retained hierarchy: every caller
+   * reaches here after mutating nodes or edges, so the cached hierarchy is
+   * dropped up front — before the algorithm early-out, since the hierarchy is
+   * graph-level and outlives any particular algorithm.
    */
   private uploadAlgorithmEdgeData(device: GPUDevice): void {
+    this.hierarchy = null;
+
     if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
     }
@@ -1719,114 +1844,43 @@ export class GraphMother {
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
-      // Hierarchy = containment edges only. When the graph carries typed
-      // edges and any is "contains", cross-cutting dependency edges
-      // (imports, tests, configs) are excluded — they corrupt BFS depths
-      // and bubble radii (a file attaches under a module that imports it
-      // instead of its directory). Untyped graphs keep every edge.
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
       const nodeCount = gs.nodeHighWater;
-      const edgeTypes = gs.edgeTypes;
-      let hasContainsType = false;
-      for (let i = 0; i < gs.edgeCount; i++) {
-        if (edgeTypes[i] === "contains") {
-          hasContainsType = true;
-          break;
-        }
-      }
-      const containmentBuf = new Uint32Array(gs.edgeCount * 2);
-      let containmentCount = 0;
-      for (let i = 0; i < gs.edgeCount; i++) {
-        if (hasContainsType && edgeTypes[i] !== "contains") continue;
-        containmentBuf[containmentCount * 2] = gs.edgeSources[i];
-        containmentBuf[containmentCount * 2 + 1] = gs.edgeTargets[i];
-        containmentCount++;
-      }
-      const containmentEdges = containmentBuf.subarray(0, containmentCount * 2);
+      const hierarchy = this.getHierarchy();
 
-      // Compute BFS depths over the containment tree (parents settle before
-      // children). This is O(V+E) and runs once per graph load — no WASM needed.
+      // Depths drive depth-decaying gravity; they come from the same forest the
+      // LOD cut walks, so the physics and the semantics cannot diverge.
       const depths = new Float32Array(nodeCount);
-      {
-        // Containment-only forward adjacency + indegree (counting sort)
-        const offsets = new Uint32Array(nodeCount + 1);
-        const indegree = new Uint32Array(nodeCount);
-        for (let e = 0; e < containmentCount; e++) {
-          offsets[containmentEdges[e * 2] + 1]++;
-          indegree[containmentEdges[e * 2 + 1]]++;
-        }
-        for (let i = 0; i < nodeCount; i++) {
-          offsets[i + 1] += offsets[i];
-        }
-        const children = new Uint32Array(containmentCount);
-        const cursor = offsets.slice(0, nodeCount);
-        for (let e = 0; e < containmentCount; e++) {
-          children[cursor[containmentEdges[e * 2]]++] = containmentEdges[e * 2 + 1];
-        }
-
-        const visited = new Uint8Array(nodeCount);
-        const queue = new Uint32Array(nodeCount);
-        let qHead = 0;
-        let qTail = 0;
-
-        // Roots = nodes with no incoming containment edges
-        for (let i = 0; i < nodeCount; i++) {
-          if (indegree[i] === 0) {
-            depths[i] = 0;
-            visited[i] = 1;
-            queue[qTail++] = i;
-          }
-        }
-
-        // BFS parent → children
-        while (qHead < qTail) {
-          const node = queue[qHead++];
-          for (let j = offsets[node]; j < offsets[node + 1]; j++) {
-            const child = children[j];
-            if (!visited[child]) {
-              visited[child] = 1;
-              depths[child] = depths[node] + 1;
-              queue[qTail++] = child;
-            }
-          }
-        }
+      if (hierarchy) {
+        const { depth } = hierarchy.columns;
+        for (let i = 0; i < nodeCount; i++) depths[i] = depth[i];
       }
-
-      // Upload depths to both algorithm and integration buffers
       device.queue.writeBuffer(b.nodeDepth, 0, depths);
       device.queue.writeBuffer(this.simBuffers!.nodeDepth, 0, depths);
 
-      // Upload well radii (bubble mode uses WASM if available, otherwise defaults).
-      // computeBubbleDataFromEdges takes the same containment-only edges as the
-      // BFS above; the deprecated computeBubbleData derived the hierarchy from
-      // ALL engine edges and was corrupted by dependency edges.
-      if (this.forceConfig.relativityBubbleMode && this.wasmEngine) {
-        const bubbleData = this.wasmEngine.computeBubbleDataFromEdges(
-          containmentEdges,
-          0xFFFFFFFF, // root auto-detect
-          this.forceConfig.relativityBubbleBaseRadius,
-          this.forceConfig.relativityBubblePadding,
-        );
-        if (bubbleData.length >= nodeCount * 2) {
-          const wellRadii = new Float32Array(bubbleData.buffer, bubbleData.byteOffset, nodeCount);
-          device.queue.writeBuffer(b.wellRadius, 0, toArrayBuffer(wellRadii));
-        }
+      // Well radii are a bubble-mode force parameter: outside bubble mode the
+      // phantom-zone and orbit-spring shaders must see the uniform default, so
+      // the hierarchy is retained but its radii are not uploaded.
+      const wellRadii = new Float32Array(nodeCount);
+      if (this.forceConfig.relativityBubbleMode && hierarchy) {
+        wellRadii.set(hierarchy.columns.wellRadius.subarray(0, nodeCount));
       } else {
+        wellRadii.fill(DEFAULT_WELL_RADIUS);
         if (this.forceConfig.relativityBubbleMode) {
           console.warn(
-            "[GraphMother] relativityBubbleMode is enabled but no WASM engine is available; " +
-              "falling back to uniform well radii (bubble collision will be ineffective)",
+            "[GraphMother] relativityBubbleMode is enabled but no containment hierarchy is " +
+              "available; falling back to uniform well radii (bubble collision will be " +
+              "ineffective)",
           );
         }
-        const defaultWellRadii = new Float32Array(nodeCount);
-        defaultWellRadii.fill(DEFAULT_WELL_RADIUS);
-        device.queue.writeBuffer(b.wellRadius, 0, defaultWellRadii);
       }
+      device.queue.writeBuffer(b.wellRadius, 0, toArrayBuffer(wellRadii));
 
       if (this.debug) {
         console.log(
           `Relativity Atlas: uploaded CSR (${gs.nodeHighWater} nodes, ${gs.edgeCount} edges)` +
-            (this.forceConfig.relativityBubbleMode ? " [bubble mode]" : ""),
+            (this.forceConfig.relativityBubbleMode ? " [bubble mode]" : "") +
+            (hierarchy ? ` [hierarchy: ${hierarchy.source}]` : " [no hierarchy]"),
         );
       }
     }
@@ -3747,10 +3801,20 @@ export class GraphMother {
    * @param config - Partial force configuration to merge with current config
    */
   setForceConfig(config: Partial<FullForceConfig>): void {
+    const previous = this.forceConfig;
     this.forceConfig = validateForceConfig({
       ...this.forceConfig,
       ...config,
     });
+
+    // The bubble knobs feed a load-time buffer write rather than the per-tick
+    // uniforms, so they need an explicit re-upload (see bubbleUploadChanged).
+    if (
+      bubbleUploadChanged(previous, this.forceConfig) && this.state.loaded &&
+      this.algorithmBuffers
+    ) {
+      this.uploadAlgorithmEdgeData(this.gpuContext.device);
+    }
 
     // Reheat simulation so changes take effect
     const currentAlpha = this.simulationController.state.alpha;
