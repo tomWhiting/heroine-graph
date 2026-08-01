@@ -4,13 +4,14 @@
 // Inter-community separation is handled by the modulated repulsion shader,
 // not here — this shader only does intra-cluster attraction.
 //
-// No dead-slot mask here, deliberately: this pass only reads its own slot and
-// writes to its own force accumulator, so a dead slot cannot reach a live node.
-// Its stray force is discarded — clear_forces zeroes every slot each tick and
-// integrate.comp.wgsl skips dead slots entirely. The masks that matter for this
-// algorithm are in cluster_accumulate (a dead slot would poison the centroid it
-// still points at) and repulsion_community (a dead slot at the origin would
-// push every live node).
+// No slot mask here, deliberately: this pass only reads its own slot and
+// writes to its own force accumulator, so an inert slot — dead or LOD-hidden —
+// cannot reach an active node. Its stray force is discarded: clear_forces
+// zeroes every slot each tick and integrate.comp.wgsl freezes inert slots
+// without reading the accumulator. The masks that matter for this algorithm
+// are in cluster_accumulate (an inert slot would poison the centroid it still
+// points at) and repulsion_community (an inert slot would push every active
+// node).
 //
 // CRITICAL: Force is mass-weighted (sqrt(degree+1)) to match repulsion and gravity.
 // Without mass-weighting, centroid attraction is the only non-mass-scaled force,

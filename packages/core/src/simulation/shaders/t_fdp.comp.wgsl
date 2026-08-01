@@ -23,7 +23,7 @@
 //
 // Two entry points share the pair-force math (repulsion_n2 pattern):
 // - main:        bindings 0-2, no slot masking
-// - main_masked: bindings 0-3, skips dead slots (holes from removals)
+// - main_masked: bindings 0-3, skips inert slots (dead or LOD-hidden)
 // Auto pipeline layouts only require bindings statically reachable from the
 // chosen entry point, so main's layout stays 0-2.
 //
@@ -40,10 +40,13 @@ struct TFdpUniforms {
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Node state flags (bit 0 = dead slot from removal) - main_masked only
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - main_masked only
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 const EPSILON: f32 = 0.0001;
 
 // Anti-collapse floor: fraction of kr applied to overlapping nodes, and the
@@ -112,9 +115,9 @@ fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals, zeroed to the origin) neither
+    // Inert slots — dead or LOD-hidden — neither
     // receive nor exert repulsion
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -125,7 +128,7 @@ fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if (i == node_idx) {
             continue;
         }
-        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
+        if ((node_flags[i] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
 

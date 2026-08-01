@@ -18,7 +18,7 @@ struct SimulationUniforms {
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> morton_codes: array<u32>;
 @group(0) @binding(3) var<storage, read_write> node_indices: array<u32>;
-// Node state flags (bit 0 = dead slot from removal) — see pipeline.ts
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) — see pipeline.ts
 @group(0) @binding(4) var<storage, read> node_flags: array<u32>;
 
 // Number of bits for each coordinate (16 bits each = 32-bit Morton code)
@@ -26,9 +26,19 @@ const MORTON_BITS: u32 = 16u;
 const MORTON_SCALE: f32 = 65535.0;  // 2^16 - 1
 
 const NODE_FLAG_DEAD: u32 = 1u;
-// High bit tags a dead slot's index so downstream tree construction
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
+// High bit tags an inert slot's index so downstream tree construction
 // (karras_tree.comp.wgsl init_leaves) can zero its mass. Node counts are
 // capped far below 2^31, so the bit never collides with a real index.
+//
+// This — not the active-index list — is how LOD-hidden nodes leave the
+// Barnes-Hut tree: every pass after this one indexes by SORTED PARTICLE
+// ORDER, not by dispatch slot, so a compacted dispatch would renumber the
+// leaves rather than remove them. Tagging here keeps the tree's shape a
+// function of node_count alone and makes a hidden node weightless, which is
+// exactly the dead-slot semantics already proven out.
 const DEAD_INDEX_BIT: u32 = 0x80000000u;
 
 // Expand bits by inserting zeros between each bit
@@ -57,10 +67,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals) must not act as phantom bodies at the
-    // origin: give them the maximum Morton code so they cluster at the end of
-    // the sorted order, and tag their index so init_leaves assigns zero mass.
-    if ((node_flags[idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots — holes from removals, and LOD-hidden nodes — must not act
+    // as phantom bodies: give them the maximum Morton code so they cluster at
+    // the end of the sorted order, and tag their index so init_leaves assigns
+    // zero mass.
+    if ((node_flags[idx] & NODE_FLAG_INERT) != 0u) {
         morton_codes[idx] = 0xFFFFFFFFu;
         node_indices[idx] = idx | DEAD_INDEX_BIT;
         return;

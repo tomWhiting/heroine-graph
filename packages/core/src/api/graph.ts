@@ -100,9 +100,12 @@ import {
   type SimulationPipeline,
   startSettlingTelemetry,
   updateSimulationUniforms,
+  uploadLiveIndices,
+  writeIdentityLiveIndices,
   writeOpaqueNodeAlpha,
   writeUnitNodeMass,
 } from "../simulation/pipeline.ts";
+import { activeIndicesUnchanged, deriveActiveIndices } from "../simulation/active_set.ts";
 import {
   type CollisionBindGroup,
   type CollisionBuffers,
@@ -426,6 +429,14 @@ export class GraphMother {
    * changed instead of the whole capacity.
    */
   private nodeMassShadow: Float32Array | null = null;
+  /**
+   * CPU mirror of `simBuffers.liveIndices`, sized to the buffer's capacity, or
+   * null while the GPU buffer still holds the identity list a fresh allocation
+   * writes. Retained so {@link refreshActiveIndices} can tell a flag change
+   * that moved the active set from one that did not, and skip the upload for
+   * the latter — pinning a node runs the same choke point as hiding one.
+   */
+  private activeIndexShadow: Uint32Array | null = null;
 
   // Components
   private viewport: Viewport;
@@ -1082,6 +1093,9 @@ export class GraphMother {
             }
             : undefined,
         skipSprings: algorithmHandlesSprings,
+        // Kept in step with the uniform written above by both reading the
+        // same field; the list itself is maintained by refreshActiveIndices.
+        activeCount: this.simBuffers.activeCount,
       },
     );
 
@@ -3093,6 +3107,7 @@ export class GraphMother {
       slot * 4,
       toArrayBuffer(this.graphState.nodeFlagsShadow.subarray(slot, slot + 1)),
     );
+    this.refreshActiveIndices();
   }
 
   /**
@@ -3109,6 +3124,39 @@ export class GraphMother {
       lo * 4,
       toArrayBuffer(this.graphState.nodeFlagsShadow.subarray(lo, hi)),
     );
+    this.refreshActiveIndices();
+  }
+
+  /**
+   * Re-derive the simulation's active-index list from the node-flag shadow and
+   * upload it if it moved.
+   *
+   * Called from the two flag-upload helpers rather than from their callers, so
+   * every writer of visibility or liveness — `writeNodeSlotLiveness`,
+   * `applyLodVisibility`, `setNodeVisibility`, `setNodePinnedState`,
+   * `flushNodeSlotFlagsToGPU` — maintains the list by construction. The flags
+   * stay the only state anyone sets; the list is derived, never set.
+   *
+   * The rebuild is O(nodeHighWater) with no allocation (~0.3 ms at 220 000
+   * slots, inside the design's transition budget), and the comparison lets a
+   * pin toggle — which changes flags without changing the active set — cost no
+   * upload at all.
+   *
+   * Nothing here touches simulation alpha: an LOD transition must never reheat
+   * the simulation.
+   */
+  private refreshActiveIndices(): void {
+    const gs = this.graphState;
+    const buffers = this.simBuffers;
+    if (!gs || !buffers) return;
+
+    const shadow = this.activeIndexShadow ??
+      (this.activeIndexShadow = new Uint32Array(buffers.nodeCapacity));
+    if (activeIndicesUnchanged(gs.nodeFlagsShadow, gs.nodeHighWater, shadow, buffers.activeCount)) {
+      return;
+    }
+    const count = deriveActiveIndices(gs.nodeFlagsShadow, gs.nodeHighWater, shadow);
+    uploadLiveIndices(this.gpuContext.device, buffers, shadow.subarray(0, count));
   }
 
   /**
@@ -3392,6 +3440,7 @@ export class GraphMother {
     this.simBuffers.nodeAlpha.destroy();
     this.simBuffers.nodeMass.destroy();
     this.simBuffers.nodeDepth.destroy();
+    this.simBuffers.liveIndices.destroy();
     this.simBuffers.readback.destroy();
 
     const nodeVec2Bytes = newCapacity * 8;
@@ -3452,6 +3501,17 @@ export class GraphMother {
     });
     writeUnitNodeMass(device, this.simBuffers.nodeMass, newCapacity);
     this.nodeMassShadow = null;
+    // Also not an LOD operation: the list comes back as the identity over the
+    // new capacity, and the shadow is dropped so the next flag write derives
+    // the real active set against what the GPU actually holds.
+    this.simBuffers.liveIndices = device.createBuffer({
+      label: "Sim Live Indices",
+      size: nodeFlagBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    writeIdentityLiveIndices(device, this.simBuffers.liveIndices, newCapacity);
+    this.simBuffers.activeCount = this.graphState?.nodeHighWater ?? this.simBuffers.nodeCount;
+    this.activeIndexShadow = null;
     this.simBuffers.nodeDepth = device.createBuffer({
       label: "Sim Node Depth",
       size: nodeFlagBytes,
@@ -7132,10 +7192,12 @@ export class GraphMother {
       this.simBuffers.springUniforms.destroy();
       this.simBuffers.integrationUniforms.destroy();
       this.simBuffers.nodeDepth.destroy();
+      this.simBuffers.liveIndices.destroy();
       this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
     this.nodeMassShadow = null;
+    this.activeIndexShadow = null;
     // Every parity-indexed bind group references at least one buffer destroyed
     // above — including the node/edge render sets, which read the simulation
     // position buffers directly. rebuildAllBindGroups recreates them once

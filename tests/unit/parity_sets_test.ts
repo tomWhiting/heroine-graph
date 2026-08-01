@@ -43,14 +43,17 @@ const BUFFER_FIELDS = [
   "nodeAlpha",
   "nodeMass",
   "nodeDepth",
+  "liveIndices",
   "readback",
 ] as const;
 
-type FakeBuffers = Record<(typeof BUFFER_FIELDS)[number], GPUBuffer> & { nodeCount: number };
+type FakeBuffers =
+  & Record<(typeof BUFFER_FIELDS)[number], GPUBuffer>
+  & { nodeCount: number; activeCount: number; nodeCapacity: number };
 
 /** A fresh fake buffer set; `generation` distinguishes reallocations. */
 function fakeBuffers(generation: string): FakeBuffers {
-  const set = { nodeCount: 4 } as FakeBuffers;
+  const set = { nodeCount: 4, activeCount: 4, nodeCapacity: 4 } as FakeBuffers;
   for (const field of BUFFER_FIELDS) set[field] = fakeBuffer(`${generation}.${field}`);
   return set;
 }
@@ -219,4 +222,57 @@ Deno.test("BindGroupParitySets: advancing without buffers is a no-op", () => {
   state.buffers = null;
   sets.advance();
   assertEquals(sets.parity, 0, "parity must not drift while there is nothing to swap");
+});
+
+// ---------------------------------------------------------------------------
+// Non-ping-pong buffers (the LOD trio: liveIndices, nodeAlpha, nodeMass)
+// ---------------------------------------------------------------------------
+
+Deno.test("swappedPingPongView: exchanges the four ping-pong buffers and nothing else", () => {
+  const buffers = fakeBuffers("gen0");
+  const view = mod.swappedPingPongView(buffers) as unknown as FakeBuffers;
+
+  assertStrictEquals(view.positions, buffers.positionsOut);
+  assertStrictEquals(view.positionsOut, buffers.positions);
+  assertStrictEquals(view.velocities, buffers.velocitiesOut);
+  assertStrictEquals(view.velocitiesOut, buffers.velocities);
+
+  const pingPong = new Set(["positions", "positionsOut", "velocities", "velocitiesOut"]);
+  for (const field of BUFFER_FIELDS) {
+    if (pingPong.has(field)) continue;
+    assertStrictEquals(view[field], buffers[field], `${field} must be shared, not duplicated`);
+  }
+});
+
+Deno.test("swappedPingPongView: carries the dispatch counts through unchanged", () => {
+  // activeCount rides on the buffer struct next to nodeCount, and a parity
+  // view that dropped or defaulted it would silently dispatch the repulsion
+  // pass over the wrong slice of the active-index list on every other frame.
+  const buffers = fakeBuffers("gen0");
+  buffers.activeCount = 2;
+  const view = mod.swappedPingPongView(buffers) as unknown as FakeBuffers;
+  assertEquals(view.nodeCount, buffers.nodeCount);
+  assertEquals(view.activeCount, 2);
+  assertEquals(view.nodeCapacity, buffers.nodeCapacity);
+});
+
+Deno.test("ParitySlot: both variants name the same active-index buffer", () => {
+  // The property that makes an LOD transition free: liveIndices does not
+  // ping-pong, so overwriting its CONTENTS reaches whichever variant runs next
+  // and no bind group is rebuilt. If it were ever swapped or reallocated per
+  // parity, a collapse would take effect on alternate frames only.
+  const state = { buffers: fakeBuffers("gen0") as FakeBuffers | null };
+  const sets = new mod.BindGroupParitySets(() => state.buffers);
+  const slot = sets.slot<{ live: GPUBuffer; reads: GPUBuffer }>("repulsion");
+  slot.rebuild((view) => ({ live: view.liveIndices, reads: view.positions }));
+
+  const atParity0 = slot.current!;
+  sets.advance();
+  const atParity1 = slot.current!;
+
+  assertStrictEquals(atParity1.live, atParity0.live, "the active-index buffer must not alternate");
+  assertStrictEquals(atParity0.live, state.buffers!.liveIndices);
+  // Sanity: the two variants genuinely differ, so the equality above is not
+  // passing on one variant used twice.
+  assert(atParity1.reads !== atParity0.reads);
 });

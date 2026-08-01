@@ -84,7 +84,11 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
     this.uniformBuffer = device.createBuffer({
       label: "N² Repulsion Uniforms",
-      size: 16, // 4 x u32/f32
+      // RepulsionUniforms is 32 bytes: this entry point ignores the
+      // active-index half of it, but a uniform binding smaller than the
+      // declared struct is a validation error, and an invalid bind group
+      // discards the whole frame's command buffer rather than erroring here.
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -137,14 +141,19 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   ): void {
     if (!this.uniformBuffer) return;
 
-    const data = new ArrayBuffer(16);
+    const data = new ArrayBuffer(32);
     const view = new DataView(data);
 
-    // RepulsionUniforms: { node_count, repulsion_strength, min_distance, max_distance }
+    // RepulsionUniforms: { node_count, repulsion_strength, min_distance,
+    //                      max_distance, active_count, 3 x padding }
+    // This plugin runs the unmasked `main` entry point, which iterates every
+    // slot and reads neither active_count nor the list; it is written anyway
+    // so the buffer never disagrees with the struct it is bound as.
     view.setUint32(0, context.nodeCount, true);
     view.setFloat32(4, Math.abs(context.forceConfig.repulsionStrength), true);
     view.setFloat32(8, context.forceConfig.repulsionDistanceMin, true);
     view.setFloat32(12, context.forceConfig.repulsionDistanceMax, true);
+    view.setUint32(16, context.nodeCount, true);
 
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }

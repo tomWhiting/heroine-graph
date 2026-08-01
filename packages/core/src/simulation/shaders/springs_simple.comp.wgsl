@@ -31,10 +31,12 @@ struct SpringUniforms {
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
 @group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
 
-// Node state flags (bit 0 = dead slot from removal)
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // Race-free float accumulation: CAS loop on the f32 bit pattern.
 fn atomic_add_f32(index: u32, value: f32) {
@@ -65,8 +67,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let target_idx = edge_targets[edge_idx];
 
     // Edges are cascade-removed with their nodes, so live edges should never
-    // reference dead slots — skip defensively if buffers are mid-update
-    if (((node_flags[source_idx] | node_flags[target_idx]) & NODE_FLAG_DEAD) != 0u) {
+    // reference dead slots — skip defensively if buffers are mid-update. An
+    // edge with an LOD-hidden endpoint is skipped for a stronger reason: a
+    // hidden node exerts no force, and a spring would otherwise drag its
+    // visible neighbour toward a node that is not on screen.
+    if (((node_flags[source_idx] | node_flags[target_idx]) & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

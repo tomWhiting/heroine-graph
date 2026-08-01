@@ -43,10 +43,13 @@ const MIN_DISTANCE: f32 = 0.0001;
 @group(0) @binding(2) var<storage, read_write> forces: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> edge_sources: array<u32>;
 @group(0) @binding(4) var<storage, read> edge_targets: array<u32>;
-// Node state flags (bit 0 = dead slot from removal)
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // Race-free float accumulation: CAS loop on the f32 bit pattern. WGSL has no
 // native f32 atomics; plain `forces[i] += f` dropped a degree-proportional
@@ -84,12 +87,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let src = edge_sources[edge_idx];
     let tgt = edge_targets[edge_idx];
 
-    // Edges touching dead slots (holes from removals) exert no force. The
+    // Edges touching an inert slot — dead or LOD-hidden — exert no force. The
     // mutation paths cascade-remove a node's edges before flagging its slot
     // dead, so this should never fire — the guard matches the other per-edge
     // attraction kernels (springs_simple, fa2_attraction, linlog_attraction)
     // so a dangling endpoint can never silently yank a live node to the origin.
-    if (((node_flags[src] | node_flags[tgt]) & NODE_FLAG_DEAD) != 0u) {
+    if (((node_flags[src] | node_flags[tgt]) & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

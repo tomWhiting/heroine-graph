@@ -38,7 +38,7 @@ struct TreeUniforms {
 // Sorted Morton codes (from radix sort)
 @group(0) @binding(1) var<storage, read> morton_codes: array<u32>;
 
-// Sorted particle indices (from radix sort). High bit set = dead slot
+// Sorted particle indices (from radix sort). High bit set = inert slot
 // (see morton.comp.wgsl DEAD_INDEX_BIT).
 @group(0) @binding(2) var<storage, read> sorted_indices: array<u32>;
 
@@ -224,7 +224,7 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = n - 1u + leaf_idx;
 
     // Get original particle index from sorted order; the high bit marks a
-    // dead slot (morton.comp.wgsl), which must not exert repulsion.
+    // inert slot (morton.comp.wgsl), which must not exert repulsion.
     let particle_ref = sorted_indices[leaf_idx];
     let is_dead = (particle_ref & DEAD_INDEX_BIT) != 0u;
     let particle_idx = particle_ref & ~DEAD_INDEX_BIT;
@@ -234,7 +234,7 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Set leaf properties
     node_com[node_idx] = pos;
-    // Dead slots stay massless; live ones carry whatever mass they were given,
+    // Inert slots stay massless; active ones carry whatever mass they were given,
     // which is 1.0 unless a collapsed LOD subtree rolled up into this slot.
     node_mass[node_idx] = select(particle_mass[particle_idx], 0.0, is_dead);
 

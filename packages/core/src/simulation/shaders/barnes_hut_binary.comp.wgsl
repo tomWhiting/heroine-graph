@@ -41,7 +41,7 @@ struct ForceUniforms {
 @group(0) @binding(6) var<storage, read> node_mass: array<f32>;
 @group(0) @binding(7) var<storage, read> node_size: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal) — see pipeline.ts
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) — see pipeline.ts
 @group(0) @binding(8) var<storage, read> node_flags: array<u32>;
 
 // Per-particle simulation mass (f32 per slot), the same buffer init_leaves
@@ -56,6 +56,9 @@ struct ForceUniforms {
 const MAX_STACK_DEPTH: u32 = 128u;
 const WORKGROUP_SIZE: u32 = 256u;
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // Bodies closer than sqrt(this) are treated as coincident: the repulsion
 // direction is degenerate, so they get a deterministic golden-angle
@@ -105,9 +108,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals) neither receive forces here nor exert
-    // any (their leaves carry zero mass — see init_leaves)
-    if ((node_flags[particle_idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots — dead or LOD-hidden — neither receive forces here nor
+    // exert any (their leaves carry zero mass — see init_leaves)
+    if ((node_flags[particle_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

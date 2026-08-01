@@ -43,12 +43,15 @@ struct GravityUniforms {
 // Node depth in hierarchy (0 = root)
 @group(0) @binding(4) var<storage, read> node_depth: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal)
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // Apply mass-weighted gravity toward center
 @compute @workgroup_size(256)
@@ -59,8 +62,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals) receive no forces
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots — dead or LOD-hidden — receive no forces
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

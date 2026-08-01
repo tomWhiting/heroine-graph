@@ -200,6 +200,7 @@ async function runWithRepulsionShader(
       { binding: 1, resource: { buffer: buffers.positions } },
       { binding: 2, resource: { buffer: buffers.forces } },
       { binding: 3, resource: { buffer: buffers.nodeFlags } },
+      { binding: 5, resource: { buffer: buffers.liveIndices } },
     ];
     if (bindsMass) entries.push({ binding: 4, resource: { buffer: buffers.nodeMass } });
     const repulsionBindGroup = device.createBindGroup({
@@ -246,6 +247,7 @@ async function runWithRepulsionShader(
       buffers.nodeAlpha,
       buffers.nodeMass,
       buffers.nodeDepth,
+      buffers.liveIndices,
       buffers.readback,
     ]
   ) {

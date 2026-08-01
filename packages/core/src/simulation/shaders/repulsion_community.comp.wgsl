@@ -25,10 +25,13 @@ struct RepulsionUniforms {
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read> community_ids: array<u32>;
 @group(0) @binding(4) var<storage, read> degrees: array<u32>;
-// Node state flags (bit 0 = dead slot from removal) - see pipeline.ts
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - see pipeline.ts
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -38,10 +41,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals, zeroed to the origin) neither receive
+    // Inert slots — dead or LOD-hidden — neither receive
     // repulsion/gravity nor exert repulsion — skipping the thread outright
     // also saves the whole O(n) inner loop for every hole.
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -57,7 +60,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if (i == node_idx) {
             continue;
         }
-        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
+        if ((node_flags[i] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
 

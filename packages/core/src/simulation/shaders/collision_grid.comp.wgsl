@@ -41,9 +41,9 @@ struct GridCollisionUniforms {
 @group(0) @binding(4) var<storage, read_write> node_next: array<u32>;
 @group(0) @binding(5) var<storage, read_write> node_cell: array<u32>;
 
-// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned).
+// Node state flags (bit 0 = dead slot, bit 1 = pinned, bit 2 = hidden by LOD).
 // Pinned nodes are inserted into cell lists (they push others away) but are
-// never displaced themselves; dead slots never enter any list.
+// never displaced themselves; inert slots never enter any list.
 @group(0) @binding(6) var<storage, read> node_flags: array<u32>;
 
 // Per-node displacement accumulated by resolve_grid, consumed by the apply
@@ -52,6 +52,12 @@ struct GridCollisionUniforms {
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// Slots that are not part of the collision set at all: they push
+// nothing and are never found as an overlap partner.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
+// Slots collision never displaces. A pinned node still pushes.
+const NODE_FLAG_IMMOVABLE: u32 = NODE_FLAG_INERT | NODE_FLAG_PINNED;
 
 const EPSILON: f32 = 0.0001;
 const EMPTY: u32 = 0xFFFFFFFFu;
@@ -81,9 +87,9 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Dead slots (flags or negative radius sentinel) are never inserted into
-    // cell lists, so no live node ever collides with them
-    if (node_sizes[idx] < 0.0 || (node_flags[idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots (flags or negative radius sentinel) are never inserted into
+    // cell lists, so no active node ever collides with them
+    if (node_sizes[idx] < 0.0 || (node_flags[idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -109,15 +115,15 @@ fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Accumulated separation for one node against the nodes in its 3x3 cell
 // neighborhood, or zero when the node takes no displacement (out of range,
-// dead slot, or pinned).
+// inert slot, or pinned).
 fn grid_displacement(node_idx: u32) -> vec2<f32> {
     if (node_idx >= uniforms.node_count) {
         return vec2<f32>(0.0, 0.0);
     }
 
-    // Dead slots don't exist; pinned nodes are never displaced (they are in
+    // Inert slots don't exist; pinned nodes are never displaced (they are in
     // the cell lists, so other nodes still get pushed away from them).
-    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
+    if ((node_flags[node_idx] & NODE_FLAG_IMMOVABLE) != 0u) {
         return vec2<f32>(0.0, 0.0);
     }
 

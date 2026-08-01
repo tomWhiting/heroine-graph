@@ -37,6 +37,7 @@ import {
   createSimHarness,
   GPU_SKIP_MESSAGE,
   loadModuleInliningWgsl,
+  NODE_FLAG_HIDDEN_LOD,
   probeAdapter,
   requestHarnessDevice,
   waitForQueue,
@@ -99,8 +100,8 @@ interface NodesModule {
  */
 const SIM_WORKLOADS = [
   { scale: CODE_TREE_SCALES.small, referenceMs: 0.91 },
-  { scale: CODE_TREE_SCALES.medium, referenceMs: 15.67 },
-  { scale: CODE_TREE_SCALES.large, referenceMs: 461.36 },
+  { scale: CODE_TREE_SCALES.medium, referenceMs: 15.67, collapseTo: 3_500 },
+  { scale: CODE_TREE_SCALES.large, referenceMs: 461.36, collapseTo: 4_000 },
 ] as const;
 
 const RENDER_WORKLOADS = [
@@ -137,18 +138,42 @@ if (!adapter) {
   const device = await requestHarnessDevice(adapter);
   const awaitFloorMs = await measureAwaitFloorMs(device);
   const rows: BenchRow[] = [];
+  const lodRatios: LodRatio[] = [];
 
-  for (const { scale, referenceMs } of SIM_WORKLOADS) {
+  for (const workloadSpec of SIM_WORKLOADS) {
+    const { scale, referenceMs } = workloadSpec;
+    const collapseTo = "collapseTo" in workloadSpec ? workloadSpec.collapseTo : undefined;
     const tree = generateCodeTree(scale);
     const harness = await createSimHarness(device, tree);
-    const workload = `sim tick, N²: ${count(tree.nodeCount)} nodes / ${
-      count(tree.edgeCount)
-    } edges`;
+    const size = `${count(tree.nodeCount)} nodes / ${count(tree.edgeCount)} edges`;
+    const workload = `sim tick, N²: ${size}`;
     try {
       // SimHarness.tick(K) is already K submits behind a single fence.
       const timing = await measureAmortized((units) => harness.tick(units), awaitFloorMs);
       assertLayoutSurvived(await harness.readPositions(), workload);
       rows.push({ workload, timing, referenceMs });
+
+      if (collapseTo !== undefined) {
+        // Same harness, same device, immediately after: the expanded figure
+        // above is the baseline this ratio is taken against, so GPU warmth and
+        // clock drift cancel instead of being compared across runs.
+        harness.setNodeFlags(hideBelowBudget(tree, collapseTo));
+        const collapsedWorkload = `sim tick, N² @ LOD: ${count(harness.activeCount)} of ${
+          count(tree.nodeCount)
+        } visible`;
+        const collapsedTiming = await measureAmortized(
+          (units) => harness.tick(units),
+          awaitFloorMs,
+        );
+        assertLayoutSurvived(await harness.readPositions(), collapsedWorkload);
+        rows.push({ workload: collapsedWorkload, timing: collapsedTiming });
+        lodRatios.push({
+          nodeCount: tree.nodeCount,
+          activeCount: harness.activeCount,
+          expandedMs: timing.perUnitMs,
+          collapsedMs: collapsedTiming.perUnitMs,
+        });
+      }
     } finally {
       harness.dispose();
     }
@@ -186,8 +211,76 @@ if (!adapter) {
   console.log(`\nawait floor (waitForQueue on an idle queue): ${awaitFloorMs.toFixed(2)} ms\n`);
   console.log(formatBenchTable(rows));
   console.log(
-    "\nreference = Phase 3 design §4 (Apple M1 Max, Deno 2.9.4); informational, not asserted\n",
+    "\nreference = Phase 3 design §4 (Apple M1 Max, Deno 2.9.4); informational, not asserted",
   );
+  if (lodRatios.length > 0) console.log("\n" + formatLodRatios(lodRatios));
+  console.log();
+}
+
+// =============================================================================
+// Semantic-LOD scaling
+// =============================================================================
+
+/** One expanded/collapsed pair measured back to back on the same harness. */
+interface LodRatio {
+  readonly nodeCount: number;
+  readonly activeCount: number;
+  readonly expandedMs: number;
+  readonly collapsedMs: number;
+}
+
+/**
+ * Per-slot flags hiding everything below the deepest containment level that
+ * still fits `budget` visible nodes.
+ *
+ * A depth cut is the shape zooming out produces, and it keeps whole subtrees
+ * together — so the surviving set is a real frontier rather than a random
+ * sample, and the measured cost is the cost of the case the design claims.
+ */
+function hideBelowBudget(tree: { nodeCount: number; depths: Float32Array }, budget: number) {
+  const perDepth = new Map<number, number>();
+  for (let i = 0; i < tree.nodeCount; i++) {
+    const d = tree.depths[i];
+    perDepth.set(d, (perDepth.get(d) ?? 0) + 1);
+  }
+  let cut = 0;
+  let cumulative = 0;
+  for (const depth of [...perDepth.keys()].sort((a, b) => a - b)) {
+    const next = cumulative + perDepth.get(depth)!;
+    if (next > budget) break;
+    cumulative = next;
+    cut = depth;
+  }
+
+  const flags = new Uint32Array(tree.nodeCount);
+  for (let i = 0; i < tree.nodeCount; i++) {
+    if (tree.depths[i] > cut) flags[i] = NODE_FLAG_HIDDEN_LOD;
+  }
+  return flags;
+}
+
+/**
+ * The claim the active-index list exists to support: simulation cost tracks
+ * the number of visible nodes, not the number of slots. Printed as a ratio
+ * against a baseline measured moments earlier on the same device, never as an
+ * absolute — GPU warmth alone moves absolutes by ~15%.
+ */
+function formatLodRatios(ratios: readonly LodRatio[]): string {
+  const lines = ["semantic-LOD dispatch scaling (ratio vs the expanded run in this same session)"];
+  for (const r of ratios) {
+    const slotRatio = r.nodeCount / r.activeCount;
+    // N² work scales with the square of the dispatched set; the achievable
+    // speed-up is bounded by that, and approached to the extent the remaining
+    // linear passes (clear, integrate) and fixed per-tick costs allow.
+    const ideal = slotRatio * slotRatio;
+    lines.push(
+      `  ${count(r.nodeCount)} slots, ${count(r.activeCount)} visible ` +
+        `(1/${slotRatio.toFixed(1)}): ${r.expandedMs.toFixed(3)} -> ` +
+        `${r.collapsedMs.toFixed(3)} ms/tick = ` +
+        `${(r.expandedMs / r.collapsedMs).toFixed(1)}x faster (N² bound: ${ideal.toFixed(0)}x)`,
+    );
+  }
+  return lines.join("\n");
 }
 
 // =============================================================================

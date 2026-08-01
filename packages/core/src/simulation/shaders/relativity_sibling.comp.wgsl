@@ -56,12 +56,15 @@ struct SiblingUniforms {
 // Well radii (bubble mode: subtree-based collision boundaries)
 @group(0) @binding(8) var<storage, read> well_radius: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal)
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(9) var<storage, read> node_flags: array<u32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 // Budget on cousin force computations to prevent runaway loops in wide
 // hierarchies. Group selection (see sibling_group_count) keeps the expected
 // number of selected cousins at or below this, so the cap rarely binds.
@@ -201,10 +204,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals) neither receive nor exert forces.
+    // Inert slots — dead or LOD-hidden — neither receive nor exert forces.
     // CSR data should never reference dead slots, but the receiver check
     // also skips all their list scans.
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -267,11 +270,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         for (var s = sibling_start; s < sibling_end; s++) {
             let sibling_idx = csr_targets[s];
 
-            // Skip self, invalid indices, and dead slots
+            // Skip self, invalid indices, and inert slots
             if (sibling_idx == node_idx || sibling_idx >= uniforms.node_count) {
                 continue;
             }
-            if ((node_flags[sibling_idx] & NODE_FLAG_DEAD) != 0u) {
+            if ((node_flags[sibling_idx] & NODE_FLAG_INERT) != 0u) {
                 continue;
             }
             // Modulo-group membership (always true when sib_groups == 1)
@@ -351,7 +354,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                         if (cousin_idx == node_idx || cousin_idx >= uniforms.node_count) {
                             continue;
                         }
-                        if ((node_flags[cousin_idx] & NODE_FLAG_DEAD) != 0u) {
+                        if ((node_flags[cousin_idx] & NODE_FLAG_INERT) != 0u) {
                             continue;
                         }
                         if (cousin_groups > 1u &&
@@ -397,7 +400,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if (child_idx >= uniforms.node_count) {
             continue;
         }
-        if ((node_flags[child_idx] & NODE_FLAG_DEAD) != 0u) {
+        if ((node_flags[child_idx] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
         if (child_groups > 1u && (child_idx % child_groups) != (node_idx % child_groups)) {

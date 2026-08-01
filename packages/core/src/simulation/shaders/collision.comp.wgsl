@@ -37,7 +37,7 @@ struct CollisionUniforms {
 // do not exist for collision purposes and are skipped entirely.
 @group(0) @binding(2) var<storage, read> node_sizes: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned).
+// Node state flags (bit 0 = dead slot, bit 1 = pinned, bit 2 = hidden by LOD).
 // Pinned nodes are never displaced by collision resolution (the integrate
 // pin pass-through would otherwise carry the drift forward every frame),
 // but they still push other nodes away.
@@ -50,20 +50,26 @@ struct CollisionUniforms {
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// Slots that are not part of the collision set at all: they push
+// nothing and are never found as an overlap partner.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
+// Slots collision never displaces. A pinned node still pushes.
+const NODE_FLAG_IMMOVABLE: u32 = NODE_FLAG_INERT | NODE_FLAG_PINNED;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const EPSILON: f32 = 0.0001;
 
 // Accumulated separation for one node against every other node, or zero when
-// the node takes no displacement (out of range, dead slot, or pinned).
+// the node takes no displacement (out of range, inert slot, or pinned).
 fn resolve_displacement(node_idx: u32) -> vec2<f32> {
     if (node_idx >= uniforms.node_count) {
         return vec2<f32>(0.0, 0.0);
     }
 
-    // Dead slots don't exist; pinned nodes are never displaced (they still
+    // Inert slots don't exist; pinned nodes are never displaced (they still
     // push others away — other threads read this node's position and size).
-    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
+    if ((node_flags[node_idx] & NODE_FLAG_IMMOVABLE) != 0u) {
         return vec2<f32>(0.0, 0.0);
     }
 
@@ -89,8 +95,8 @@ fn resolve_displacement(node_idx: u32) -> vec2<f32> {
             continue;
         }
 
-        // Get other node's radius (skip dead slots — flags and radius sentinel)
-        if ((node_flags[j] & NODE_FLAG_DEAD) != 0u) {
+        // Get other node's radius (skip inert slots — flags and radius sentinel)
+        if ((node_flags[j] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
         var radius_j = node_sizes[j];
@@ -178,7 +184,7 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
         pos = positions[node_idx];
         radius = node_sizes[node_idx];
         if (radius < 0.0 ||
-            (node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
+            (node_flags[node_idx] & NODE_FLAG_IMMOVABLE) != 0u) {
             is_valid = false;
         } else if (radius <= EPSILON) {
             radius = uniforms.default_radius;
@@ -198,7 +204,7 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
         if (tile_idx < uniforms.node_count) {
             shared_pos[tid] = positions[tile_idx];
             var r = node_sizes[tile_idx];
-            if ((node_flags[tile_idx] & NODE_FLAG_DEAD) != 0u) {
+            if ((node_flags[tile_idx] & NODE_FLAG_INERT) != 0u) {
                 // Flag-dead slots get the same negative skip marker
                 r = -1.0;
             } else if (r >= 0.0 && r <= EPSILON) {

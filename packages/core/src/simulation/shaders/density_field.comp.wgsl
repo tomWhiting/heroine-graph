@@ -47,7 +47,7 @@ struct DensityUniforms {
 // Well radii (bubble mode: per-node splat radius from subtree)
 @group(0) @binding(4) var<storage, read> well_radius: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal). Dead slots sit at a
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD). Dead slots sit at a
 // zeroed position; without masking they splat phantom density near the
 // world origin and push live nodes away from it.
 @group(0) @binding(5) var<storage, read> node_flags: array<u32>;
@@ -55,6 +55,9 @@ struct DensityUniforms {
 const WORKGROUP_SIZE: u32 = 256u;
 const DENSITY_SCALE: f32 = 1000.0;  // Scale for atomic integer accumulation
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 const EPSILON: f32 = 0.0001;
 
 // Kernel value at the cutoff radius: gaussian(r*r, r) with sigma = r/2 is
@@ -131,8 +134,8 @@ fn accumulate_density(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots contribute no density
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots contribute no density
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -191,8 +194,8 @@ fn apply_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots receive no forces
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots receive no forces
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

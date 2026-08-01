@@ -29,7 +29,7 @@ struct ForceAtlas2Uniforms {
 // Node degrees (for degree-weighted repulsion)
 @group(0) @binding(3) var<storage, read> degrees: array<u32>;
 
-// Node state flags (bit 0 = dead slot from removal)
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(4) var<storage, read> node_flags: array<u32>;
 
 const MIN_DISTANCE: f32 = 0.01;
@@ -37,6 +37,9 @@ const FLAG_LINLOG: u32 = 1u;
 const FLAG_STRONG_GRAVITY: u32 = 2u;
 const FLAG_PREVENT_OVERLAP: u32 = 4u;
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // ForceAtlas2 repulsion: F = kr * (degree(i) + 1) * (degree(j) + 1) / distance
 // This is different from Coulomb repulsion which uses distance^2
@@ -66,9 +69,9 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals, zeroed to the origin) neither
-    // receive nor exert forces
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    // Inert slots — holes from removals (zeroed to the origin) and
+    // LOD-hidden nodes — neither receive nor exert forces
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
@@ -81,7 +84,7 @@ fn repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if (i == node_idx) {
             continue;
         }
-        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
+        if ((node_flags[i] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
 

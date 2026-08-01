@@ -19,10 +19,13 @@ struct AccumUniforms {
 @group(0) @binding(3) var<storage, read_write> centroid_sum_x: array<atomic<i32>>;
 @group(0) @binding(4) var<storage, read_write> centroid_sum_y: array<atomic<i32>>;
 @group(0) @binding(5) var<storage, read_write> centroid_count: array<atomic<u32>>;
-// Node state flags (bit 0 = dead slot from removal) - see pipeline.ts
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - see pipeline.ts
 @group(0) @binding(6) var<storage, read> node_flags: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -31,12 +34,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots (holes from removals) keep the community id of their former
+    // Inert slots keep the community id of their former
     // occupant while their position is zeroed to the origin. Folding one into
     // a centroid drags it toward the origin AND inflates the member count that
     // divides the attraction strength in cluster_attract, so the whole
     // community loosens. They must not contribute at all.
-    if ((node_flags[idx] & NODE_FLAG_DEAD) != 0u) {
+    if ((node_flags[idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 

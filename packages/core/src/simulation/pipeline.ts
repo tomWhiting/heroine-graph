@@ -104,16 +104,29 @@ export const NODE_FLAG_DEAD = 1;
 export const NODE_FLAG_PINNED = 2;
 
 /**
- * nodeFlags bit 2: the node is hidden (setNodeVisibility, and later the
- * semantic-LOD cut). The node render pipeline drops the instance; the
- * simulation is deliberately unaffected, so a hidden node keeps its place in
- * the layout and reappears where it belongs.
+ * nodeFlags bit 2: the node is hidden (setNodeVisibility / the semantic-LOD
+ * cut). The node render pipeline drops the instance, and the simulation treats
+ * the slot as inert: it exerts no force, receives none, and is frozen by
+ * `integrate.comp.wgsl` — so the subtree keeps the arrangement it was
+ * collapsed with and reappears in it when expanded.
  *
  * Distinct from {@link NODE_FLAG_DEAD} because a hidden node is still a live
  * slot: reusing the dead bit would corrupt the free-list bookkeeping that
  * nodeFreeList/nodeFreeSet and the WASM engine keep in lockstep.
+ *
+ * The bit is the state; {@link SimulationBuffers.liveIndices} is the dispatch
+ * mechanism derived from it. Force passes mask on the bit *and* gather through
+ * the list, so a list that has not caught up can only cost time, never
+ * correctness.
  */
 export const NODE_FLAG_HIDDEN_LOD = 4;
+
+/**
+ * The flag bits that take a slot out of the simulation entirely, matching
+ * `NODE_FLAG_INERT` in the force shaders. Slots carrying either bit are the
+ * complement of the active-index list.
+ */
+export const NODE_FLAGS_INERT = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 /**
  * Sentinel written into the collision node_sizes buffer for dead slots.
@@ -197,10 +210,21 @@ export interface SimulationBuffers {
   nodeMass: GPUBuffer;
   // Node depth from root (f32 per node) for hierarchical settling
   nodeDepth: GPUBuffer;
+  // Active-index list (u32 per slot): liveIndices[0, activeCount) are the
+  // slots taking part in the simulation this tick, ascending. Allocated at
+  // nodeCapacity so no LOD operation ever reallocates it — a collapse is a
+  // contents write, which never invalidates a bind group. Named for the
+  // shader-side `live_idx`: `active` is a reserved WGSL identifier.
+  // See uploadLiveIndices / writeIdentityLiveIndices.
+  liveIndices: GPUBuffer;
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
   readback: GPUBuffer;
   // Node count for readback sizing
   nodeCount: number;
+  // Length of the prefix of liveIndices the force passes dispatch over. Both
+  // the dispatch size and the shaders' `active_count` uniform must come from
+  // this one field, or the two disagree and threads read past the list.
+  activeCount: number;
   // Allocated capacity (may be larger than count for incremental mutations)
   nodeCapacity: number;
   edgeCapacity: number;
@@ -290,6 +314,7 @@ export function createSimulationPipeline(
  * @param bindGroups - Pre-created bind groups for each stage
  * @param nodeCount - Number of nodes
  * @param edgeCount - Number of edges
+ * @param activeCount - See {@link RecordSimulationOptions.activeCount}
  */
 export function recordSimulationStep(
   encoder: GPUCommandEncoder,
@@ -297,40 +322,11 @@ export function recordSimulationStep(
   bindGroups: SimulationBindGroups,
   nodeCount: number,
   edgeCount: number,
+  activeCount?: number,
 ): void {
-  const workgroupSize = pipeline.config.workgroupSize;
-  const nodeWorkgroups = calculateWorkgroups(nodeCount, workgroupSize);
-  const edgeWorkgroups = calculateWorkgroups(edgeCount, workgroupSize);
-
-  // Stage 1: Clear forces
-  const clearPass = encoder.beginComputePass({ label: "Clear Forces" });
-  clearPass.setPipeline(pipeline.pipelines.clearForces);
-  clearPass.setBindGroup(0, bindGroups.clearForces);
-  clearPass.dispatchWorkgroups(nodeWorkgroups);
-  clearPass.end();
-
-  // Stage 2: Compute repulsion forces (N^2)
-  const repulsionPass = encoder.beginComputePass({ label: "N^2 Repulsion" });
-  repulsionPass.setPipeline(pipeline.pipelines.repulsion);
-  repulsionPass.setBindGroup(0, bindGroups.repulsion);
-  repulsionPass.dispatchWorkgroups(nodeWorkgroups);
-  repulsionPass.end();
-
-  // Stage 3: Compute spring forces
-  if (edgeCount > 0) {
-    const springsPass = encoder.beginComputePass({ label: "Springs" });
-    springsPass.setPipeline(pipeline.pipelines.springs);
-    springsPass.setBindGroup(0, bindGroups.springs);
-    springsPass.dispatchWorkgroups(edgeWorkgroups);
-    springsPass.end();
-  }
-
-  // Stage 4: Integration
-  const integratePass = encoder.beginComputePass({ label: "Integration" });
-  integratePass.setPipeline(pipeline.pipelines.integrate);
-  integratePass.setBindGroup(0, bindGroups.integration);
-  integratePass.dispatchWorkgroups(nodeWorkgroups);
-  integratePass.end();
+  recordSimulationStepWithOptions(encoder, pipeline, bindGroups, nodeCount, edgeCount, {
+    ...(activeCount === undefined ? {} : { activeCount }),
+  });
 }
 
 /**
@@ -341,6 +337,17 @@ export interface RecordSimulationOptions {
   recordRepulsionPass?: ((encoder: GPUCommandEncoder) => void) | undefined;
   /** Skip the edge spring pass (for algorithms that provide their own positioning) */
   skipSprings?: boolean;
+  /**
+   * How many entries of `liveIndices` the repulsion pass covers — pass
+   * `buffers.activeCount`, the same field {@link updateSimulationUniforms}
+   * writes into the shader's `active_count`. Defaults to `nodeCount`, which is
+   * what the identity list createSimulationBuffers writes describes.
+   *
+   * Dispatching more than the uniform says wastes threads that return
+   * immediately; dispatching fewer silently freezes the tail of the list, so
+   * both must come from that one field.
+   */
+  activeCount?: number | undefined;
 }
 
 /**
@@ -364,22 +371,28 @@ export function recordSimulationStepWithOptions(
   const workgroupSize = pipeline.config.workgroupSize;
   const nodeWorkgroups = calculateWorkgroups(nodeCount, workgroupSize);
   const edgeWorkgroups = calculateWorkgroups(edgeCount, workgroupSize);
+  const activeWorkgroups = calculateWorkgroups(options.activeCount ?? nodeCount, workgroupSize);
 
-  // Stage 1: Clear forces
+  // Stage 1: Clear forces — over ALL slots, not the active list. A slot the
+  // list omits still has a force accumulator, and leaving it unzeroed would
+  // let the last force it received before being hidden persist and be applied
+  // the moment it becomes active again.
   const clearPass = encoder.beginComputePass({ label: "Clear Forces" });
   clearPass.setPipeline(pipeline.pipelines.clearForces);
   clearPass.setBindGroup(0, bindGroups.clearForces);
   clearPass.dispatchWorkgroups(nodeWorkgroups);
   clearPass.end();
 
-  // Stage 2: Compute repulsion forces (custom algorithm or default N²)
+  // Stage 2: Compute repulsion forces (custom algorithm or default N²).
+  // One thread per active-list entry: this is where hiding a subtree turns
+  // into work that is not done, rather than work that is masked.
   if (options.recordRepulsionPass) {
     options.recordRepulsionPass(encoder);
   } else {
     const repulsionPass = encoder.beginComputePass({ label: "N^2 Repulsion" });
     repulsionPass.setPipeline(pipeline.pipelines.repulsion);
     repulsionPass.setBindGroup(0, bindGroups.repulsion);
-    repulsionPass.dispatchWorkgroups(nodeWorkgroups);
+    repulsionPass.dispatchWorkgroups(activeWorkgroups);
     repulsionPass.end();
   }
 
@@ -392,7 +405,9 @@ export function recordSimulationStepWithOptions(
     springsPass.end();
   }
 
-  // Stage 4: Integration
+  // Stage 4: Integration — over ALL slots. See the kernel's own note: the
+  // position buffers ping-pong, so every slot must be written every tick or an
+  // inactive one oscillates between the last two positions it was written at.
   const integratePass = encoder.beginComputePass({ label: "Integration" });
   integratePass.setPipeline(pipeline.pipelines.integrate);
   integratePass.setBindGroup(0, bindGroups.integration);
@@ -431,7 +446,7 @@ export function createSimulationBindGroups(
     ],
   });
 
-  // Repulsion bind group (bindings 0-4)
+  // Repulsion bind group (bindings 0-5)
   const repulsion = device.createBindGroup({
     label: "Repulsion Bind Group",
     layout: pipeline.pipelines.repulsion.getBindGroupLayout(0),
@@ -441,6 +456,7 @@ export function createSimulationBindGroups(
       { binding: 2, resource: { buffer: buffers.forces } },
       { binding: 3, resource: { buffer: buffers.nodeFlags } },
       { binding: 4, resource: { buffer: buffers.nodeMass } },
+      { binding: 5, resource: { buffer: buffers.liveIndices } },
     ],
   });
 
@@ -510,6 +526,61 @@ export function writeUnitNodeMass(
   if (nodeCount <= 0) return;
   const unit = new Float32Array(nodeCount).fill(NODE_MASS_UNIT);
   device.queue.writeBuffer(nodeMass, 0, toArrayBuffer(unit));
+}
+
+/**
+ * Fill an active-index buffer with the identity list `[0, slotCount)`.
+ *
+ * The default every buffer set starts in: with no LOD cut and no removals the
+ * active set *is* every slot in ascending order, so a fresh buffer already
+ * describes the whole graph and a host that never calls
+ * {@link uploadLiveIndices} still simulates correctly.
+ */
+export function writeIdentityLiveIndices(
+  device: GPUDevice,
+  liveIndices: GPUBuffer,
+  slotCount: number,
+): void {
+  // Deno's WebGPU backend panics on a zero-length write.
+  if (slotCount <= 0) return;
+  const identity = new Uint32Array(slotCount);
+  for (let i = 0; i < slotCount; i++) identity[i] = i;
+  device.queue.writeBuffer(liveIndices, 0, toArrayBuffer(identity));
+}
+
+/**
+ * Replace the active-index list with `indices` and set `buffers.activeCount`.
+ *
+ * One contiguous write of the whole list, and it is the only way the count
+ * moves: the count and the contents are set together so a caller cannot leave
+ * the dispatch covering entries it did not write.
+ *
+ * `indices` must hold slots the force shaders will accept — in ascending order
+ * (the summation order the pre-list shaders used, which is what keeps SC-005
+ * bit-exact) and within `[0, nodeCapacity)`. Entries whose slot is flagged
+ * inert are tolerated and skipped by the shaders' mask, so an out-of-date list
+ * costs time rather than correctness.
+ *
+ * @throws GraphMotherError if `indices` is longer than the allocated capacity.
+ */
+export function uploadLiveIndices(
+  device: GPUDevice,
+  buffers: SimulationBuffers,
+  indices: Uint32Array,
+): void {
+  if (indices.length > buffers.nodeCapacity) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `Active-index list of ${indices.length} exceeds the allocated capacity of ` +
+        `${buffers.nodeCapacity} slots`,
+      { length: indices.length, nodeCapacity: buffers.nodeCapacity },
+      "Grow the simulation buffers before uploading a longer list; the list is " +
+        "allocated at nodeCapacity precisely so no LOD operation has to.",
+    );
+  }
+  buffers.activeCount = indices.length;
+  if (indices.length === 0) return;
+  device.queue.writeBuffer(buffers.liveIndices, 0, toArrayBuffer(indices));
 }
 
 /**
@@ -594,10 +665,10 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // RepulsionUniforms: 16 bytes (node_count + 2 f32 + padding)
+  // RepulsionUniforms: 32 bytes (node_count, 3 f32, active_count, padding)
   const repulsionUniforms = device.createBuffer({
     label: "Repulsion Uniforms",
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -658,6 +729,18 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Active-index list, allocated at capacity (880 KB at 220K slots) so that
+  // collapsing or expanding a subtree is a contents write and never a
+  // reallocation — a reallocation would invalidate every prebuilt ping-pong
+  // bind group, which is the one thing an LOD transition must not cost.
+  // COPY_SRC is for test readback only, the same allowance nodeAlpha makes.
+  const liveIndices = device.createBuffer({
+    label: "Live Indices",
+    size: nodeFlagBytes, // u32 per slot = same size as flags
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  writeIdentityLiveIndices(device, liveIndices, effectiveNodeCap);
+
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
   const readback = device.createBuffer({
     label: "Position Readback",
@@ -682,8 +765,10 @@ export function createSimulationBuffers(
     nodeAlpha,
     nodeMass,
     nodeDepth,
+    liveIndices,
     readback,
     nodeCount,
+    activeCount: nodeCount,
     nodeCapacity: effectiveNodeCap,
     edgeCapacity: effectiveEdgeCap,
   };
@@ -717,15 +802,18 @@ export function updateSimulationUniforms(
   clearView.setUint32(0, nodeCount, true);
   device.queue.writeBuffer(buffers.clearUniforms, 0, clearData);
 
-  // RepulsionUniforms: { node_count, repulsion_strength, min_distance, max_distance }
+  // RepulsionUniforms:
+  //   { node_count, repulsion_strength, min_distance, max_distance,
+  //     active_count, 3 x padding }
   // Note: repulsionStrength is negative in config (d3 convention), shader uses positive
   // max_distance = 0 means no limit (shader checks for > 0 before applying cutoff)
-  const repulsionData = new ArrayBuffer(16);
+  const repulsionData = new ArrayBuffer(32);
   const repulsionView = new DataView(repulsionData);
   repulsionView.setUint32(0, nodeCount, true);
   repulsionView.setFloat32(4, Math.abs(forceConfig.repulsionStrength), true);
   repulsionView.setFloat32(8, forceConfig.repulsionDistanceMin, true);
   repulsionView.setFloat32(12, forceConfig.repulsionDistanceMax, true);
+  repulsionView.setUint32(16, buffers.activeCount, true);
   device.queue.writeBuffer(buffers.repulsionUniforms, 0, repulsionData);
 
   // SpringUniforms: { edge_count, spring_strength, rest_length, _padding }

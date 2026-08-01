@@ -6,16 +6,22 @@
 // Two entry points share the pair-force math:
 // - main:        bindings 0-2 + 4, no slot masking (used by the N² algorithm
 //                plugin, whose bind group has no node_flags buffer)
-// - main_masked: bindings 0-4, skips dead slots (holes from removals) —
-//                used by the core simulation pipeline
+// - main_masked: bindings 0-5, dispatched over the active-index list and
+//                masking inert slots — used by the core simulation pipeline
 // Auto pipeline layouts only require bindings statically reachable from the
-// chosen entry point, so main's layout stays free of node_flags.
+// chosen entry point, so main's layout stays free of node_flags and live_idx.
 
 struct RepulsionUniforms {
     node_count: u32,
     repulsion_strength: f32,
     min_distance: f32,
     max_distance: f32,
+    // Length of the active-index list. main_masked's dispatch and both of its
+    // loop bounds come from this, never from node_count.
+    active_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: RepulsionUniforms;
@@ -26,7 +32,7 @@ struct RepulsionUniforms {
 // Force accumulators (read-write) - vec2<f32> per node
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Node state flags (bit 0 = dead slot from removal) - main_masked only
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - main_masked only
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
 
 // Per-node simulation mass (f32 per slot, 1.0 = one body). A collapsed LOD
@@ -35,7 +41,15 @@ struct RepulsionUniforms {
 // multiplier; this is per-node on top of it.
 @group(0) @binding(4) var<storage, read> node_mass: array<f32>;
 
+// Active-index list: the first active_count entries are the slots taking part
+// in this tick, ascending. `active` is a reserved WGSL identifier, hence the
+// name. main_masked only.
+@group(0) @binding(5) var<storage, read> live_idx: array<u32>;
+
 const NODE_FLAG_DEAD: u32 = 1u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// A slot carrying either bit neither exerts nor receives force.
+const NODE_FLAG_INERT: u32 = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
 
 // Coulomb-like repulsion between one pair: F = k * m / r^2, where m is the
 // SOURCE node's mass. The integrator has no mass term, so scaling the source
@@ -87,29 +101,40 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forces[node_idx] += force;
 }
 
+// Active-list variant: one thread per ENTRY of live_idx, and the inner sum
+// runs over the same list, so the cost is O(active_count^2) rather than
+// O(node_count^2) — the reason the list exists.
+//
+// The flag mask is kept on top of the gather. The list is derived from
+// nodeFlagsShadow (the single CPU-side authority) and is meant to hold exactly
+// the non-inert slots, but a stale list can only over-include: masking makes
+// that inert rather than a phantom force, so a buffer set whose list was never
+// refreshed (the identity list createSimulationBuffers writes) stays correct,
+// just slower. Masking also keeps the summed set and its addition order
+// identical between the two cases, which is what makes SC-005 bit-exact.
 @compute @workgroup_size(256)
 fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
+    let entry = global_id.x;
 
-    if (node_idx >= uniforms.node_count) {
+    if (entry >= uniforms.active_count) {
         return;
     }
 
-    // Dead slots (holes from removals, zeroed to the origin) neither
-    // receive nor exert repulsion
-    if ((node_flags[node_idx] & NODE_FLAG_DEAD) != 0u) {
+    let node_idx = live_idx[entry];
+    if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
         return;
     }
 
     let node_pos = positions[node_idx];
     var force = vec2<f32>(0.0, 0.0);
 
-    // Direct N^2 summation over live slots
-    for (var i = 0u; i < uniforms.node_count; i++) {
+    // Direct summation over the active set
+    for (var k = 0u; k < uniforms.active_count; k++) {
+        let i = live_idx[k];
         if (i == node_idx) {
             continue;
         }
-        if ((node_flags[i] & NODE_FLAG_DEAD) != 0u) {
+        if ((node_flags[i] & NODE_FLAG_INERT) != 0u) {
             continue;
         }
 

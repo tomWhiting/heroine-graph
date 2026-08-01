@@ -9,12 +9,14 @@
  *   while still repelling neighbors.
  * - Collision resolution never displaces a pinned node (it still pushes
  *   overlapping neighbors away), and dead slots neither move nor push.
- * - A hidden node produces no fragments in the node render pipeline, while
- *   simulating exactly as if it were visible — and the extra bit does not
- *   disturb the dead/pinned behaviour above.
+ * - A hidden node produces no fragments in the node render pipeline, and is
+ *   out of the simulation as well: it exerts no force, receives none, is
+ *   frozen by integration and never enters the collision set — without
+ *   disturbing the dead/pinned behaviour above.
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
+import { assertFrozen } from "../helpers/invariants.ts";
 import {
   createSimHarness,
   DEAD_SLOT_RADIUS,
@@ -229,60 +231,144 @@ gpuTest(
 // ---------------------------------------------------------------------------
 
 gpuTest(
-  "GPU flags: the hidden bit is inert for the simulation",
+  "GPU flags: a hidden node exerts no force and never moves",
   async (device) => {
-    // Visibility is a render-path concept. A hidden node must keep taking part
-    // in the layout — otherwise hiding a node would move everything around it,
-    // and unhiding it would drop it somewhere new. Same fixture as the pinned
-    // test, run with every node additionally flagged hidden: the trajectories
-    // must come out bit-identical, and pinning must still hold.
-    const run = async (flags: Uint32Array) => {
+    // WP-A deliberately left the simulation ignoring bit 2 and asserted it
+    // inert. WP-D changes that: a hidden node is out of the simulation, not
+    // merely out of the picture. It is excluded from the active-index list the
+    // force passes dispatch over, and frozen by the integrate early-out — which
+    // is what lets a collapsed subtree be expanded again into the arrangement
+    // it was collapsed with.
+    //
+    // Same structure as the dead-slot test, which is the point: hiding must be
+    // as invisible to the rest of the layout as a hole is. Two live nodes with
+    // an edge, plus a hidden node parked once between them (where a body would
+    // repel both) and once far off to the side.
+    const run = async (hiddenX: number, hiddenY: number) => {
       const harness = await createSimHarness(
         device,
         {
           nodeCount: 3,
-          positionsX: new Float32Array([10, 13, 510]),
-          positionsY: new Float32Array([20, 20, 20]),
+          positionsX: new Float32Array([-100, hiddenX, 100]),
+          positionsY: new Float32Array([0, hiddenY, 0]),
           edgeSources: new Uint32Array([0]),
           edgeTargets: new Uint32Array([2]),
-          flags,
+          flags: new Uint32Array([0, NODE_FLAG_HIDDEN_LOD, 0]),
         },
         { centerStrength: 0 },
       );
       try {
-        await harness.tick(60);
+        await harness.tick(50);
         return await harness.readPositions();
       } finally {
         harness.dispose();
       }
     };
 
-    const visible = await run(new Uint32Array([NODE_FLAG_PINNED, 0, 0]));
-    const hidden = await run(
-      new Uint32Array([
-        NODE_FLAG_PINNED | NODE_FLAG_HIDDEN_LOD,
-        NODE_FLAG_HIDDEN_LOD,
-        NODE_FLAG_HIDDEN_LOD,
-      ]),
-    );
+    const centered = await run(0, 0);
+    const offside = await run(37, 91);
 
-    for (let i = 0; i < 3; i++) {
-      assertEquals(hidden.x[i], visible.x[i], `hidden bit changed node ${i} (x)`);
-      assertEquals(hidden.y[i], visible.y[i], `hidden bit changed node ${i} (y)`);
+    // Frozen: the position is carried through the ping-pong untouched.
+    assertEquals(centered.x[1], 0, "hidden node moved in x");
+    assertEquals(centered.y[1], 0, "hidden node moved in y");
+    assertEquals(offside.x[1], 37, "hidden node moved in x");
+    assertEquals(offside.y[1], 91, "hidden node moved in y");
+
+    // No force exerted: where the hidden node sits cannot reach the live pair.
+    for (const i of [0, 2]) {
+      assertEquals(centered.x[i], offside.x[i], `hidden node position leaked into node ${i} (x)`);
+      assertEquals(centered.y[i], offside.y[i], `hidden node position leaked into node ${i} (y)`);
     }
 
-    // And the pin still holds with the hidden bit set alongside it
-    assertEquals(hidden.x[0], 10, "pinned+hidden node drifted in x");
-    assertEquals(hidden.y[0], 20, "pinned+hidden node drifted in y");
+    // Sanity: the live pair actually moved, so the assertions above are not
+    // passing on a simulation that did nothing.
+    assert(centered.x[0] !== -100 || centered.x[2] !== 100, "live nodes never moved");
   },
 );
 
 gpuTest(
+  "GPU flags: hiding a node mid-run freezes it where it stood",
+  async (device) => {
+    // The transition case the steady-state test above cannot reach: a node that
+    // was moving when the cut hid it. It must stop dead — not drift, and not
+    // oscillate between the two ping-pong buffers' last values, which is the
+    // failure mode of compacting the integrate dispatch along with the force
+    // passes.
+    const harness = await createSimHarness(
+      device,
+      {
+        nodeCount: 3,
+        positionsX: new Float32Array([-100, 0, 100]),
+        positionsY: new Float32Array([0, 5, 0]),
+        edgeSources: new Uint32Array([0]),
+        edgeTargets: new Uint32Array([2]),
+      },
+      { centerStrength: 0 },
+    );
+    try {
+      await harness.tick(20);
+      const moving = await harness.readPositions();
+      assert(moving.y[1] !== 5, "node 1 must be in motion before it is hidden");
+
+      harness.setNodeFlags(new Uint32Array([0, NODE_FLAG_HIDDEN_LOD, 0]));
+      assertEquals(harness.activeCount, 2, "the hidden slot must leave the dispatch list");
+
+      // An odd tick count so a two-buffer oscillation cannot alias back to the
+      // value it was frozen at.
+      await harness.tick(21);
+      const frozen = await harness.readPositions();
+      assertFrozen(moving, frozen, [1]);
+
+      // The rest of the graph keeps simulating.
+      assert(
+        frozen.x[0] !== moving.x[0] || frozen.x[2] !== moving.x[2],
+        "the visible nodes stopped moving too",
+      );
+    } finally {
+      harness.dispose();
+    }
+  },
+);
+
+for (const variant of ["main", "tiled", "grid"] as const) {
+  gpuTest(
+    `GPU collision (${variant}): a hidden node is neither displaced nor a pusher`,
+    async (device) => {
+      // Node 0 pinned at the origin, node 1 overlapping it at (3, 0), and a
+      // HIDDEN node at (2, 0) with a perfectly live radius — so the only thing
+      // that can keep it out of the collision set is the flag. Node 1 must be
+      // pushed by the pinned node alone, exactly as in the dead-slot case; if
+      // the hidden node leaked in it would add its own push and land node 1
+      // further out.
+      const result = await runCollision(device, {
+        positions: new Float32Array([0, 0, 3, 0, 2, 0]),
+        sizes: new Float32Array([5, 5, 5]),
+        flags: new Uint32Array([NODE_FLAG_PINNED, 0, NODE_FLAG_HIDDEN_LOD]),
+        variant,
+        bounds: { minX: -10, minY: -10, maxX: 10, maxY: 10 },
+      });
+
+      assertEquals(result[0], 0, "pinned node displaced in x");
+      assertEquals(result[1], 0, "pinned node displaced in y");
+      assertEquals(result[4], 2, "hidden node displaced in x");
+      assertEquals(result[5], 0, "hidden node displaced in y");
+
+      const expectedX = 3 + (10 - 3) * 0.5 * 0.7;
+      assert(
+        Math.abs(result[2] - expectedX) < 1e-4,
+        `live node not pushed by the pinned node alone: x=${result[2]}, expected ${expectedX}`,
+      );
+      assertEquals(result[3], 0, "live node displaced in y");
+    },
+  );
+}
+
+gpuTest(
   "GPU collision: the hidden bit does not disturb dead or pinned handling",
   async (device) => {
-    // The same scenario as the collision tests above with every node also
-    // flagged hidden. Collision masks on (DEAD | PINNED); a mask that
-    // accidentally caught bit 2 would freeze the live node instead of pushing it.
+    // The dead/pinned scenario with every node ALSO flagged hidden. The three
+    // bits are independent, and the masks that read two of them must not
+    // reorder into one that catches the third by accident.
     const result = await runCollision(device, {
       positions: new Float32Array([0, 0, 3, 0, 2, 0]),
       sizes: new Float32Array([5, 5, DEAD_SLOT_RADIUS]),
@@ -294,15 +380,13 @@ gpuTest(
       variant: "main",
     });
 
+    // Everything is inert now, so nothing may move at all.
     assertEquals(result[0], 0, "pinned+hidden node displaced in x");
     assertEquals(result[1], 0, "pinned+hidden node displaced in y");
+    assertEquals(result[2], 3, "hidden node displaced in x");
+    assertEquals(result[3], 0, "hidden node displaced in y");
     assertEquals(result[4], 2, "dead+hidden slot displaced in x");
-
-    const expectedX = 3 + (10 - 3) * 0.5 * 0.7;
-    assert(
-      Math.abs(result[2] - expectedX) < 1e-4,
-      `hidden live node not pushed by pinned node: x=${result[2]}, expected ${expectedX}`,
-    );
+    assertEquals(result[5], 0, "dead+hidden slot displaced in y");
   },
 );
 

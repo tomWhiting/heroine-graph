@@ -58,8 +58,11 @@ interface SimulationBuffers {
   nodeAlpha: GPUBuffer;
   nodeMass: GPUBuffer;
   nodeDepth: GPUBuffer;
+  liveIndices: GPUBuffer;
   readback: GPUBuffer;
   nodeCount: number;
+  activeCount: number;
+  nodeCapacity: number;
 }
 
 /**
@@ -102,6 +105,8 @@ interface PipelineModule {
     device: GPUDevice,
     nodeCount: number,
     edgeCount: number,
+    nodeCapacity?: number,
+    edgeCapacity?: number,
   ): SimulationBuffers;
   createSimulationBindGroups(
     device: GPUDevice,
@@ -135,6 +140,12 @@ interface PipelineModule {
     bindGroups: SimulationBindGroups,
     nodeCount: number,
     edgeCount: number,
+    activeCount?: number,
+  ): void;
+  uploadLiveIndices(
+    device: GPUDevice,
+    buffers: SimulationBuffers,
+    indices: Uint32Array,
   ): void;
   recordSimulationStepWithOptions(
     encoder: GPUCommandEncoder,
@@ -145,9 +156,11 @@ interface PipelineModule {
     options?: {
       recordRepulsionPass?: ((encoder: GPUCommandEncoder) => void) | undefined;
       skipSprings?: boolean;
+      activeCount?: number | undefined;
     },
   ): void;
   swapSimulationBuffers(buffers: SimulationBuffers): void;
+  swappedPingPongView(buffers: SimulationBuffers): SimulationBuffers;
   buildForBothParities<T>(
     buffers: SimulationBuffers,
     currentParity: 0 | 1,
@@ -255,7 +268,23 @@ interface CollisionModule {
   destroyGridCollisionBuffers(buffers: unknown): void;
 }
 
+/**
+ * Structural subset of simulation/active_set.ts. It reaches pipeline.ts (for
+ * the flag constants) and therefore the .wgsl imports, so it is loaded through
+ * the inlining loader like every other module here rather than imported.
+ */
+interface ActiveSetModule {
+  deriveActiveIndices(flags: Uint32Array, slotCount: number, out: Uint32Array): number;
+  activeIndicesUnchanged(
+    flags: Uint32Array,
+    slotCount: number,
+    out: Uint32Array,
+    count: number,
+  ): boolean;
+}
+
 let pipelineModulePromise: Promise<PipelineModule> | undefined;
+let activeSetModulePromise: Promise<ActiveSetModule> | undefined;
 let collisionModulePromise: Promise<CollisionModule> | undefined;
 const inlinedModuleCache = new Map<string, Promise<unknown>>();
 
@@ -282,6 +311,18 @@ export function loadPipelineModule(): Promise<PipelineModule> {
     new URL("../../packages/core/src/simulation/pipeline.ts", import.meta.url),
   );
   return pipelineModulePromise;
+}
+
+/**
+ * Loads active_set.ts — the shipped derivation of the simulation's
+ * active-index list from the node-flag shadow. Harnesses drive the real
+ * function so the GPU tests exercise the list production code too.
+ */
+export function loadActiveSetModule(): Promise<ActiveSetModule> {
+  activeSetModulePromise ??= importInliningWgsl<ActiveSetModule>(
+    new URL("../../packages/core/src/simulation/active_set.ts", import.meta.url),
+  );
+  return activeSetModulePromise;
 }
 
 /**
@@ -623,7 +664,8 @@ export interface HarnessGraphData {
   depths?: Float32Array;
   /**
    * Optional per-slot state flags (u32 per node; bit 0 = NODE_FLAG_DEAD,
-   * bit 1 = NODE_FLAG_PINNED). Uploaded after buffer initialization.
+   * bit 1 = NODE_FLAG_PINNED, bit 2 = NODE_FLAG_HIDDEN_LOD). Uploaded after
+   * buffer initialization, and the active-index list is derived from them.
    */
   flags?: Uint32Array;
   /**
@@ -650,13 +692,35 @@ export interface SimHarness {
    * LOD transition cost zero bind-group work.
    */
   readonly nodeMassBuffer: GPUBuffer;
+  /**
+   * The live active-index buffer, and how many of its entries the force passes
+   * dispatch over. Exposed for the same reason as nodeMassBuffer: a collapse
+   * must move the count without ever changing the buffer identity.
+   */
+  readonly liveIndicesBuffer: GPUBuffer;
+  readonly activeCount: number;
   /** Advance the simulation by `steps` ticks */
   tick(steps: number): Promise<void>;
+  /**
+   * Overwrite per-slot flags mid-run, the way an LOD transition does, and
+   * re-derive the active-index list from them — the same choke-point discipline
+   * GraphMother uses, so flags and list cannot disagree.
+   */
+  setNodeFlags(flags: Uint32Array): void;
   /**
    * Overwrite per-slot masses mid-run, the way an LOD collapse or expand does:
    * a contents write to the buffer that already exists.
    */
   setNodeMass(mass: Float32Array): void;
+  /**
+   * Overwrite the positions of `[lo, lo + x.length)` mid-run, the way the LOD
+   * expand fix-up does.
+   *
+   * Both ping-pong orientations are written because the caller does not know
+   * which one the next tick reads, and the integrator's frozen-slot path copies
+   * whatever it finds in the input buffer.
+   */
+  writePositionRange(lo: number, x: Float32Array, y: Float32Array): void;
   /**
    * Replace every simulation buffer with a freshly allocated set carrying the
    * current positions, and rebuild the bind groups — the harness equivalent of
@@ -706,6 +770,7 @@ export async function createSimHarness(
   bindGroupMode: HarnessBindGroupMode = "prebuilt-parity",
 ): Promise<SimHarness> {
   const mod = await loadPipelineModule();
+  const activeSet = await loadActiveSetModule();
   const { nodeCount } = graph;
   const edgeCount = graph.edgeSources.length;
   const forceConfig = validateForceConfig(config);
@@ -715,6 +780,23 @@ export async function createSimHarness(
     maxNodes: nodeCount,
     maxEdges: edgeCount,
   });
+
+  /**
+   * Upload per-slot flags and re-derive the active-index list from them.
+   *
+   * The single place either harness writes flags, mirroring GraphMother's own
+   * choke point: the list is never set, only derived, so a fixture cannot end
+   * up dispatching over a slot it just hid.
+   */
+  let currentFlags = graph.flags;
+  const applyFlags = (target: SimulationBuffers, flags: Uint32Array | undefined): void => {
+    currentFlags = flags;
+    if (flags) device.queue.writeBuffer(target.nodeFlags, 0, flags.slice().buffer);
+    const source = flags ?? new Uint32Array(nodeCount);
+    const list = new Uint32Array(nodeCount);
+    const count = activeSet.deriveActiveIndices(source, nodeCount, list);
+    mod.uploadLiveIndices(device, target, list.subarray(0, count));
+  };
 
   /**
    * Allocates a complete simulation buffer set holding `positionsX/Y`.
@@ -728,12 +810,12 @@ export async function createSimHarness(
     if (graph.depths) {
       device.queue.writeBuffer(fresh.nodeDepth, 0, graph.depths.slice().buffer);
     }
-    if (graph.flags) {
-      device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
-    }
     if (graph.mass) {
       device.queue.writeBuffer(fresh.nodeMass, 0, graph.mass.slice().buffer);
     }
+    // currentFlags, not graph.flags: a reallocation must carry whatever an
+    // LOD transition set mid-run, not revert to the fixture's opening state.
+    applyFlags(fresh, currentFlags);
     return fresh;
   };
 
@@ -778,9 +860,29 @@ export async function createSimHarness(
     get nodeMassBuffer() {
       return buffers.nodeMass;
     },
+    get liveIndicesBuffer() {
+      return buffers.liveIndices;
+    },
+    get activeCount() {
+      return buffers.activeCount;
+    },
 
     setNodeMass(mass: Float32Array): void {
       device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
+    },
+
+    setNodeFlags(flags: Uint32Array): void {
+      applyFlags(buffers, flags);
+    },
+
+    writePositionRange(lo: number, x: Float32Array, y: Float32Array): void {
+      const interleaved = new Float32Array(x.length * 2);
+      for (let i = 0; i < x.length; i++) {
+        interleaved[i * 2] = x[i];
+        interleaved[i * 2 + 1] = y[i];
+      }
+      device.queue.writeBuffer(buffers.positions, lo * 8, interleaved);
+      device.queue.writeBuffer(buffers.positionsOut, lo * 8, interleaved);
     },
 
     async tick(steps: number): Promise<void> {
@@ -796,7 +898,14 @@ export async function createSimHarness(
           adaptiveSpeedOverride,
         );
         const encoder = device.createCommandEncoder();
-        mod.recordSimulationStep(encoder, pipeline, currentBindGroups(), nodeCount, edgeCount);
+        mod.recordSimulationStep(
+          encoder,
+          pipeline,
+          currentBindGroups(),
+          nodeCount,
+          edgeCount,
+          buffers.activeCount,
+        );
         device.queue.submit([encoder.finish()]);
         paritySets.advance();
         if (bindGroupMode === "rebuild-each-tick") {
@@ -846,6 +955,7 @@ function destroySimulationBufferSet(buffers: SimulationBuffers): void {
       buffers.nodeAlpha,
       buffers.nodeMass,
       buffers.nodeDepth,
+      buffers.liveIndices,
       buffers.readback,
     ]
   ) {
@@ -943,6 +1053,7 @@ export async function createAlgorithmSimHarness(
   } = {},
 ): Promise<SimHarness> {
   const mod = await loadPipelineModule();
+  const activeSet = await loadActiveSetModule();
   const { nodeCount } = graph;
   const edgeCount = graph.edgeSources.length;
   const forceConfig = validateForceConfig(config);
@@ -983,6 +1094,23 @@ export async function createAlgorithmSimHarness(
   });
 
   /**
+   * Upload per-slot flags and re-derive the active-index list from them.
+   *
+   * The single place either harness writes flags, mirroring GraphMother's own
+   * choke point: the list is never set, only derived, so a fixture cannot end
+   * up dispatching over a slot it just hid.
+   */
+  let currentFlags = graph.flags;
+  const applyFlags = (target: SimulationBuffers, flags: Uint32Array | undefined): void => {
+    currentFlags = flags;
+    if (flags) device.queue.writeBuffer(target.nodeFlags, 0, flags.slice().buffer);
+    const source = flags ?? new Uint32Array(nodeCount);
+    const list = new Uint32Array(nodeCount);
+    const count = activeSet.deriveActiveIndices(source, nodeCount, list);
+    mod.uploadLiveIndices(device, target, list.subarray(0, count));
+  };
+
+  /**
    * Allocates a complete simulation buffer set holding `positionsX/Y`.
    * Order matters: copyPositionsToSimulation zeroes nodeFlags, so the
    * fixture's flags are uploaded after it.
@@ -994,12 +1122,12 @@ export async function createAlgorithmSimHarness(
     if (graph.depths) {
       device.queue.writeBuffer(fresh.nodeDepth, 0, graph.depths.slice().buffer);
     }
-    if (graph.flags) {
-      device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
-    }
     if (graph.mass) {
       device.queue.writeBuffer(fresh.nodeMass, 0, graph.mass.slice().buffer);
     }
+    // currentFlags, not graph.flags: a reallocation must carry whatever an
+    // LOD transition set mid-run, not revert to the fixture's opening state.
+    applyFlags(fresh, currentFlags);
     return fresh;
   };
 
@@ -1078,9 +1206,29 @@ export async function createAlgorithmSimHarness(
     get nodeMassBuffer() {
       return buffers.nodeMass;
     },
+    get liveIndicesBuffer() {
+      return buffers.liveIndices;
+    },
+    get activeCount() {
+      return buffers.activeCount;
+    },
 
     setNodeMass(mass: Float32Array): void {
       device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
+    },
+
+    setNodeFlags(flags: Uint32Array): void {
+      applyFlags(buffers, flags);
+    },
+
+    writePositionRange(lo: number, x: Float32Array, y: Float32Array): void {
+      const interleaved = new Float32Array(x.length * 2);
+      for (let i = 0; i < x.length; i++) {
+        interleaved[i * 2] = x[i];
+        interleaved[i * 2 + 1] = y[i];
+      }
+      device.queue.writeBuffer(buffers.positions, lo * 8, interleaved);
+      device.queue.writeBuffer(buffers.positionsOut, lo * 8, interleaved);
     },
 
     async tick(steps: number): Promise<void> {
@@ -1131,6 +1279,7 @@ export async function createAlgorithmSimHarness(
               );
             },
             skipSprings: algorithm.handlesSprings ?? false,
+            activeCount: buffers.activeCount,
           },
         );
         device.queue.submit([encoder.finish()]);

@@ -42,7 +42,7 @@ struct IntegrationUniforms {
 // Node depth from root (f32 per node, 0.0 = root or non-hierarchical)
 @group(0) @binding(6) var<storage, read> node_depth: array<f32>;
 
-// Node state flags (bit 0 = dead slot from removal, bit 1 = pinned)
+// Node state flags (bit 0 = dead slot, bit 1 = pinned, bit 2 = hidden by LOD)
 @group(0) @binding(7) var<storage, read> node_flags: array<u32>;
 
 // Previous tick's total force per node (for adaptive speed swing/traction)
@@ -50,6 +50,9 @@ struct IntegrationUniforms {
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+// Every slot that holds its position instead of integrating.
+const NODE_FLAG_FROZEN: u32 = NODE_FLAG_DEAD | NODE_FLAG_PINNED | NODE_FLAG_HIDDEN_LOD;
 
 // Clamp vector magnitude
 fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
@@ -60,7 +63,14 @@ fn clamp_magnitude(v: vec2<f32>, max_mag: f32) -> vec2<f32> {
     return v;
 }
 
-// Main integration kernel
+// Main integration kernel.
+//
+// Dispatched over ALL node slots, not over the active-index list the force
+// passes use: positions ping-pong, so a slot this pass does not write keeps
+// whatever the destination buffer held two ticks ago. A node that stops being
+// active would then alternate between its last two positions forever. Carrying
+// every inactive slot through is what makes freezing exact, and it is O(N) of
+// pure streaming against the O(active²) the list saves in repulsion.
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let node_idx = global_id.x;
@@ -69,11 +79,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Dead slots don't integrate — carry the (zeroed) position through the
-    // ping-pong so the output buffer never holds stale data for the slot.
-    // Pinned nodes hold their externally-written position (pinNode / drag
-    // writes both ping-pong buffers) with zero velocity.
-    if ((node_flags[node_idx] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) != 0u) {
+    // Frozen slots don't integrate — carry the position through the ping-pong
+    // so the output buffer never holds stale data for the slot. Dead slots are
+    // holes from removals; pinned nodes hold their externally-written position
+    // (pinNode / drag writes both ping-pong buffers); LOD-hidden nodes hold the
+    // arrangement they were collapsed with, which is what makes expanding them
+    // again cheap and non-jarring.
+    if ((node_flags[node_idx] & NODE_FLAG_FROZEN) != 0u) {
         positions_out[node_idx] = positions_in[node_idx];
         velocities_out[node_idx] = vec2<f32>(0.0, 0.0);
         prev_forces[node_idx] = vec2<f32>(0.0, 0.0);
