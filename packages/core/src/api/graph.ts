@@ -887,6 +887,10 @@ export class GraphMother {
         this.events.hasListeners("edge:hoverleave"),
       onNodeEnter: (nodeId, position) => {
         this.syncNodeHoverToGPU(nodeId, true);
+        // A carded node is a DOM element the pointer may never touch — the
+        // hit test runs against the sprite underneath — so `:hover` cannot
+        // stand in for this and the card has to be told.
+        this.domOverlay?.notify(nodeId, { kind: "hover", hovered: true });
         this.markRenderDirty();
         this.events.emit({
           type: "node:hoverenter",
@@ -897,6 +901,7 @@ export class GraphMother {
       },
       onNodeLeave: (nodeId) => {
         this.syncNodeHoverToGPU(nodeId, false);
+        this.domOverlay?.notify(nodeId, { kind: "hover", hovered: false });
         this.markRenderDirty();
         this.events.emit({
           type: "node:hoverleave",
@@ -5902,7 +5907,16 @@ export class GraphMother {
       releaseEdgeAggregation: () => this.releaseLodEdgeAggregation(),
       translateNodeRange: (lo, hi, dx, dy) => this.translateNodeRange(lo, hi, dx, dy),
       syncCards: (entries) => this.syncDomCards(entries),
-      emit: (event) => this.events.emit(event),
+      emit: (event) => {
+        // A changed cut is the LOD epoch boundary, and the only one core has:
+        // the set of nodes on screen is different, so content warmed for the
+        // previous cut and never carded is spent and has to become offerable
+        // again. The controller emits this before it re-declares the card set,
+        // which is the order that matters — the epoch turns first, then the
+        // new ring's prefetches land inside it.
+        if (event.type === "lod:change") this.domOverlay?.beginEpoch();
+        this.events.emit(event);
+      },
     };
   }
 
@@ -7601,9 +7615,14 @@ export class GraphMother {
       if (type === "node") {
         for (const nodeId of added) {
           this.syncNodeSelectionToGPU(nodeId, true);
+          // A carded node's sprite is behind its card, so the GPU selection
+          // ring above is invisible for exactly the nodes the user is closest
+          // to. The card renders the state instead.
+          this.domOverlay?.notify(nodeId, { kind: "selection", selected: true });
         }
         for (const nodeId of removed) {
           this.syncNodeSelectionToGPU(nodeId, false);
+          this.domOverlay?.notify(nodeId, { kind: "selection", selected: false });
         }
       }
 

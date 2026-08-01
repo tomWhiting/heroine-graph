@@ -63,10 +63,12 @@ export interface CollisionBuffers {
    */
   displacements: GPUBuffer;
   /**
-   * Zeroed fallback for the node_flags binding, used when the caller does
-   * not pass the simulation's nodeFlags buffer (all slots treated as live
-   * and unpinned). Pass SimulationBuffers.nodeFlags to createCollisionBindGroup
-   * so collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
+   * Zeroed fallback for the node_flags binding, used when the caller does not
+   * pass the simulation's nodeFlags buffer (every slot treated as live,
+   * unpinned and visible). Pass SimulationBuffers.nodeFlags to
+   * createCollisionBindGroup so collision respects NODE_FLAG_DEAD /
+   * NODE_FLAG_PINNED / NODE_FLAG_HIDDEN_LOD — and so the apply pass can tell a
+   * fresh displacement from one a shortened resolve dispatch left behind.
    */
   fallbackNodeFlags: GPUBuffer;
   /**
@@ -191,7 +193,7 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
 
   // Bind group layout for the resolve pass
   // Bindings: uniforms, positions (vec2, read-only), node_sizes, node_flags,
-  // displacements (vec2, read-write)
+  // displacements (vec2, read-write), live_idx (active-index list)
   const bindGroupLayout = device.createBindGroupLayout({
     label: "Collision Bind Group Layout",
     entries: [
@@ -320,9 +322,24 @@ function createIdentityLiveIndices(
  * @param collisionBuffers - Collision-specific buffers
  * @param positions - Position buffer (vec2; read in resolve, written in apply)
  * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
- *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so collision skips dead
- *   slots and never displaces pinned nodes. Falls back to an all-zero buffer
- *   (all live/unpinned) when omitted.
+ *   bit 1 = pinned, bit 2 = hidden by LOD). Both passes read it: resolve skips
+ *   dead and LOD-hidden slots as neighbours and computes no displacement for a
+ *   slot that is dead, LOD-hidden or pinned; apply masks the same three bits
+ *   before folding a displacement into a position.
+ *
+ *   Omitting it binds an all-zero buffer, which declares every slot live,
+ *   unpinned and visible — and that forfeits the guarantee that makes a
+ *   shortened resolve dispatch safe. `liveIndices` lets resolve sweep fewer
+ *   slots than apply does, so an omitted slot keeps the displacement it was
+ *   left with when it last took part; the IMMOVABLE mask in apply is the only
+ *   thing that stops that stale value being re-applied every iteration. Pass
+ *   SimulationBuffers.nodeFlags whenever `liveIndices` is anything but the
+ *   whole graph.
+ * @param liveIndices - Active-index list bound to the resolve pass: its first
+ *   `activeCount` entries (see {@link updateCollisionUniforms}) are the slots
+ *   that take part. Falls back to
+ *   {@link CollisionBuffers.fallbackLiveIndices}, the identity list over every
+ *   slot, which is the whole graph in slot order.
  * @returns Collision bind groups
  */
 export function createCollisionBindGroup(
@@ -529,9 +546,10 @@ export interface GridCollisionBuffers {
   /** Per-node cell hash (maxNodes u32 entries, avoids recomputing in resolve) */
   nodeCell: GPUBuffer;
   /**
-   * Zeroed fallback for the node_flags binding (all live/unpinned). Pass
-   * SimulationBuffers.nodeFlags to createGridCollisionBindGroups so grid
-   * collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
+   * Zeroed fallback for the node_flags binding (every slot live, unpinned and
+   * visible). Pass SimulationBuffers.nodeFlags to
+   * createGridCollisionBindGroups so grid collision respects NODE_FLAG_DEAD /
+   * NODE_FLAG_PINNED / NODE_FLAG_HIDDEN_LOD.
    */
   fallbackNodeFlags: GPUBuffer;
   /**
@@ -697,9 +715,16 @@ export function createGridCollisionBuffers(
  *   the two collision paths never run in the same frame, so they share it)
  * @param positions - Position buffer (positionsOut for ping-pong consistency)
  * @param nodeFlags - Simulation nodeFlags buffer (u32 per node; bit 0 = dead,
- *   bit 1 = pinned). Pass SimulationBuffers.nodeFlags so grid collision skips
- *   dead slots and never displaces pinned nodes. Falls back to an all-zero
- *   buffer (all live/unpinned) when omitted.
+ *   bit 1 = pinned, bit 2 = hidden by LOD). Dead and LOD-hidden slots are kept
+ *   out of the cell lists entirely and pinned slots take no displacement; the
+ *   apply pass masks the same three bits. Omitting it binds an all-zero buffer
+ *   — every slot live, unpinned and visible — which also forfeits the
+ *   stale-displacement guarantee described on
+ *   {@link createCollisionBindGroup}, since the two paths share both the
+ *   displacement buffer and the apply shader.
+ * @param liveIndices - Active-index list bound to the build and resolve
+ *   passes; see {@link createCollisionBindGroup}. Falls back to
+ *   {@link GridCollisionBuffers.fallbackLiveIndices}.
  * @returns Grid collision bind groups
  */
 export function createGridCollisionBindGroups(

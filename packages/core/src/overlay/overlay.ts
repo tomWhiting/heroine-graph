@@ -31,7 +31,13 @@ import { CardContainerPool } from "./pool.ts";
 import { cardPlacementAt, formatCssMatrix, overlayMatrix } from "./projection.ts";
 import { createDefaultCardProvider } from "./default_card.ts";
 import { DEFAULT_DOM_OVERLAY_CONFIG } from "./types.ts";
-import type { CardNode, CardProvider, CardSize, DomOverlayConfig } from "./types.ts";
+import type {
+  CardNode,
+  CardProvider,
+  CardSize,
+  CardStateChange,
+  DomOverlayConfig,
+} from "./types.ts";
 
 /** Card box used when a sync entry names no size: legible, and roughly a sprite. */
 export const DEFAULT_CARD_SIZE: CardSize = { width: 200, height: 120 };
@@ -459,6 +465,23 @@ export class DomCardOverlay {
       const anchor = this.#nodes.position(node);
       driver.place(node, cardPlacementAt(anchor, record.width, record.height, record.opacity));
     }
+  }
+
+  /**
+   * Report a data or interaction change to a node's card.
+   *
+   * The other half of the placement path: core derives where a card sits and
+   * how big it is, and everything else it knows about the node — selected,
+   * hovered, data changed — reaches the provider through here. Placement is
+   * not expressible here, by type: it is core's to derive, per frame, in
+   * {@link DomCardOverlay.syncFrame}.
+   *
+   * Cheap and safe to call for any node: one map lookup, and nodes without a
+   * mounted card are ignored, so a caller fanning a change out over a
+   * selection set does not have to ask which of them are carded.
+   */
+  notify(node: NodeId, change: CardStateChange): void {
+    this.#driver?.notify(node, change);
   }
 
   /**
