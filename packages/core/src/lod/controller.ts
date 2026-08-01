@@ -414,6 +414,15 @@ export class LODController {
       if (previous.enabled) this.#release(true, nowMs);
       return;
     }
+    // Turning the aggregation off has to tear down the one already in place —
+    // the flush below only ever builds — and turning it on has to rebuild one
+    // the flushes taken while it was off never made.
+    if (previous.edgeAggregation && !this.#config.edgeAggregation) {
+      if (this.#hasCut) this.#host.releaseEdgeAggregation();
+      this.#aggregationStale = false;
+    } else if (!previous.edgeAggregation && this.#config.edgeAggregation) {
+      this.#aggregationStale = true;
+    }
     this.#forceFull = true;
     this.#bypassCommit = true;
   }
@@ -537,7 +546,7 @@ export class LODController {
       // a slot that has no fade left in flight.
       this.#settleHidden();
       this.#proxiesStale = true;
-      this.#onCollapsedSetChanged(NO_NODES, NO_NODES);
+      this.#onCollapsedSetChanged(NO_NODES, NO_NODES, NO_NODES);
       this.#flushPhysics();
     }
   }
@@ -651,8 +660,8 @@ export class LODController {
     this.#reason = new Uint8Array(n);
     this.#commitFrame = new Int32Array(n).fill(NEVER_COMMITTED);
     this.#visibleMask = new Uint8Array(n);
-    // The recreated flag buffer holds no HIDDEN_LOD bits, so the host starts
-    // out showing everything and the shadow has to say so.
+    // Adoption declares every slot visible. The host is *told* so below rather
+    // than assumed to be so: see the reconciling write at the end.
     this.#appliedVisible = new Uint8Array(n).fill(1);
     this.#collapsedMask = new Uint8Array(n);
     this.#nextVisibleMask = new Uint8Array(n);
@@ -697,6 +706,24 @@ export class LODController {
     this.#crossfade.resize(n);
     this.#crossfade.reset();
     this.#host.uploadNodeAlpha(this.#crossfade);
+
+    // Reconcile the host's flags with the all-visible shadow just declared,
+    // exactly as #release(false) does — the host may still hold HIDDEN_LOD bits
+    // from the previous hierarchy's cut, and nothing else will clear them.
+    // A hierarchy *replacement* never touches the flag shadow, and a
+    // reallocation re-uploads that shadow verbatim, so the bits survive both
+    // paths; and the first transition against the new hierarchy diffs against
+    // all-visible, so it issues no clearing write for a slot that was hidden
+    // under the old cut and is visible under the new one. Unconditional
+    // because "the host has no stale bits" is not knowable from here.
+    if (n > 0) this.#host.applyVisibility(0, n, this.#appliedVisible);
+    // Mass and the aggregation are the host's to reset on a topology change,
+    // and the first transition re-derives both regardless (#proxiesStale forces
+    // the roll-up, and #applyTransition promotes that to the aggregation) — so
+    // this is not covering a path, since nothing can flush in between. It keeps
+    // the flag a true statement: whatever mass the host holds names the slot
+    // map that has just gone away, and so cannot describe #appliedVisible.
+    this.#massStale = true;
     this.#forceFull = true;
   }
 
@@ -1070,6 +1097,15 @@ export class LODController {
     const hidden: NodeId[] = [];
     const entered: NodeId[] = [];
     const left: NodeId[] = [];
+    /**
+     * Proxies that stopped being proxies without expanding: an ancestor
+     * collapsed over them, so their fold dissolved into the ancestor's.
+     *
+     * They are not expands and must not be treated as any — they are about to
+     * be frozen under the new proxy — but they hold drift that has to be
+     * flushed all the same. See {@link LODController.#onCollapsedSetChanged}.
+     */
+    const dissolved: NodeId[] = [];
     let lo = n;
     let hi = 0;
 
@@ -1083,7 +1119,9 @@ export class LODController {
       }
       const wasCollapsed = first ? 0 : previousCollapsed[i];
       if (collapsed[i] === 1 && wasCollapsed === 0) entered.push(i);
-      else if (collapsed[i] === 0 && wasCollapsed === 1 && visible[i] === 1) left.push(i);
+      else if (collapsed[i] === 0 && wasCollapsed === 1) {
+        (visible[i] === 1 ? left : dissolved).push(i);
+      }
     }
 
     this.#visibleMask = visible;
@@ -1096,14 +1134,17 @@ export class LODController {
     // under its proxy *before* it is unflagged, or it is drawn for one frame
     // wherever it was left when the proxy took over.
     const wasStale = this.#proxiesStale;
-    this.#onCollapsedSetChanged(entered, left);
+    this.#onCollapsedSetChanged(entered, left, dissolved);
     // A rebuilt hierarchy leaves the host holding an aggregation named against
     // the old slot mapping, so that one has to be re-derived even when the diff
     // is empty. Every other trigger is a flag moving: below, or in
     // #settleHidden a fade later.
     if (wasStale) this.#aggregationStale = true;
 
-    if (shown.length === 0 && hidden.length === 0 && entered.length === 0 && left.length === 0) {
+    if (
+      shown.length === 0 && hidden.length === 0 &&
+      entered.length === 0 && left.length === 0 && dissolved.length === 0
+    ) {
       this.#flushPhysics();
       return this.#syncCards(nowMs);
     }
@@ -1170,6 +1211,16 @@ export class LODController {
    *    parent used to be. It runs before the anchors are rewritten because an
    *    expand can immediately re-collapse a child, and that child's anchor has
    *    to be its translated position.
+   *
+   *    `dissolved` is fixed up on exactly the same terms even though nothing is
+   *    revealed: an ancestor collapsing over a live proxy ends that proxy's
+   *    fold, and its drift has to be flushed onto its descendants *now*,
+   *    because the diff will never name it again — it re-enters the cut either
+   *    already expanded (no fold to undo) or freshly collapsed against a new
+   *    anchor. Left unflushed, the drift is lost outright and the subtree
+   *    reappears detached by exactly that much once the ancestor expands. Only
+   *    its descendants move; the proxy itself is about to be frozen under the
+   *    ancestor at the position it currently holds.
    * 2. **Proxy radii.** The collapsed parent renders through the ordinary node
    *    pipeline as one instance at its well radius, so the fold reads as a
    *    bubble containing what it hides rather than as a lone leaf. It is a
@@ -1180,15 +1231,24 @@ export class LODController {
    *    (SC-002). But it must not do so while those 5 000 are still simulated,
    *    so the roll-up itself waits for {@link LODController.#flushPhysics}.
    */
-  #onCollapsedSetChanged(entered: readonly NodeId[], left: readonly NodeId[]): void {
+  #onCollapsedSetChanged(
+    entered: readonly NodeId[],
+    left: readonly NodeId[],
+    dissolved: readonly NodeId[],
+  ): void {
     const h = this.#hierarchy;
     if (h === null) return;
     const stale = this.#proxiesStale;
-    if (!stale && entered.length === 0 && left.length === 0) return;
+    if (!stale && entered.length === 0 && left.length === 0 && dissolved.length === 0) return;
     this.#proxiesStale = false;
     this.#massStale = true;
 
-    for (const slot of left) this.#restoreSubtree(slot);
+    // Both sets have stopped standing in for their subtrees, so both owe it
+    // their drift; only `left` is coming back into the cut. A fold can dissolve
+    // at most once per root path in a transition — a proxy under a proxy is
+    // already unfolded — so the two never overlap and their order is free.
+    for (const slot of left) this.#unfold(slot);
+    for (const slot of dissolved) this.#unfold(slot);
 
     const count = this.#gatherProxies(false);
     const proxies = this.#proxies.subarray(0, count);
@@ -1196,10 +1256,6 @@ export class LODController {
     for (let k = 0; k < count; k++) this.#proxyRadii[k] = wellRadius[proxies[k]];
     this.#host.setCollapsedProxies(proxies, this.#proxyRadii.subarray(0, count));
 
-    for (const slot of left) {
-      this.#anchorX[slot] = NaN;
-      this.#anchorY[slot] = NaN;
-    }
     for (const slot of entered) {
       const position = this.#host.getNodePosition(slot);
       this.#anchorX[slot] = position.x;
@@ -1267,8 +1323,25 @@ export class LODController {
     }
     if (this.#aggregationStale) {
       this.#aggregationStale = false;
-      this.#host.aggregateEdges(this.#appliedVisible);
+      // The knob is read here rather than at the seam because this is the only
+      // caller: with it off the host keeps the source edge list, and turning it
+      // back on re-marks the flag (see setConfig) so the next flush rebuilds.
+      if (this.#config.edgeAggregation) this.#host.aggregateEdges(this.#appliedVisible);
     }
+  }
+
+  /**
+   * End `root`'s fold: flush the drift it owes its descendants, then drop the
+   * anchor that measured it.
+   *
+   * The anchor has to go with the flush and not merely with the reveal, or a
+   * later fix-up would translate the subtree a second time by a distance it
+   * has already travelled.
+   */
+  #unfold(root: NodeId): void {
+    this.#restoreSubtree(root);
+    this.#anchorX[root] = NaN;
+    this.#anchorY[root] = NaN;
   }
 
   /**

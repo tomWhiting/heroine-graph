@@ -66,8 +66,15 @@ export interface LodConfig {
   readonly minBandCommitFrames: number;
   /**
    * Whether edges crossing a collapsed boundary are bundled onto the visible
-   * proxy. Carried here as the single LOD configuration surface; the
-   * aggregation pass itself reads it. The controller does not act on it.
+   * proxy.
+   *
+   * Off, the spring pass and the edge render keep the source edge list, so a
+   * collapsed subtree simply stops pulling on what it depends on and the
+   * collapsed layout is structurally different from the expanded one. It exists
+   * for exactly that comparison — seeing a fold without its bundles — and is a
+   * debugging switch rather than a tuning knob. Turning it off releases any
+   * aggregation already in place; turning it back on rebuilds one on the next
+   * transition.
    */
   readonly edgeAggregation: boolean;
 }

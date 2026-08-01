@@ -150,6 +150,18 @@ interface Recorder {
   /** Swappable, so a test can hand the controller a rebuilt hierarchy. */
   hierarchy: RetainedHierarchy | null;
   visibility: VisibilityWrite[];
+  /**
+   * Visibility as the host actually holds it, kept across writes.
+   *
+   * The call log above cannot answer "is this slot still flagged hidden" — an
+   * absent write looks the same as a clearing one. GraphMother's node-flag
+   * shadow survives everything short of a slot being reused, and only the
+   * `[lo, hi)` of a write is rewritten, so a controller that assumes a clean
+   * buffer instead of declaring one is only visible against a host that
+   * remembers. Grows on demand, filled with 1: a fresh graph has no
+   * `HIDDEN_LOD` bits anywhere.
+   */
+  visibleShadow: Uint8Array;
   cards: CardSyncEntry[][];
   events: string[];
   /** Every property name read off the host, in order. */
@@ -159,6 +171,14 @@ interface Recorder {
   radiusOf: (node: NodeId) => number;
   weightOf: (node: NodeId) => number;
   positionOf: (node: NodeId) => { x: number; y: number };
+  /**
+   * Positions as the host holds them, moved by every `translateNodeRange`.
+   *
+   * What the default `positionOf` reads, so a fix-up feeds back into the next
+   * one — which is the whole question when folds nest. A test wanting inert
+   * positions overrides `positionOf` instead.
+   */
+  positions: Map<NodeId, { x: number; y: number }>;
   /** Every mass array handed over, copied — plus the identities, uncopied. */
   mass: Float32Array[];
   massIdentities: Float32Array[];
@@ -184,6 +204,7 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     host: null as unknown as LodHost,
     hierarchy,
     visibility: [],
+    visibleShadow: new Uint8Array(hierarchy?.nodeCount ?? 0).fill(1),
     cards: [],
     events: [],
     accessed: [],
@@ -191,7 +212,8 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     viewport: { x: VIEWPORT.x, y: VIEWPORT.y, scale: VIEWPORT.scale },
     radiusOf: () => 1,
     weightOf: () => 0,
-    positionOf: () => ({ x: 0, y: 0 }),
+    positionOf: (node) => state.positions.get(node) ?? { x: 0, y: 0 },
+    positions: new Map(),
     mass: [],
     massIdentities: [],
     proxies: [],
@@ -217,6 +239,12 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
       for (let slot = lo; slot < hi; slot++) {
         if (visible[slot] === 0) hidden.push(slot);
       }
+      if (hi > state.visibleShadow.length) {
+        const grown = new Uint8Array(hi).fill(1);
+        grown.set(state.visibleShadow);
+        state.visibleShadow = grown;
+      }
+      state.visibleShadow.set(visible.subarray(lo, hi), lo);
       state.visibility.push({ lo, hi, hidden });
       state.calls.push("applyVisibility");
     },
@@ -238,6 +266,10 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
       state.calls.push("releaseEdgeAggregation");
     },
     translateNodeRange: (lo: number, hi: number, dx: number, dy: number) => {
+      for (let slot = lo; slot < hi; slot++) {
+        const at = state.positions.get(slot) ?? { x: 0, y: 0 };
+        state.positions.set(slot, { x: at.x + dx, y: at.y + dy });
+      }
       state.translations.push({ lo, hi, dx, dy });
       state.calls.push("translateNodeRange");
     },
@@ -1055,6 +1087,53 @@ Deno.test("proxies: a rebuilt hierarchy that folds nothing still clears the old 
   assertEquals(log.proxies.at(-1), { slots: [], radii: [] });
 });
 
+Deno.test("adoption: a rebuilt hierarchy clears the flags the previous cut left on the host", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(Array.from(log.visibleShadow), [1, 1, 1, 0, 0], "the fold must have landed");
+
+  // A topology change rebuilds the hierarchy and resets mass and proxy radii,
+  // but it does not touch the node-flag shadow, and neither does a
+  // reallocation — it re-uploads that shadow verbatim. The new cut here folds
+  // nothing, so its diff against a freshly adopted state is empty in every
+  // column and nothing in the transition would ever clear slots 3 and 4.
+  log.hierarchy = hierarchyOf([-1, 0, 0, 1, 1], () => 4000);
+  controller.evaluateNow(200);
+
+  for (const slot of controller.getVisibleNodes()) {
+    assertEquals(
+      log.visibleShadow[slot],
+      1,
+      `slot ${slot} is reported visible but is still flagged hidden on the host`,
+    );
+  }
+  assertEquals(Array.from(log.visibleShadow), [1, 1, 1, 1, 1]);
+  assertNoReheat(log);
+});
+
+Deno.test("adoption: the host is told the slot space is visible, not assumed to be", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  const writes = log.visibility.length;
+
+  log.hierarchy = proxyFixture();
+  controller.evaluateNow(200);
+
+  // The adoption's own write comes first and spans the whole slot space, so
+  // the controller's shadow and the host's flags agree by construction. Every
+  // later write in the transition is a diff against that.
+  assertEquals(log.visibility[writes], { lo: 0, hi: 5, hidden: [] });
+  assertEquals(Array.from(log.visibleShadow), [1, 1, 1, 1, 1]);
+
+  // And the new cut's own fold lands from there, as any first cut would.
+  controller.tick(200 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(Array.from(log.visibleShadow), [1, 1, 1, 0, 0]);
+});
+
 Deno.test("proxies: the collapsed parent renders at its well radius and gets its own back", () => {
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
@@ -1117,6 +1196,98 @@ Deno.test("expand fix-up: a proxy that never moved costs no write at all", () =>
   controller.evaluateNow(0);
   controller.expandNode(1, 16);
   assertEquals(log.translations, []);
+});
+
+/**
+ * Root 0 over A(1) over X(2) over leaves 3 and 4: two interior levels, so a
+ * fold can close over a fold. Radii are chosen so the two collapse at different
+ * zooms — X at 0.25, A at 0.03125 — and both are back by zoom 1.
+ */
+function nestedFixture(): RetainedHierarchy {
+  const radii = [4000, 1000, 200, 10, 10];
+  return hierarchyOf([-1, 0, 1, 2, 2], (slot) => radii[slot]);
+}
+
+/** How far a slot was translated in total, across every fix-up so far. */
+function totalDx(log: Recorder, slot: NodeId): number {
+  let total = 0;
+  for (const write of log.translations) {
+    if (slot >= write.lo && slot < write.hi) total += write.dx;
+  }
+  return total;
+}
+
+Deno.test("expand fix-up: a fold dissolved under a higher one still owes its drift", () => {
+  // The failure this pins: X collapses, drifts as a live proxy, and is then
+  // swallowed by A collapsing over it. X leaves the collapsed set without ever
+  // entering the visible cut, so a diff keyed on expansion never sees it — and
+  // its drift is lost, leaving its leaves detached from it by exactly that
+  // much once A comes back.
+  const { controller, log } = rig(nestedFixture(), {
+    transitionMs: 0,
+    minBandCommitFrames: 0,
+  });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(controller.isCollapsed(2), false, "X must start expanded");
+
+  log.viewport.scale = 0.25;
+  controller.evaluateNow(1);
+  assert(controller.isCollapsed(2), "X must be standing in for its leaves");
+  log.positions.set(2, { x: 500, y: 0 });
+
+  log.viewport.scale = 0.03125;
+  controller.evaluateNow(2);
+  assert(controller.isCollapsed(1), "A must be standing in for X's subtree");
+  assertEquals(controller.isCollapsed(2), false, "X's own fold has dissolved into A's");
+  log.positions.set(1, { x: 1000, y: 0 });
+
+  log.viewport.scale = 1;
+  controller.evaluateNow(3);
+  assertEquals(controller.isCollapsed(1), false);
+
+  assertEquals(totalDx(log, 3), 1500, "X's leaves owe both drifts");
+  assertEquals(totalDx(log, 4), 1500);
+  assertEquals(
+    totalDx(log, 2),
+    1000,
+    "X was a frozen body under A once its own fold dissolved, so it owes only A's",
+  );
+  assertNoReheat(log);
+});
+
+Deno.test("expand fix-up: re-emerging still folded keeps the drift already flushed", () => {
+  // The staged variant: A expands at a zoom where X is still too small, so X
+  // comes back as a proxy and is immediately re-anchored. The re-anchor must
+  // not swallow drift the dissolve already paid out, and must not pay it twice.
+  const { controller, log } = rig(nestedFixture(), {
+    transitionMs: 0,
+    minBandCommitFrames: 0,
+  });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  log.viewport.scale = 0.25;
+  controller.evaluateNow(1);
+  log.positions.set(2, { x: 500, y: 0 });
+
+  log.viewport.scale = 0.03125;
+  controller.evaluateNow(2);
+  log.positions.set(1, { x: 1000, y: 0 });
+
+  // Back through the band where X folds on its own account.
+  log.viewport.scale = 0.25;
+  controller.evaluateNow(3);
+  assert(controller.isCollapsed(2), "X must re-emerge still folded");
+  assertEquals(controller.isCollapsed(1), false);
+
+  log.viewport.scale = 1;
+  controller.evaluateNow(4);
+  assertEquals(controller.isCollapsed(2), false);
+
+  assertEquals(totalDx(log, 3), 1500, "X's leaves owe both drifts, once each");
+  assertEquals(totalDx(log, 4), 1500);
+  assertEquals(totalDx(log, 2), 1000);
 });
 
 Deno.test("proxies: disabling LOD unfolds the proxies and returns every slot to unit mass", () => {
@@ -1210,6 +1381,34 @@ Deno.test("edges: disabling LOD releases the aggregation", () => {
 
   controller.setConfig({ enabled: false }, 0);
   assertEquals(log.aggregationReleases, 1, "springs must go back to the source edge list");
+  assertNoReheat(log);
+});
+
+Deno.test("edges: the aggregation knob gates the pass and takes back what it built", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  const built = log.aggregations.length;
+  assert(built > 0, "the knob defaults on, so the first cut must have aggregated");
+
+  // Turning it off cannot merely stop the pass: the bundles already driving
+  // the springs have to go back to the source edge list, or the knob reports a
+  // state the host is not in.
+  controller.setConfig({ edgeAggregation: false }, 0);
+  assertEquals(log.aggregationReleases, 1);
+
+  controller.expandNode(1, 16);
+  controller.collapseNode(1, 32);
+  controller.tick(32 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(log.aggregations.length, built, "a disabled pass must not run");
+
+  // Back on, the transitions taken while it was off are not replayed, so the
+  // next one has to rebuild against the mask the host is actually in.
+  controller.setConfig({ edgeAggregation: true }, 64);
+  controller.evaluateNow(64);
+  assertEquals(log.aggregations.length, built + 1);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0]);
   assertNoReheat(log);
 });
 

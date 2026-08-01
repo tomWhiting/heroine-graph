@@ -92,6 +92,47 @@ const VIEWPORT: ViewportState = {
   maxScale: 100,
 };
 
+/**
+ * The same twelve slots with an extra interior level: root 0 over A(1) over
+ * X(2) over leaves 3..7, siblings still under the root.
+ *
+ * Radii put A and X in different bands, so a fold can close over a live fold —
+ * the case where the inner proxy stops standing in for its subtree without ever
+ * expanding, and its drift has nowhere to go unless the transition flushes it.
+ */
+const NESTED_OUTER = 1;
+const NESTED_INNER = 2;
+const NESTED_LEAVES = [3, 4, 5, 6, 7] as const;
+
+function nestedHierarchy(): RetainedHierarchy {
+  const parent = new Uint32Array(NODE_COUNT);
+  const depth = new Uint16Array(NODE_COUNT);
+  const subtreeSize = new Uint32Array(NODE_COUNT).fill(1);
+  const wellRadius = new Float32Array(NODE_COUNT).fill(SUBTREE_WELL_RADIUS);
+
+  parent[0] = HIERARCHY_ROOT;
+  parent[NESTED_OUTER] = 0;
+  depth[NESTED_OUTER] = 1;
+  parent[NESTED_INNER] = NESTED_OUTER;
+  depth[NESTED_INNER] = 2;
+  for (const slot of NESTED_LEAVES) {
+    parent[slot] = NESTED_INNER;
+    depth[slot] = 3;
+  }
+  for (const slot of SIBLINGS) {
+    parent[slot] = 0;
+    depth[slot] = 1;
+  }
+  for (let i = NODE_COUNT - 1; i > 0; i--) subtreeSize[parent[i]] += subtreeSize[i];
+  wellRadius[0] = ROOT_WELL_RADIUS;
+  // A folds at zoom 1/32 and X at 1/4, against the default 96/64 band edges.
+  wellRadius[NESTED_OUTER] = 1000;
+  wellRadius[NESTED_INNER] = 200;
+
+  const columns: HierarchyColumns = { parent, wellRadius, depth, subtreeSize };
+  return retainSuppliedHierarchy(columns, NODE_COUNT);
+}
+
 function fixtureHierarchy(): RetainedHierarchy {
   const parent = new Uint32Array(NODE_COUNT);
   const depth = new Uint16Array(NODE_COUNT);
@@ -155,12 +196,19 @@ interface FixupRig {
   refreshFromGpu(): Promise<void>;
   /** Move a slot the way a drag or an external write would, GPU included. */
   place(slot: NodeId, x: number, y: number): void;
+  /** Point the camera at a new zoom; the next evaluation sees it. */
+  setZoom(scale: number): void;
 }
 
-function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig {
+function createRig(
+  harness: SimHarness,
+  hierarchy: RetainedHierarchy,
+  config: Parameters<LODController["setConfig"]>[0] = {},
+): FixupRig {
   const { x, y } = fixturePositions();
   const flags = new Uint32Array(NODE_COUNT);
   const translations: { lo: number; hi: number }[] = [];
+  let scale = VIEWPORT.scale;
 
   const writeRange = (lo: number, hi: number): void => {
     harness.writePositionRange(lo, x.subarray(lo, hi), y.subarray(lo, hi));
@@ -168,7 +216,7 @@ function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig 
 
   const host: LodHost = {
     getHierarchy: () => hierarchy,
-    getViewport: () => VIEWPORT,
+    getViewport: () => ({ ...VIEWPORT, scale }),
     getNodePosition: (node) => ({ x: x[node], y: y[node] }),
     getNodeRadius: () => 1,
     getNodeTag: () => 0,
@@ -201,7 +249,7 @@ function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig 
   };
 
   const controller = new LODController(host);
-  controller.setConfig({ enabled: true }, 0);
+  controller.setConfig({ enabled: true, ...config }, 0);
 
   return {
     controller,
@@ -219,25 +267,36 @@ function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig 
       y[slot] = py;
       writeRange(slot, slot + 1);
     },
+    setZoom(next: number): void {
+      scale = next;
+    },
   };
+}
+
+/** Offsets of `members` from `root`, in the given order. */
+function offsetsFrom(
+  x: Float32Array,
+  y: Float32Array,
+  root: number,
+  members: readonly number[],
+): { dx: number; dy: number }[] {
+  return members.map((slot) => ({ dx: x[slot] - x[root], dy: y[slot] - y[root] }));
 }
 
 /** Offsets of every descendant from the proxy, in slot order. */
 function offsetsFromProxy(x: Float32Array, y: Float32Array): { dx: number; dy: number }[] {
-  return DESCENDANTS.map((slot) => ({
-    dx: x[slot] - x[SUBTREE_ROOT],
-    dy: y[slot] - y[SUBTREE_ROOT],
-  }));
+  return offsetsFrom(x, y, SUBTREE_ROOT, DESCENDANTS);
 }
 
 function assertOffsetsMatch(
   actual: { dx: number; dy: number }[],
   expected: { dx: number; dy: number }[],
   tolerance: number,
+  members: readonly number[] = DESCENDANTS,
 ): void {
   for (let k = 0; k < expected.length; k++) {
-    assertAlmostEquals(actual[k].dx, expected[k].dx, tolerance, `slot ${DESCENDANTS[k]} dx`);
-    assertAlmostEquals(actual[k].dy, expected[k].dy, tolerance, `slot ${DESCENDANTS[k]} dy`);
+    assertAlmostEquals(actual[k].dx, expected[k].dx, tolerance, `slot ${members[k]} dx`);
+    assertAlmostEquals(actual[k].dy, expected[k].dy, tolerance, `slot ${members[k]} dy`);
   }
 }
 
@@ -332,6 +391,62 @@ gpuTest(
     }
   },
 );
+
+gpuTest("expand fix-up: a fold closed over a live fold restores both drifts", async (device) => {
+  // Two levels, and the inner one folds first. When A closes over X, X stops
+  // being a proxy without ever expanding — so a diff that only knows about
+  // expansion never restores it, and the drift X accumulated while it *was* a
+  // proxy is simply lost. The tear that leaves is permanent: the fold outlives
+  // the simulation's alpha, and LOD may not reheat it.
+  const harness = await harnessOver(device);
+  try {
+    const rig = createRig(harness, nestedHierarchy(), { minBandCommitFrames: 0 });
+    rig.controller.evaluateNow(0);
+    assertEquals(rig.controller.isCollapsed(NESTED_INNER), false, "X must start expanded");
+    const before = offsetsFrom(rig.x, rig.y, NESTED_INNER, NESTED_LEAVES);
+
+    // X folds on its own account and then drifts as a live proxy, its leaves
+    // frozen underneath it.
+    rig.setZoom(0.25);
+    rig.controller.evaluateNow(100);
+    rig.controller.tick(1000);
+    assert(rig.controller.isCollapsed(NESTED_INNER), "X must be the proxy for its leaves");
+    for (const slot of NESTED_LEAVES) {
+      assertEquals(rig.flags[slot] & NODE_FLAG_HIDDEN_LOD, NODE_FLAG_HIDDEN_LOD);
+    }
+    await harness.tick(60);
+    await rig.refreshFromGpu();
+    const innerDrift = Math.hypot(rig.x[NESTED_INNER] + 20, rig.y[NESTED_INNER] - 5);
+    assert(innerDrift > 3, `X must actually have drifted, got ${innerDrift}`);
+
+    // A closes over it. X's own fold dissolves into A's, and its outstanding
+    // drift has to be paid to its leaves here or never.
+    rig.setZoom(0.03125);
+    rig.controller.evaluateNow(2000);
+    rig.controller.tick(3000);
+    assert(rig.controller.isCollapsed(NESTED_OUTER), "A must be the proxy");
+    assertEquals(rig.controller.isCollapsed(NESTED_INNER), false, "X's fold has dissolved");
+    await harness.tick(60);
+    await rig.refreshFromGpu();
+
+    // Everything comes back at once, so A's fix-up moves the whole subtree —
+    // which is only correct because X's leaves are already square with X.
+    rig.setZoom(1);
+    rig.controller.evaluateNow(4000);
+    rig.controller.tick(5000);
+    assertEquals(rig.controller.isCollapsed(NESTED_OUTER), false);
+
+    const live = await harness.readPositions();
+    assertOffsetsMatch(
+      offsetsFrom(live.x, live.y, NESTED_INNER, NESTED_LEAVES),
+      before,
+      1e-3,
+      NESTED_LEAVES,
+    );
+  } finally {
+    harness.dispose();
+  }
+});
 
 gpuTest("expand fix-up: a proxy that drifted under the simulation carries its subtree", async (
   device,
