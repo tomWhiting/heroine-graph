@@ -18,7 +18,12 @@
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
-import { GPU_SKIP_MESSAGE, loadModuleInliningWgsl, probeAdapter } from "../helpers/gpu.ts";
+import {
+  GPU_SKIP_MESSAGE,
+  loadModuleInliningWgsl,
+  probeAdapter,
+  requestHarnessDevice,
+} from "../helpers/gpu.ts";
 import { mulberry32 } from "../fixtures/prng.ts";
 
 const adapter = await probeAdapter();
@@ -33,7 +38,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

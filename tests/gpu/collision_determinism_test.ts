@@ -1,18 +1,37 @@
 /**
- * GPU tests for collision resolution determinism.
+ * GPU tests for collision resolution determinism and iteration semantics.
  *
  * Collision runs as two dispatches per iteration: a resolve pass that reads
  * positions and writes per-node displacements, then an apply pass that folds
  * them in. Resolving in place instead — reading positions[j] while writing
  * positions[i] in the same dispatch — is a cross-workgroup data race: whether
  * a thread sees a neighbour's pre- or post-displacement position depends on
- * how the driver schedules workgroups. These tests pin down the two
- * observable consequences of that race:
+ * how the driver schedules workgroups.
  *
- * - repeated runs over identical input must produce identical output;
- * - a mirror-symmetric input must resolve to a mirror-symmetric output
- *   (under the race, the two halves are scheduled independently, so the
- *   mirror nodes can read differently-updated neighbours).
+ * WHAT THESE TESTS CAN AND CANNOT CATCH — read before trusting them:
+ *
+ * The repeat-run and mirror-symmetry cases are INVARIANT GUARDS, not reliable
+ * regression tests for the race. They state properties an in-place resolve is
+ * free to violate, but whether it does is up to the driver's scheduling on the
+ * day. Measured against a shader reverted to the pre-fix in-place resolve on
+ * this machine: the two `main` cases failed in 2 of 3 consecutive suite runs
+ * and passed in the third; the `tiled` and `grid` cases never failed; an
+ * earlier reviewer's single run saw all of them pass. The mirror-symmetry case
+ * in particular cannot detect an in-place resolve even in principle — the left
+ * half is the right half at a constant index offset and the halves never
+ * interact, so any index-monotone execution order preserves the mirror. Keep
+ * them (a racy build is unsound regardless of what one driver does on one
+ * run), but do not read a green run as proof the race is gone.
+ *
+ * The Jacobi-semantics case at the bottom is the one with teeth: it recomputes
+ * the expected multi-iteration result on the CPU under the semantics the
+ * two-pass structure promises (resolve everything against one snapshot, then
+ * apply), so it fails on any change that alters how iterations compose —
+ * including hoisting the apply dispatch out of the iteration loop, which
+ * silently discards all but the first iteration and which every other test
+ * here passes (verified: that mutant fails this case alone, 11 others green).
+ * It is not a race detector either: at 24 nodes the whole fixture is one
+ * workgroup, and the in-place mutant above passes it.
  *
  * Fixtures are large enough to span several 256-thread workgroups — a race
  * confined to one workgroup would be masked by lockstep execution.
@@ -26,6 +45,7 @@ import {
   NODE_FLAG_DEAD,
   NODE_FLAG_PINNED,
   probeAdapter,
+  requestHarnessDevice,
   runCollision,
 } from "../helpers/gpu.ts";
 import { mulberry32 } from "../fixtures/prng.ts";
@@ -42,7 +62,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -67,6 +87,21 @@ const RADIUS = 5;
  * units, so 1e-3 separates the two cleanly.
  */
 const GRID_TOLERANCE = 1e-3;
+
+/**
+ * Slack between the GPU run and the CPU reference below.
+ *
+ * The reference evaluates the same expressions in the same order with f32
+ * rounding at every step, so the only residual is arithmetic the CPU cannot
+ * mirror exactly: the driver is free to contract `a*b + c` into an fma, and
+ * sqrt/divide are only required to be correctly rounded per operation.
+ * Measured worst-case divergence on this fixture after 3 iterations: 1.9e-6,
+ * i.e. ~500x inside this tolerance. The 1-iteration answer differs from the
+ * 3-iteration answer by 4.5 units, ~4500x outside it, so the tolerance
+ * separates float noise from any change to iteration semantics by three
+ * orders of magnitude on both sides.
+ */
+const REFERENCE_TOLERANCE = 1e-3;
 
 /**
  * `count` nodes scattered over a `span`-wide box centred on (centerX, 0),
@@ -197,3 +232,148 @@ for (const variant of VARIANTS) {
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Iteration semantics
+// ---------------------------------------------------------------------------
+
+/** Collision parameters the reference case runs under (no defaults involved). */
+const REF_STRENGTH = 1.0;
+const REF_MULTIPLIER = 1.0;
+const REF_EPSILON = 0.0001;
+
+/**
+ * CPU reference for one resolve pass of collision.comp.wgsl's `main` entry
+ * point, evaluated in f32 in the shader's iteration order (j ascending).
+ *
+ * Returns the per-node displacement, exactly what the resolve dispatch writes
+ * into the displacements buffer.
+ */
+function referenceDisplacements(
+  positions: Float32Array,
+  sizes: Float32Array,
+  flags: Uint32Array,
+): Float32Array {
+  const f = Math.fround;
+  const n = sizes.length;
+  const disp = new Float32Array(n * 2);
+
+  for (let i = 0; i < n; i++) {
+    if ((flags[i] & (NODE_FLAG_DEAD | NODE_FLAG_PINNED)) !== 0) continue;
+    if (sizes[i] < 0) continue;
+    const ri = f(sizes[i] * REF_MULTIPLIER);
+    let dx = 0;
+    let dy = 0;
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      if ((flags[j] & NODE_FLAG_DEAD) !== 0) continue;
+      if (sizes[j] < 0) continue;
+      const rj = f(sizes[j] * REF_MULTIPLIER);
+
+      const deltaX = f(positions[i * 2] - positions[j * 2]);
+      const deltaY = f(positions[i * 2 + 1] - positions[j * 2 + 1]);
+      const distSq = f(f(deltaX * deltaX) + f(deltaY * deltaY));
+      const dist = f(Math.sqrt(distSq));
+      const minDist = f(ri + rj);
+
+      if (dist < minDist && dist > REF_EPSILON) {
+        const overlap = f(minDist - dist);
+        const push = f(f(overlap * 0.5) * REF_STRENGTH);
+        dx = f(dx + f(f(deltaX / dist) * push));
+        dy = f(dy + f(f(deltaY / dist) * push));
+      }
+      // The coincident-node branch is deliberately unreachable in this
+      // fixture (no two nodes share a position), so it needs no mirror here.
+    }
+    disp[i * 2] = dx;
+    disp[i * 2 + 1] = dy;
+  }
+  return disp;
+}
+
+/**
+ * CPU reference for `iterations` full collision iterations under Jacobi
+ * semantics: every displacement in an iteration is computed against the same
+ * position snapshot, then all of them are applied at once.
+ */
+function referenceCollision(
+  positions: Float32Array,
+  sizes: Float32Array,
+  flags: Uint32Array,
+  iterations: number,
+): Float32Array {
+  const f = Math.fround;
+  const current = Float32Array.from(positions);
+  for (let iter = 0; iter < iterations; iter++) {
+    const disp = referenceDisplacements(current, sizes, flags);
+    for (let i = 0; i < current.length; i++) {
+      // The apply shader skips exactly-zero displacements rather than adding
+      // them, so an untouched node's coordinate is bit-preserved.
+      if (disp[i] !== 0) current[i] = f(current[i] + disp[i]);
+    }
+  }
+  return current;
+}
+
+gpuTest(
+  "GPU collision (main): multi-iteration output matches the Jacobi CPU reference",
+  async (device) => {
+    // Small and low-amplitude on purpose: the reference evaluates the same
+    // arithmetic in f32 but cannot control whether the driver contracts
+    // a*b+c into an fma, so keeping coordinates around ±20 keeps the residual
+    // well under REFERENCE_TOLERANCE.
+    //
+    // What this pins that nothing else does: run the same fixture at
+    // iterations=1 and the positions differ from the 3-iteration answer by
+    // whole units (asserted below), so any change that drops or reorders
+    // iterations — hoisting the apply dispatch out of the loop, applying
+    // displacements from a stale iteration — lands orders of magnitude
+    // outside the tolerance.
+    const nodeCount = 24;
+    const positions = overlappingCluster(nodeCount, 0xBEEF, 40, 0);
+    const sizes = new Float32Array(nodeCount).fill(RADIUS);
+    sizes[7] = DEAD_SLOT_RADIUS;
+    const flags = new Uint32Array(nodeCount);
+    flags[3] = NODE_FLAG_PINNED;
+    flags[7] = NODE_FLAG_DEAD;
+
+    const config = {
+      collisionStrength: REF_STRENGTH,
+      collisionRadiusMultiplier: REF_MULTIPLIER,
+    };
+    const iterations = 3;
+
+    const actual = await runCollision(device, {
+      positions,
+      sizes,
+      flags,
+      variant: "main",
+      iterations,
+      config,
+    });
+    const expected = referenceCollision(positions, sizes, flags, iterations);
+    const single = referenceCollision(positions, sizes, flags, 1);
+
+    // The iterations must actually compose, or matching the reference proves
+    // nothing about iteration handling.
+    assert(
+      maxDelta(expected, single) > 1,
+      `3 iterations barely differ from 1 (${maxDelta(expected, single)}) — ` +
+        "the fixture cannot detect dropped iterations",
+    );
+
+    const delta = maxDelta(actual, expected);
+    assert(
+      delta <= REFERENCE_TOLERANCE,
+      `collision diverged from the Jacobi reference by ${delta} ` +
+        `(tolerance ${REFERENCE_TOLERANCE}); 1-iteration output would differ by ` +
+        `${maxDelta(actual, single)}`,
+    );
+
+    // Pinned node and dead slot are bit-preserved by the reference too.
+    assertEquals(actual[6], positions[6], "pinned node displaced in x");
+    assertEquals(actual[7], positions[7], "pinned node displaced in y");
+    assertEquals(actual[14], positions[14], "dead slot displaced in x");
+    assertEquals(actual[15], positions[15], "dead slot displaced in y");
+  },
+);

@@ -63,10 +63,18 @@ export interface TidyTreeConfig {
  * Tidy Tree algorithm buffers
  */
 class TidyTreeBuffers implements AlgorithmBuffers {
-  constructor(public targetPositions: GPUBuffer) {}
+  /**
+   * Both buffers createBuffers allocated. The uniform buffer lives on the
+   * algorithm instance (see the createBindGroups contract in types.ts), but it
+   * is released here because destroy() on these buffers is the only teardown
+   * the host runs — graph.ts never calls ForceAlgorithm.destroy(), so leaving
+   * it out orphaned one 16-byte buffer per algorithm switch or capacity growth.
+   */
+  constructor(public targetPositions: GPUBuffer, private uniforms: GPUBuffer) {}
 
   destroy(): void {
     this.targetPositions.destroy();
+    this.uniforms.destroy();
   }
 }
 
@@ -148,7 +156,7 @@ export class TidyTreeAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new TidyTreeBuffers(this.targetPositionsBuffer);
+    return new TidyTreeBuffers(this.targetPositionsBuffer, this.uniformBuffer);
   }
 
   createBindGroups(
@@ -213,9 +221,9 @@ export class TidyTreeAlgorithm implements ForceAlgorithm {
    * Destroy algorithm resources
    */
   destroy(): void {
-    this.uniformBuffer?.destroy();
+    // Both buffers are owned by the TidyTreeBuffers handle the host holds and
+    // destroys; only the instance's references are dropped here.
     this.uniformBuffer = null;
-    // targetPositionsBuffer is destroyed via TidyTreeBuffers.destroy()
     this.targetPositionsBuffer = null;
   }
 }

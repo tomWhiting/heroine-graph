@@ -119,6 +119,32 @@ function createApplyPipeline(
 }
 
 /**
+ * One apply pipeline per device, shared by the n2/tiled and grid paths.
+ *
+ * Both resolve paths write the same displacements buffer and both fold it in
+ * with the same shader, layout and entry point — and they are mutually
+ * exclusive per frame — so building it twice created two identical GPU objects
+ * and a second place for them to drift apart. Keyed weakly on the device so a
+ * destroyed device's pipeline is collectable and a fresh device never reuses
+ * one.
+ */
+const applyPipelineByDevice = new WeakMap<
+  GPUDevice,
+  { apply: GPUComputePipeline; applyLayout: GPUBindGroupLayout }
+>();
+
+function getApplyPipeline(
+  device: GPUDevice,
+): { apply: GPUComputePipeline; applyLayout: GPUBindGroupLayout } {
+  let cached = applyPipelineByDevice.get(device);
+  if (!cached) {
+    cached = createApplyPipeline(device);
+    applyPipelineByDevice.set(device, cached);
+  }
+  return cached;
+}
+
+/**
  * Builds the apply-pass bind group for a (positions, displacements) pair.
  */
 function createApplyBindGroup(
@@ -182,7 +208,7 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
     compute: { module: shaderModule, entryPoint: "resolve_tiled" },
   });
 
-  const { apply, applyLayout } = createApplyPipeline(device);
+  const { apply, applyLayout } = getApplyPipeline(device);
 
   return {
     resolve,
@@ -306,14 +332,20 @@ export function updateCollisionUniforms(
   forceConfig: FullForceConfig,
 ): void {
   // CollisionUniforms struct (32 bytes):
-  // node_count: u32, collision_strength: f32, radius_multiplier: f32, iterations: u32,
-  // default_radius: f32, _pad0: f32, _pad1: f32, _pad2: f32
+  // node_count: u32, collision_strength: f32, radius_multiplier: f32,
+  // _pad_iterations: u32, default_radius: f32, _pad0: f32, _pad1: f32, _pad2: f32
+  //
+  // Offset 12 used to carry collisionIterations. No shader ever read it — the
+  // iteration loop is on the CPU (recordCollisionPass), because each iteration
+  // is a separate resolve+apply dispatch pair. The slot stays as explicit
+  // padding rather than being removed, so the struct layout and the 32-byte
+  // buffer size are unchanged.
   const data = new ArrayBuffer(32);
   const view = new DataView(data);
   view.setUint32(0, nodeCount, true);
   view.setFloat32(4, forceConfig.collisionStrength, true);
   view.setFloat32(8, forceConfig.collisionRadiusMultiplier, true);
-  view.setUint32(12, forceConfig.collisionIterations, true);
+  view.setUint32(12, 0, true); // _pad_iterations
   view.setFloat32(16, DEFAULT_RADIUS, true);
   view.setFloat32(20, 0.0, true); // _pad0
   view.setFloat32(24, 0.0, true); // _pad1
@@ -513,7 +545,7 @@ export function createGridCollisionPipeline(
     compute: { module: shaderModule, entryPoint: "resolve_grid" },
   });
 
-  const { apply, applyLayout } = createApplyPipeline(device);
+  const { apply, applyLayout } = getApplyPipeline(device);
 
   return {
     clearCells,

@@ -30,6 +30,7 @@ import {
   type HarnessForceAlgorithm,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
 } from "../helpers/gpu.ts";
 import {
   clusterSeparation,
@@ -51,7 +52,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

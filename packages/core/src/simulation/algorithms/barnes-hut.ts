@@ -18,6 +18,7 @@
 
 import type { GPUContext } from "../../webgpu/context.ts";
 import { calculateWorkgroups } from "../../renderer/commands.ts";
+import { assertAlgorithmSupportedOnDevice } from "./types.ts";
 import type {
   AlgorithmBindGroups,
   AlgorithmBuffers,
@@ -56,6 +57,9 @@ const BARNES_HUT_ALGORITHM_INFO: ForceAlgorithmInfo = {
   minNodes: 100,
   maxNodes: 131072, // Limited by radix sort prefix scan (512 workgroups * 256 threads)
   complexity: "O(N log N)",
+  // The Karras tree layout binds 10 storage buffers (bindings 4-10 read_write
+  // plus 1-3 read-only); the WebGPU default is 8.
+  minStorageBuffersPerShaderStage: 10,
 };
 
 // Configuration constants
@@ -188,6 +192,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
+
+    // Fail here, naming the limit, rather than building invalid tree layouts
+    // whose bind groups silently discard every command buffer they enter.
+    assertAlgorithmSupportedOnDevice(this.info, device);
 
     // Create shader modules
     const mortonModule = device.createShaderModule({

@@ -58,7 +58,13 @@ const DEFAULT_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBufferBindingSize: 256 * 1024 * 1024, // 256 MB
   maxBufferSize: 256 * 1024 * 1024, // 256 MB
   maxComputeWorkgroupsPerDimension: 65535,
-  maxStorageBuffersPerShaderStage: 10, // Integration shader needs 10 storage buffers
+  // Barnes-Hut's Karras tree layout binds 10 storage buffers and Relativity
+  // Atlas's sibling pass binds 9; the integration shader needs 8, which is the
+  // WebGPU default. If the adapter cannot supply 10 this request is downgraded
+  // (below) and those two algorithms become unusable — they declare the
+  // requirement on their ForceAlgorithmInfo and refuse to build pipelines,
+  // and the registry's device-aware selection skips them.
+  maxStorageBuffersPerShaderStage: 10,
 };
 
 /**
@@ -110,6 +116,17 @@ export async function createGPUContext(
         if (adapterLimit < value * 0.5) {
           // Only warn if significantly lower
           unsupportedLimits.push(`${key}: ${adapterLimit} < ${value}`);
+        }
+        // The proportional threshold above never fires for the buffer-count
+        // limit (8 is not below half of 10), and unsupportedLimits is only
+        // surfaced when requestDevice itself fails — but running below this
+        // one costs whole algorithms, so say so on the success path too.
+        if (key === "maxStorageBuffersPerShaderStage") {
+          console.warn(
+            `[GraphMother] Adapter supports only ${adapterLimit} storage buffers per ` +
+              `compute stage (${value} requested). Barnes-Hut and Relativity Atlas ` +
+              "cannot run on this device and will be skipped by algorithm selection.",
+          );
         }
       }
     }

@@ -16,7 +16,12 @@
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
-import { GPU_SKIP_MESSAGE, loadModuleInliningWgsl, probeAdapter } from "../helpers/gpu.ts";
+import {
+  GPU_SKIP_MESSAGE,
+  loadModuleInliningWgsl,
+  probeAdapter,
+  requestHarnessDevice,
+} from "../helpers/gpu.ts";
 
 const adapter = await probeAdapter();
 if (!adapter) {
@@ -30,7 +35,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

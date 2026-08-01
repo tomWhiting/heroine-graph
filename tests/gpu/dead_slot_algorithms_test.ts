@@ -25,6 +25,7 @@ import {
   loadModuleInliningWgsl,
   NODE_FLAG_DEAD,
   probeAdapter,
+  requestHarnessDevice,
 } from "../helpers/gpu.ts";
 
 const adapter = await probeAdapter();
@@ -39,7 +40,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -120,7 +121,10 @@ function buildSlotLayoutPair(
 // Community layout (repulsion_community + cluster_accumulate/attract)
 // ---------------------------------------------------------------------------
 
-/** Community layout exposes uploadCommunityIds beyond the ForceAlgorithm API. */
+/**
+ * Both members of the community family expose uploadCommunityIds beyond the
+ * ForceAlgorithm API.
+ */
 type CommunityAlgorithm = HarnessForceAlgorithm & {
   uploadCommunityIds(
     device: GPUDevice,
@@ -129,15 +133,31 @@ type CommunityAlgorithm = HarnessForceAlgorithm & {
   ): void;
 };
 
-function loadCommunityAlgorithm(): Promise<
-  { createCommunityLayoutAlgorithm(): CommunityAlgorithm }
-> {
-  return loadModuleInliningWgsl(
+/**
+ * The two algorithms built on the shared community shaders. codebase.ts is a
+ * hierarchy-flavoured copy of community.ts with the same four passes and the
+ * same two dead-slot bindings (repulsion binding 5, accumulate binding 6);
+ * both use auto-derived bind group layouts, so a wrong binding index there is
+ * a runtime validation failure rather than a compile error. Running the same
+ * case against both is what covers codebase.ts at all.
+ */
+const COMMUNITY_FAMILY = [
+  { label: "community layout", module: "community.ts", factory: "createCommunityLayoutAlgorithm" },
+  { label: "codebase layout", module: "codebase.ts", factory: "createCodebaseLayoutAlgorithm" },
+] as const;
+
+/** Loads one of {@link COMMUNITY_FAMILY}'s factories with its .wgsl inlined. */
+async function loadCommunityAlgorithm(
+  module: string,
+  factory: string,
+): Promise<CommunityAlgorithm> {
+  const mod = await loadModuleInliningWgsl<Record<string, () => CommunityAlgorithm>>(
     new URL(
-      "../../packages/core/src/simulation/algorithms/community.ts",
+      `../../packages/core/src/simulation/algorithms/${module}`,
       import.meta.url,
     ),
   );
+  return mod[factory]();
 }
 
 /**
@@ -175,75 +195,77 @@ const COMMUNITY_EDGES: ReadonlyArray<readonly [number, number]> = [
   [1, 2],
 ];
 
-gpuTest(
-  "GPU community layout: dead slots are inert and live layout matches the packed graph",
-  async (device) => {
-    const mod = await loadCommunityAlgorithm();
-    const { interleaved, packed } = buildSlotLayoutPair(COMMUNITY_SLOTS, COMMUNITY_EDGES);
+for (const { label, module, factory } of COMMUNITY_FAMILY) {
+  gpuTest(
+    `GPU ${label}: dead slots are inert and live layout matches the packed graph`,
+    async (device) => {
+      const { interleaved, packed } = buildSlotLayoutPair(COMMUNITY_SLOTS, COMMUNITY_EDGES);
 
-    const run = async (
-      graph: HarnessGraphData,
-      communities: Uint32Array,
-    ) => {
-      const algorithm = mod.createCommunityLayoutAlgorithm();
-      const harness = await createAlgorithmSimHarness(
-        device,
-        algorithm,
-        graph,
-        {},
-        undefined,
-        {
-          // Community ids must be uploaded after createBuffers allocates the
-          // id buffer and before the bind groups reference it — the same
-          // ordering graph.ts uses after Louvain detection.
-          onAlgorithmBuffers: () => {
-            algorithm.uploadCommunityIds(device, communities, 2);
+      const run = async (
+        graph: HarnessGraphData,
+        communities: Uint32Array,
+      ) => {
+        const algorithm = await loadCommunityAlgorithm(module, factory);
+        const harness = await createAlgorithmSimHarness(
+          device,
+          algorithm,
+          graph,
+          {},
+          undefined,
+          {
+            // Community ids must be uploaded after createBuffers allocates the
+            // id buffer and before the bind groups reference it — the same
+            // ordering graph.ts uses after Louvain detection (or, for the
+            // codebase layout, after the hierarchy mapping).
+            onAlgorithmBuffers: () => {
+              algorithm.uploadCommunityIds(device, communities, 2);
+            },
           },
-        },
-      );
-      try {
-        await harness.tick(40);
-        return await harness.readPositions();
-      } finally {
-        harness.dispose();
+        );
+        try {
+          await harness.tick(40);
+          return await harness.readPositions();
+        } finally {
+          harness.dispose();
+        }
+      };
+
+      const withHoles = await run(interleaved.graph, interleaved.communities);
+      const compact = await run(packed.graph, packed.communities);
+
+      // Dead slots never move: their positions come back exactly as uploaded
+      for (let slot = 0; slot < COMMUNITY_SLOTS.length; slot++) {
+        const spec = COMMUNITY_SLOTS[slot];
+        if (!spec.dead) continue;
+        assertEquals(withHoles.x[slot], spec.x, `dead slot ${slot} moved in x`);
+        assertEquals(withHoles.y[slot], spec.y, `dead slot ${slot} moved in y`);
       }
-    };
 
-    const withHoles = await run(interleaved.graph, interleaved.communities);
-    const compact = await run(packed.graph, packed.communities);
+      // Live nodes land bit-identically to the same graph without the holes
+      interleaved.liveSlots.forEach((slot, packedIdx) => {
+        assertEquals(
+          withHoles.x[slot],
+          compact.x[packedIdx],
+          `slot ${slot}: dead slots leaked into x`,
+        );
+        assertEquals(
+          withHoles.y[slot],
+          compact.y[packedIdx],
+          `slot ${slot}: dead slots leaked into y`,
+        );
+      });
 
-    // Dead slots never move: their positions come back exactly as uploaded
-    for (let slot = 0; slot < COMMUNITY_SLOTS.length; slot++) {
-      const spec = COMMUNITY_SLOTS[slot];
-      if (!spec.dead) continue;
-      assertEquals(withHoles.x[slot], spec.x, `dead slot ${slot} moved in x`);
-      assertEquals(withHoles.y[slot], spec.y, `dead slot ${slot} moved in y`);
-    }
-
-    // Live nodes land bit-identically to the same graph without the holes
-    interleaved.liveSlots.forEach((slot, packedIdx) => {
-      assertEquals(
-        withHoles.x[slot],
-        compact.x[packedIdx],
-        `slot ${slot}: dead slots leaked into x`,
+      // Sanity: the layout actually ran (clusters contracted toward their
+      // centroids), so the equality above is not comparing two no-ops
+      assert(
+        interleaved.liveSlots.some(
+          (slot) => withHoles.x[slot] !== COMMUNITY_SLOTS[slot].x,
+        ),
+        `${label} never moved any live node`,
       );
-      assertEquals(
-        withHoles.y[slot],
-        compact.y[packedIdx],
-        `slot ${slot}: dead slots leaked into y`,
-      );
-    });
-
-    // Sanity: the layout actually ran (clusters contracted toward their
-    // centroids), so the equality above is not comparing two no-ops
-    assert(
-      interleaved.liveSlots.some(
-        (slot) => withHoles.x[slot] !== COMMUNITY_SLOTS[slot].x,
-      ),
-      "community layout never moved any live node",
-    );
-  },
-);
+    },
+  );
+}
 
 // ---------------------------------------------------------------------------
 // t-FDP (t_fdp main_masked + t_fdp_attraction)
@@ -365,6 +387,20 @@ gpuTest(
 
     const clean = await runTFdp(device, mod, interleaved.graph);
     const withDanglingEdge = await runTFdp(device, mod, dangling);
+
+    // Sanity first: both runs compare two live simulations, not two frozen
+    // fixtures. Without this the whole case passes on a do-nothing pipeline
+    // (its two siblings above carry the same guard).
+    assert(
+      interleaved.liveSlots.some((slot) => clean.x[slot] !== T_FDP_SLOTS[slot].x),
+      "t-FDP never moved any live node in the reference run",
+    );
+    assert(
+      interleaved.liveSlots.some(
+        (slot) => withDanglingEdge.x[slot] !== T_FDP_SLOTS[slot].x,
+      ),
+      "t-FDP never moved any live node in the dangling-edge run",
+    );
 
     interleaved.liveSlots.forEach((slot) => {
       assertAlmostEquals(

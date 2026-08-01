@@ -27,6 +27,7 @@ import {
   GPU_SKIP_MESSAGE,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
   waitForQueue,
 } from "../helpers/gpu.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
@@ -80,7 +81,7 @@ const adapter = await probeAdapter();
 if (!adapter) {
   console.warn(`[bench] ${GPU_SKIP_MESSAGE}`);
 } else {
-  const device = await adapter.requestDevice();
+  const device = await requestHarnessDevice(adapter);
 
   // ---------------------------------------------------------------------------
   // Simulation tick benches (real compute pipeline, code-tree workload)

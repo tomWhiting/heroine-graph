@@ -23,6 +23,7 @@ import {
   type HarnessForceAlgorithm,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
 } from "../helpers/gpu.ts";
 import { countNonFinite, kineticEnergy, radialOrderingScore } from "../helpers/invariants.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
@@ -40,12 +41,9 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      // The sibling shader binds 9 storage buffers; the WebGPU default
-      // limit is 8. Request the same limit production does
-      // (webgpu/context.ts DEFAULT_LIMITS).
-      const device = await adapter!.requestDevice({
-        requiredLimits: { maxStorageBuffersPerShaderStage: 10 },
-      });
+      // The sibling shader binds 9 storage buffers; the WebGPU default limit
+      // is 8. requestHarnessDevice asks for the same limit production does.
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

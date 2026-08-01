@@ -8,7 +8,8 @@
  * Deriving that array is O(nodeCount) on the CPU plus a full buffer upload, so
  * it must not run per frame. The derived array is a pure function of
  *
- *   (stream identity, stream mutation version, node count, colour-scale domain)
+ *   (stream identity, manager mutation version, the stream's own mutation
+ *    version, node count, colour-scale domain)
  *
  * and this module recomputes only when one of those changes. The scratch array
  * and the GPU buffer are reused across recomputes (grow-only).
@@ -26,6 +27,12 @@ export interface IntensityStreamSource {
   getValue(nodeIndex: number): number | undefined;
   /** Colour scale whose `domain` defines the 0..1 normalization range */
   getColorScale(): { domain: [number, number] };
+  /**
+   * The stream's own mutation counter (ValueStream.version). Part of the cache
+   * key because a stream reached directly — `manager.getStream(id).setValue()`,
+   * both public exports — never advances StreamManager.version.
+   */
+  readonly version: number;
 }
 
 /** Inputs the derived intensity array depends on. */
@@ -33,6 +40,8 @@ interface IntensityKey {
   streamId: string;
   /** StreamManager mutation counter (see StreamManager.version) */
   version: number;
+  /** The bound stream's own mutation counter (see ValueStream.version) */
+  streamVersion: number;
   nodeCount: number;
   domainMin: number;
   domainRange: number;
@@ -41,6 +50,7 @@ interface IntensityKey {
 function keysEqual(a: IntensityKey, b: IntensityKey): boolean {
   return a.streamId === b.streamId &&
     a.version === b.version &&
+    a.streamVersion === b.streamVersion &&
     a.nodeCount === b.nodeCount &&
     a.domainMin === b.domainMin &&
     a.domainRange === b.domainRange;
@@ -81,7 +91,14 @@ export class StreamIntensityCache {
     const domain = stream.getColorScale().domain;
     const domainMin = domain[0];
     const domainRange = domain[1] - domainMin;
-    const key: IntensityKey = { streamId, version, nodeCount, domainMin, domainRange };
+    const key: IntensityKey = {
+      streamId,
+      version,
+      streamVersion: stream.version,
+      nodeCount,
+      domainMin,
+      domainRange,
+    };
 
     if (this.buffer && this.key && keysEqual(this.key, key)) {
       return this.buffer;

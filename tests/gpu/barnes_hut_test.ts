@@ -17,13 +17,14 @@
  *   collapsing to the center.
  */
 
-import { assert, assertEquals } from "jsr:@std/assert@^1";
+import { assert, assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import {
   createAlgorithmSimHarness,
   GPU_SKIP_MESSAGE,
   type HarnessForceAlgorithm,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
 } from "../helpers/gpu.ts";
 import { countNonFinite, kineticEnergy, maxRadius } from "../helpers/invariants.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
@@ -55,11 +56,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice({
-        requiredLimits: {
-          maxStorageBuffersPerShaderStage: REQUIRED_STORAGE_BUFFERS,
-        },
-      });
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -367,3 +364,35 @@ gpuTest(
     );
   },
 );
+
+Deno.test({
+  name: "GPU Barnes-Hut: an under-limit device is refused by name, not left frozen",
+  ignore: adapter === null,
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    // The failure this guards is silent: the Karras tree layout binds 10
+    // storage buffers, so on an 8-buffer device the LAYOUT is invalid, the
+    // bind group poisons the compute pass, the pass poisons the encoder, and
+    // submit() drops the whole frame — springs and integration with it. The
+    // simulation then looks inert rather than broken (this is what made
+    // Barnes-Hut appear to produce zero motion in the parity harness, whose
+    // device had the default limit).
+    const device = await adapter!.requestDevice({
+      requiredLimits: { maxStorageBuffersPerShaderStage: 8 },
+    });
+    try {
+      assertEquals(device.limits.maxStorageBuffersPerShaderStage, 8);
+      const bh = await loadBarnesHut();
+      const error = assertThrows(
+        () => bh.createPipelines({ device }),
+        Error,
+        "maxStorageBuffersPerShaderStage",
+      );
+      assertEquals(error.name, "GraphMotherError");
+      assert(error.message.includes("10"), "the error must name the requirement");
+    } finally {
+      device.destroy();
+    }
+  },
+});

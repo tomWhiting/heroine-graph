@@ -7,6 +7,7 @@
  */
 
 import type { GPUContext } from "../../webgpu/context.ts";
+import { ErrorCode, GraphMotherError } from "../../errors.ts";
 import type { FullForceConfig } from "../config.ts";
 
 /**
@@ -40,6 +41,61 @@ export interface ForceAlgorithmInfo {
   readonly maxNodes: number;
   /** Time complexity description */
   readonly complexity: string;
+  /**
+   * Storage buffers per compute stage this algorithm's bind group layouts
+   * need, when that is more than the WebGPU default of 8.
+   *
+   * Exceeding the device limit does not fail loudly: the bind group layout is
+   * invalid, binding it poisons the compute pass, the poisoned pass poisons
+   * the command encoder, and `submit()` discards the ENTIRE frame — springs
+   * and integration included. The simulation freezes with console errors
+   * rather than degrading, which is why this is declared as data: both
+   * {@link ForceAlgorithm.createPipelines} guards and the registry's
+   * device-aware selection read it (see supportsAlgorithmOnDevice).
+   *
+   * Omitted when the algorithm fits inside the 8-buffer default.
+   */
+  readonly minStorageBuffersPerShaderStage?: number;
+}
+
+/**
+ * Whether `device` can run `info`'s pipelines.
+ *
+ * Only the storage-buffer-per-stage limit varies meaningfully across adapters
+ * in practice; everything else GraphMother requests is at or below every
+ * conformant implementation's default.
+ */
+export function supportsAlgorithmOnDevice(
+  info: ForceAlgorithmInfo,
+  device: Pick<GPUDevice, "limits">,
+): boolean {
+  const required = info.minStorageBuffersPerShaderStage;
+  return required === undefined ||
+    device.limits.maxStorageBuffersPerShaderStage >= required;
+}
+
+/**
+ * Throws when `device` cannot run `info`'s pipelines. Called at the top of the
+ * affected algorithms' createPipelines so the failure names the limit instead
+ * of surfacing as a frozen simulation with WebGPU validation spam.
+ */
+export function assertAlgorithmSupportedOnDevice(
+  info: ForceAlgorithmInfo,
+  device: Pick<GPUDevice, "limits">,
+): void {
+  if (supportsAlgorithmOnDevice(info, device)) return;
+  const required = info.minStorageBuffersPerShaderStage;
+  throw new GraphMotherError(
+    ErrorCode.PIPELINE_CREATION_FAILED,
+    `The ${info.name} layout needs maxStorageBuffersPerShaderStage >= ${required}, ` +
+      `but this device supports ${device.limits.maxStorageBuffersPerShaderStage}. ` +
+      "Its bind group layouts would be invalid, which discards every command " +
+      "buffer they are recorded into — the simulation would freeze rather than " +
+      "degrade.",
+    { algorithm: info.id, required, available: device.limits.maxStorageBuffersPerShaderStage },
+    'Choose an algorithm that fits the device (setForceAlgorithm("n2") always ' +
+      "does), or request the higher limit when creating the GPU device.",
+  );
 }
 
 /**
@@ -182,21 +238,42 @@ export interface ForceAlgorithm {
    * and caches both results (see `buildForBothParities` in ../pipeline.ts).
    * Per frame it only flips which cached set it binds.
    *
-   * The implementation MUST therefore be a pure function of the GPU buffers
-   * reachable from `context` and `algorithmBuffers`. It must not capture
-   * `context.nodeCount`, `context.bounds`, or `context.forceConfig` in the
-   * returned bind groups — those change every frame and belong in uniforms
-   * written by {@link ForceAlgorithm.updateUniforms}. An algorithm whose bind
-   * groups genuinely cannot satisfy this (because they must reference GPU
-   * state that changes mid-run for a reason other than the ping-pong swap)
-   * cannot use the cached path and must be given an explicit opt-out here
-   * before it is registered; all currently registered algorithms satisfy the
-   * contract. Algorithm-internal ping-pong (e.g. Relativity Atlas's mass
-   * iteration) is unaffected: it lives entirely in `algorithmBuffers` and is
-   * reproduced identically in both parity variants.
+   * The implementation MUST therefore depend only on GPU buffer IDENTITIES —
+   * those reachable from `context` and `algorithmBuffers`, plus buffers the
+   * implementation owns on `this` (tidy-tree's uniform/target buffers,
+   * community's and codebase's community-id/degree/centroid buffers). Two
+   * calls with the same `context.positions` must produce equivalent bind
+   * groups.
+   *
+   * Instance-owned buffers are allowed, with one obligation: they may only be
+   * created or replaced inside {@link ForceAlgorithm.createBuffers}, and every
+   * call site of `createBuffers` must be followed by a rebuild of BOTH parity
+   * variants before the next frame is recorded (graph.ts does this at each of
+   * its four call sites). Otherwise the cached bind groups keep naming a
+   * destroyed buffer. Note that the registry hands out process-global
+   * singletons (`getAlgorithmRegistry`), so two GraphMother instances — with
+   * two different GPUDevices — share one algorithm object and therefore one
+   * set of instance-owned buffers; the last `createBuffers` wins, and only the
+   * immediately-following rebuild keeps that instance consistent. Moving these
+   * buffers onto the returned {@link AlgorithmBuffers} would remove that
+   * hazard entirely.
+   *
+   * It must not capture `context.nodeCount`, `context.bounds`, or
+   * `context.forceConfig` in the returned bind groups — those change every
+   * frame and belong in uniforms written by
+   * {@link ForceAlgorithm.updateUniforms}. An algorithm whose bind groups
+   * genuinely cannot satisfy this (because they must reference GPU state that
+   * changes mid-run for a reason other than the ping-pong swap) cannot use the
+   * cached path and must be given an explicit opt-out here before it is
+   * registered; all currently registered algorithms satisfy the contract.
+   * Algorithm-internal ping-pong (e.g. Relativity Atlas's mass iteration) is
+   * unaffected: it lives entirely in `algorithmBuffers` and is reproduced
+   * identically in both parity variants.
    *
    * The host rebuilds both variants whenever any referenced buffer is
-   * reallocated (load, capacity growth, algorithm switch).
+   * reallocated (load, capacity growth, algorithm switch); a variant left
+   * pointing at a replaced positions buffer is caught by the ParitySlot
+   * staleness check in ../pipeline.ts rather than corrupting silently.
    *
    * @param device - GPU device
    * @param pipelines - Algorithm pipelines

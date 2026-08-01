@@ -7,6 +7,7 @@
  * @module
  */
 
+import { supportsAlgorithmOnDevice } from "./types.ts";
 import type { ForceAlgorithm, ForceAlgorithmInfo, ForceAlgorithmType } from "./types.ts";
 
 /**
@@ -70,34 +71,54 @@ export class ForceAlgorithmRegistry {
    * - 5,000 - 50,000 nodes: Barnes-Hut (good balance)
    * - > 50,000 nodes: Density-based (fastest for large graphs)
    *
+   * Pass `device` whenever one is available: Barnes-Hut needs 10 storage
+   * buffers per compute stage (the WebGPU default is 8), and on a device that
+   * cannot supply them its pipelines are invalid — which discards every
+   * command buffer they are recorded into, freezing the simulation instead of
+   * degrading it. With a device in hand, unsupported algorithms are skipped
+   * and the next candidate is returned.
+   *
    * @param nodeCount - Number of nodes
+   * @param device - Device the algorithm will run on, when known
    * @returns Recommended algorithm or undefined if none suitable
    */
-  getRecommended(nodeCount: number): ForceAlgorithm | undefined {
+  getRecommended(
+    nodeCount: number,
+    device?: Pick<GPUDevice, "limits">,
+  ): ForceAlgorithm | undefined {
+    const pick = (id: ForceAlgorithmType): ForceAlgorithm | undefined => {
+      const algorithm = this.algorithms.get(id);
+      if (!algorithm) return undefined;
+      if (device && !supportsAlgorithmOnDevice(algorithm.info, device)) return undefined;
+      return algorithm;
+    };
+
     // Try to find the best algorithm for this node count
     if (nodeCount < 5000) {
-      return this.get("n2") ?? this.getAnyAvailable();
+      return pick("n2") ?? this.getAnyAvailable(device);
     }
     if (nodeCount < 50000) {
-      return this.get("barnes-hut") ?? this.get("n2") ?? this.getAnyAvailable();
+      return pick("barnes-hut") ?? pick("n2") ?? this.getAnyAvailable(device);
     }
     // Large graphs
     return (
-      this.get("density") ??
-        this.get("barnes-hut") ??
-        this.get("n2") ??
-        this.getAnyAvailable()
+      pick("density") ??
+        pick("barnes-hut") ??
+        pick("n2") ??
+        this.getAnyAvailable(device)
     );
   }
 
   /**
-   * Get any available algorithm (fallback)
+   * Get any available algorithm (fallback), skipping any the device cannot run.
    *
-   * @returns First available algorithm or undefined
+   * @returns First usable algorithm or undefined
    */
-  private getAnyAvailable(): ForceAlgorithm | undefined {
-    const first = this.algorithms.values().next();
-    return first.done ? undefined : first.value;
+  private getAnyAvailable(device?: Pick<GPUDevice, "limits">): ForceAlgorithm | undefined {
+    for (const algorithm of this.algorithms.values()) {
+      if (!device || supportsAlgorithmOnDevice(algorithm.info, device)) return algorithm;
+    }
+    return undefined;
   }
 }
 

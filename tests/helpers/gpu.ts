@@ -60,6 +60,32 @@ interface SimulationBuffers {
 }
 
 /**
+ * Structural view of pipeline.ts's ParitySlot — one parity-indexed group of
+ * bind groups. See {@link BindGroupParitySetsHandle}.
+ */
+export interface ParitySlotHandle<T> {
+  readonly label: string;
+  readonly built: boolean;
+  readonly current: T | null;
+  rebuild(build: (view: SimulationBuffers) => T): void;
+  clear(): void;
+}
+
+/**
+ * Structural view of pipeline.ts's BindGroupParitySets — the production
+ * ping-pong parity state machine. The harness drives the real class (rather
+ * than keeping its own parity counter) so the GPU tests exercise the code
+ * GraphMother ships.
+ */
+export interface BindGroupParitySetsHandle {
+  readonly buffers: SimulationBuffers | null;
+  readonly parity: 0 | 1;
+  slot<T>(label: string): ParitySlotHandle<T>;
+  advance(): void;
+  clearAll(): void;
+}
+
+/**
  * Signatures of the pipeline.ts exports the harness calls. Kept in sync
  * by hand; a drift shows up immediately as a runtime failure in the GPU
  * tests.
@@ -124,6 +150,9 @@ interface PipelineModule {
     currentParity: 0 | 1,
     build: (view: SimulationBuffers) => T,
   ): readonly [T, T];
+  BindGroupParitySets: new (
+    buffersRef: () => SimulationBuffers | null,
+  ) => BindGroupParitySetsHandle;
   copyPositionsToReadback(encoder: GPUCommandEncoder, buffers: SimulationBuffers): void;
   readbackPositions(
     buffers: SimulationBuffers,
@@ -521,6 +550,36 @@ export const GPU_SKIP_MESSAGE = "WebGPU adapter unavailable — GPU integration 
   "Run via `deno task test` (passes --unstable-webgpu) on a machine with a GPU.";
 
 /**
+ * Storage buffers per compute stage the production device asks for
+ * (DEFAULT_REQUIRED_LIMITS in packages/core/src/webgpu/context.ts).
+ *
+ * `adapter.requestDevice()` with no requiredLimits gives the WebGPU *default*
+ * of 8 even when the adapter supports far more, which silently invalidates
+ * Barnes-Hut's 10-buffer Karras tree layout and Relativity Atlas's 9-buffer
+ * sibling pass. An invalid bind group poisons the compute pass, which poisons
+ * the command encoder, so the whole tick's command buffer is discarded and the
+ * simulation looks inert rather than erroring. Every GPU test therefore takes
+ * its device from {@link requestHarnessDevice}.
+ */
+export const HARNESS_STORAGE_BUFFERS_PER_STAGE = 10;
+
+/**
+ * Request a device with production's limits, clamped to what the adapter can
+ * actually supply (so a weaker adapter still yields a device rather than a
+ * rejected request — the tests that need 10 check `device.limits` themselves).
+ */
+export function requestHarnessDevice(adapter: GPUAdapter): Promise<GPUDevice> {
+  return adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBuffersPerShaderStage: Math.min(
+        HARNESS_STORAGE_BUFFERS_PER_STAGE,
+        adapter.limits.maxStorageBuffersPerShaderStage,
+      ),
+    },
+  });
+}
+
+/**
  * Wait for all work submitted to the device's queue to complete.
  *
  * Deno 2.6.x never resolves `queue.onSubmittedWorkDone()` (even on an empty
@@ -574,8 +633,18 @@ export interface SimHarness {
   readonly edgeCount: number;
   /** Ticks advanced so far */
   readonly tickCount: number;
+  /** Which ping-pong orientation the buffers are in right now */
+  readonly parity: 0 | 1;
   /** Advance the simulation by `steps` ticks */
   tick(steps: number): Promise<void>;
+  /**
+   * Replace every simulation buffer with a freshly allocated set carrying the
+   * current positions, and rebuild the bind groups — the harness equivalent of
+   * GraphMother.reallocateNodeBuffers (which likewise zeroes velocities and
+   * forces). Exercises `buildForBothParities` at whatever parity the run has
+   * reached, which is the case the `currentParity` parameter exists for.
+   */
+  reallocate(): Promise<void>;
   /** Read current node positions back to the CPU */
   readPositions(): Promise<{ x: Float32Array; y: Float32Array }>;
   /** Release GPU buffers owned by this harness (device is caller-owned) */
@@ -627,38 +696,61 @@ export async function createSimHarness(
     maxEdges: edgeCount,
   });
 
-  const buffers = mod.createSimulationBuffers(device, nodeCount, edgeCount);
-  mod.copyPositionsToSimulation(device, buffers, graph.positionsX, graph.positionsY);
-  mod.copyEdgesToSimulation(device, buffers, graph.edgeSources, graph.edgeTargets);
-  if (graph.depths) {
-    device.queue.writeBuffer(buffers.nodeDepth, 0, graph.depths.slice().buffer);
-  }
-  if (graph.flags) {
-    device.queue.writeBuffer(buffers.nodeFlags, 0, graph.flags.slice().buffer);
-  }
+  /**
+   * Allocates a complete simulation buffer set holding `positionsX/Y`.
+   * Order matters: copyPositionsToSimulation zeroes nodeFlags, so the
+   * fixture's flags are uploaded after it.
+   */
+  const allocate = (positionsX: Float32Array, positionsY: Float32Array): SimulationBuffers => {
+    const fresh = mod.createSimulationBuffers(device, nodeCount, edgeCount);
+    mod.copyPositionsToSimulation(device, fresh, positionsX, positionsY);
+    mod.copyEdgesToSimulation(device, fresh, graph.edgeSources, graph.edgeTargets);
+    if (graph.depths) {
+      device.queue.writeBuffer(fresh.nodeDepth, 0, graph.depths.slice().buffer);
+    }
+    if (graph.flags) {
+      device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
+    }
+    return fresh;
+  };
 
-  let parity: 0 | 1 = 0;
-  // Production path: both ping-pong orientations built once, exactly as
-  // GraphMother does; the tick loop only flips `parity`.
-  const paritySets = mod.buildForBothParities(
-    buffers,
-    parity,
-    (view) => mod.createSimulationBindGroups(device, pipeline, view),
-  );
+  let buffers = allocate(graph.positionsX, graph.positionsY);
+
+  // Production path: the real parity state machine from pipeline.ts. Both
+  // ping-pong orientations are built once and the tick loop only flips the
+  // index (BindGroupParitySets.advance), exactly as GraphMother does.
+  const paritySets = new mod.BindGroupParitySets(() => buffers);
+  const simSlot = paritySets.slot<SimulationBindGroups>("simulation");
+  const rebuildSimSlot = (): void =>
+    simSlot.rebuild((view) => mod.createSimulationBindGroups(device, pipeline, view));
+  rebuildSimSlot();
+
   // Reference path (bindGroupMode === "rebuild-each-tick"): rebuilt from the
   // live buffers after every swap, deliberately bypassing the parity indexing
-  // it exists to check. Seeded with the parity-0 set, which is what a fresh
-  // build from the as-allocated buffers produces.
-  let rebuiltBindGroups = paritySets[parity];
+  // it exists to check.
+  let rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
   const currentBindGroups = (): SimulationBindGroups =>
-    bindGroupMode === "prebuilt-parity" ? paritySets[parity] : rebuiltBindGroups;
+    bindGroupMode === "prebuilt-parity" ? simSlot.current! : rebuiltBindGroups;
   let tickCount = 0;
+
+  const readPositions = async (): Promise<{ x: Float32Array; y: Float32Array }> => {
+    const encoder = device.createCommandEncoder();
+    mod.copyPositionsToReadback(encoder, buffers);
+    device.queue.submit([encoder.finish()]);
+    const x = new Float32Array(nodeCount);
+    const y = new Float32Array(nodeCount);
+    await mod.readbackPositions(buffers, x, y);
+    return { x, y };
+  };
 
   return {
     nodeCount,
     edgeCount,
     get tickCount() {
       return tickCount;
+    },
+    get parity() {
+      return paritySets.parity;
     },
 
     async tick(steps: number): Promise<void> {
@@ -676,8 +768,7 @@ export async function createSimHarness(
         const encoder = device.createCommandEncoder();
         mod.recordSimulationStep(encoder, pipeline, currentBindGroups(), nodeCount, edgeCount);
         device.queue.submit([encoder.finish()]);
-        mod.swapSimulationBuffers(buffers);
-        parity = (parity ^ 1) as 0 | 1;
+        paritySets.advance();
         if (bindGroupMode === "rebuild-each-tick") {
           rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
         }
@@ -686,40 +777,48 @@ export async function createSimHarness(
       await waitForQueue(device);
     },
 
-    async readPositions(): Promise<{ x: Float32Array; y: Float32Array }> {
-      const encoder = device.createCommandEncoder();
-      mod.copyPositionsToReadback(encoder, buffers);
-      device.queue.submit([encoder.finish()]);
-      const x = new Float32Array(nodeCount);
-      const y = new Float32Array(nodeCount);
-      await mod.readbackPositions(buffers, x, y);
-      return { x, y };
-    },
-
-    dispose(): void {
-      for (
-        const buffer of [
-          buffers.positions,
-          buffers.positionsOut,
-          buffers.velocities,
-          buffers.velocitiesOut,
-          buffers.forces,
-          buffers.prevForces,
-          buffers.edgeSources,
-          buffers.edgeTargets,
-          buffers.clearUniforms,
-          buffers.repulsionUniforms,
-          buffers.springUniforms,
-          buffers.integrationUniforms,
-          buffers.nodeFlags,
-          buffers.nodeDepth,
-          buffers.readback,
-        ]
-      ) {
-        buffer.destroy();
+    async reallocate(): Promise<void> {
+      const { x, y } = await readPositions();
+      const old = buffers;
+      buffers = allocate(x, y);
+      destroySimulationBufferSet(old);
+      rebuildSimSlot();
+      if (bindGroupMode === "rebuild-each-tick") {
+        rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
       }
     },
+
+    readPositions,
+
+    dispose(): void {
+      destroySimulationBufferSet(buffers);
+    },
   };
+}
+
+/** Releases every GPU buffer in a harness-owned SimulationBuffers. */
+function destroySimulationBufferSet(buffers: SimulationBuffers): void {
+  for (
+    const buffer of [
+      buffers.positions,
+      buffers.positionsOut,
+      buffers.velocities,
+      buffers.velocitiesOut,
+      buffers.forces,
+      buffers.prevForces,
+      buffers.edgeSources,
+      buffers.edgeTargets,
+      buffers.clearUniforms,
+      buffers.repulsionUniforms,
+      buffers.springUniforms,
+      buffers.integrationUniforms,
+      buffers.nodeFlags,
+      buffers.nodeDepth,
+      buffers.readback,
+    ]
+  ) {
+    buffer.destroy();
+  }
 }
 
 /** Opaque handles for algorithm plugin pipelines/buffers/bind groups. */
@@ -850,15 +949,25 @@ export async function createAlgorithmSimHarness(
     maxEdges: edgeCount,
   });
 
-  const buffers = mod.createSimulationBuffers(device, nodeCount, edgeCount);
-  mod.copyPositionsToSimulation(device, buffers, graph.positionsX, graph.positionsY);
-  mod.copyEdgesToSimulation(device, buffers, graph.edgeSources, graph.edgeTargets);
-  if (graph.depths) {
-    device.queue.writeBuffer(buffers.nodeDepth, 0, graph.depths.slice().buffer);
-  }
-  if (graph.flags) {
-    device.queue.writeBuffer(buffers.nodeFlags, 0, graph.flags.slice().buffer);
-  }
+  /**
+   * Allocates a complete simulation buffer set holding `positionsX/Y`.
+   * Order matters: copyPositionsToSimulation zeroes nodeFlags, so the
+   * fixture's flags are uploaded after it.
+   */
+  const allocate = (positionsX: Float32Array, positionsY: Float32Array): SimulationBuffers => {
+    const fresh = mod.createSimulationBuffers(device, nodeCount, edgeCount);
+    mod.copyPositionsToSimulation(device, fresh, positionsX, positionsY);
+    mod.copyEdgesToSimulation(device, fresh, graph.edgeSources, graph.edgeTargets);
+    if (graph.depths) {
+      device.queue.writeBuffer(fresh.nodeDepth, 0, graph.depths.slice().buffer);
+    }
+    if (graph.flags) {
+      device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
+    }
+    return fresh;
+  };
+
+  let buffers = allocate(graph.positionsX, graph.positionsY);
 
   const algoPipelines = algorithm.createPipelines({ device });
   const algoBuffers = algorithm.createBuffers(device, nodeCount);
@@ -880,36 +989,54 @@ export async function createAlgorithmSimHarness(
   });
 
   const bindGroupMode = options.bindGroupMode ?? "prebuilt-parity";
-  let parity: 0 | 1 = 0;
-  // Production path: both parities built once for the simulation passes and
-  // for the algorithm's own passes; the tick loop only flips `parity`.
-  const paritySets = mod.buildForBothParities(
-    buffers,
-    parity,
-    (view) => mod.createSimulationBindGroups(device, pipeline, view),
-  );
-  const algoParitySets = mod.buildForBothParities(
-    buffers,
-    parity,
-    (view) => algorithm.createBindGroups(device, algoPipelines, makeContext(view), algoBuffers),
-  );
+  // Production path: the real parity state machine from pipeline.ts, holding
+  // both the simulation passes' bind groups and the algorithm's own; the tick
+  // loop only flips the index (BindGroupParitySets.advance).
+  const paritySets = new mod.BindGroupParitySets(() => buffers);
+  const simSlot = paritySets.slot<SimulationBindGroups>("simulation");
+  const algoSlot = paritySets.slot<AlgorithmBindGroupsHandle>(`algorithm:${algorithm.info.id}`);
+  const rebuildSlots = (): void => {
+    simSlot.rebuild((view) => mod.createSimulationBindGroups(device, pipeline, view));
+    algoSlot.rebuild((view) =>
+      algorithm.createBindGroups(device, algoPipelines, makeContext(view), algoBuffers)
+    );
+  };
+  rebuildSlots();
+
   // Reference path (see HarnessBindGroupMode): rebuilt from the live buffers
   // after every swap, deliberately bypassing the parity indexing it exists to
-  // check. Seeded with the parity-0 sets, which are what a fresh build from
-  // the as-allocated buffers produces.
-  let rebuiltBindGroups = paritySets[parity];
-  let rebuiltAlgoBindGroups = algoParitySets[parity];
+  // check.
+  let rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+  let rebuiltAlgoBindGroups = algorithm.createBindGroups(
+    device,
+    algoPipelines,
+    makeContext(buffers),
+    algoBuffers,
+  );
   const currentBindGroups = (): SimulationBindGroups =>
-    bindGroupMode === "prebuilt-parity" ? paritySets[parity] : rebuiltBindGroups;
+    bindGroupMode === "prebuilt-parity" ? simSlot.current! : rebuiltBindGroups;
   const currentAlgoBindGroups = (): AlgorithmBindGroupsHandle =>
-    bindGroupMode === "prebuilt-parity" ? algoParitySets[parity] : rebuiltAlgoBindGroups;
+    bindGroupMode === "prebuilt-parity" ? algoSlot.current! : rebuiltAlgoBindGroups;
   let tickCount = 0;
+
+  const readPositions = async (): Promise<{ x: Float32Array; y: Float32Array }> => {
+    const encoder = device.createCommandEncoder();
+    mod.copyPositionsToReadback(encoder, buffers);
+    device.queue.submit([encoder.finish()]);
+    const x = new Float32Array(nodeCount);
+    const y = new Float32Array(nodeCount);
+    await mod.readbackPositions(buffers, x, y);
+    return { x, y };
+  };
 
   return {
     nodeCount,
     edgeCount,
     get tickCount() {
       return tickCount;
+    },
+    get parity() {
+      return paritySets.parity;
     },
 
     async tick(steps: number): Promise<void> {
@@ -963,8 +1090,7 @@ export async function createAlgorithmSimHarness(
           },
         );
         device.queue.submit([encoder.finish()]);
-        mod.swapSimulationBuffers(buffers);
-        parity = (parity ^ 1) as 0 | 1;
+        paritySets.advance();
         if (bindGroupMode === "rebuild-each-tick") {
           rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
           rebuiltAlgoBindGroups = algorithm.createBindGroups(
@@ -979,39 +1105,31 @@ export async function createAlgorithmSimHarness(
       await waitForQueue(device);
     },
 
-    async readPositions(): Promise<{ x: Float32Array; y: Float32Array }> {
-      const encoder = device.createCommandEncoder();
-      mod.copyPositionsToReadback(encoder, buffers);
-      device.queue.submit([encoder.finish()]);
-      const x = new Float32Array(nodeCount);
-      const y = new Float32Array(nodeCount);
-      await mod.readbackPositions(buffers, x, y);
-      return { x, y };
+    async reallocate(): Promise<void> {
+      const { x, y } = await readPositions();
+      const old = buffers;
+      buffers = allocate(x, y);
+      destroySimulationBufferSet(old);
+      // Mirrors graph.ts: the algorithm's own buffers survive, but every bind
+      // group referencing a replaced simulation buffer is rebuilt for both
+      // parities before the next tick.
+      rebuildSlots();
+      if (bindGroupMode === "rebuild-each-tick") {
+        rebuiltBindGroups = mod.createSimulationBindGroups(device, pipeline, buffers);
+        rebuiltAlgoBindGroups = algorithm.createBindGroups(
+          device,
+          algoPipelines,
+          makeContext(buffers),
+          algoBuffers,
+        );
+      }
     },
+
+    readPositions,
 
     dispose(): void {
       algoBuffers.destroy();
-      for (
-        const buffer of [
-          buffers.positions,
-          buffers.positionsOut,
-          buffers.velocities,
-          buffers.velocitiesOut,
-          buffers.forces,
-          buffers.prevForces,
-          buffers.edgeSources,
-          buffers.edgeTargets,
-          buffers.clearUniforms,
-          buffers.repulsionUniforms,
-          buffers.springUniforms,
-          buffers.integrationUniforms,
-          buffers.nodeFlags,
-          buffers.nodeDepth,
-          buffers.readback,
-        ]
-      ) {
-        buffer.destroy();
-      }
+      destroySimulationBufferSet(buffers);
     },
   };
 }

@@ -5,16 +5,25 @@
  * bind group referencing them used to be recreated per frame (~14
  * createBindGroup calls, ~800/sec at 60fps). There are only two possible
  * buffer configurations, so both are now built once at allocation time and
- * the per-frame path is an index flip (GraphMother.advanceFrameParity).
+ * the per-frame path is an index flip.
  *
- * An off-by-one in that indexing would be almost invisible: the simulation
- * would keep producing plausible-looking motion while reading the buffer it
- * is writing. These tests therefore run several ticks against the
+ * The state machine under test is BindGroupParitySets/ParitySlot in
+ * packages/core/src/simulation/pipeline.ts — the same objects GraphMother
+ * delegates to (it keeps no parity state of its own; see the slots declared in
+ * api/graph.ts). The harness drives that class rather than reimplementing it,
+ * so a mutation to the shipped mechanism fails these tests. Its bookkeeping in
+ * isolation — flip sequencing, reallocation at odd parity, the staleness
+ * invariant — is covered without a GPU in tests/unit/parity_sets_test.ts.
+ *
+ * An off-by-one in the indexing would otherwise be almost invisible: the
+ * simulation would keep producing plausible-looking motion while reading the
+ * buffer it is writing. These tests therefore run several ticks against the
  * pre-optimization reference — bind groups rebuilt from the live buffers
  * after every swap — and compare the resulting layouts, bit for bit wherever
  * the pipeline is exactly reproducible (see CONFIG_EXACT) and within a slack
- * far below any parity error otherwise. A final test asserts the
- * steady-state tick loop allocates no bind groups at all.
+ * far below any parity error otherwise. Two cases reallocate every simulation
+ * buffer mid-run at odd parity, and a final test asserts the steady-state tick
+ * loop allocates no bind groups at all.
  *
  * Requires a WebGPU adapter (Deno flag --unstable-webgpu, wired into
  * `deno task test`). When no adapter is available the tests are skipped.
@@ -25,9 +34,11 @@ import {
   createAlgorithmSimHarness,
   createSimHarness,
   GPU_SKIP_MESSAGE,
+  HARNESS_STORAGE_BUFFERS_PER_STAGE,
   type HarnessForceAlgorithm,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
   type SimHarness,
 } from "../helpers/gpu.ts";
 import { countNonFinite } from "../helpers/invariants.ts";
@@ -45,7 +56,12 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      // Production's limits, not the WebGPU defaults: a bare requestDevice()
+      // caps maxStorageBuffersPerShaderStage at 8, which invalidates
+      // Barnes-Hut's 10-buffer Karras tree layout. The resulting invalid bind
+      // group poisons the encoder and the whole tick is discarded, so the
+      // simulation looks inert instead of erroring.
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -151,6 +167,51 @@ async function assertParityMatchesReference(
 }
 
 /**
+ * Runs both harnesses through a mid-run reallocation and asserts they still
+ * agree.
+ *
+ * The reallocation deliberately lands at odd parity — the case
+ * `buildForBothParities`' `currentParity` parameter exists for, and the one
+ * every reallocation path in graph.ts (reallocateNodeBuffers,
+ * reallocateEdgeBuffers, ensureAlgorithmCapacity, setForceAlgorithm,
+ * initializeCollisionResources) can hit at runtime. If the rebuilt sets landed
+ * at the wrong index, the prebuilt harness would run a tick from the buffer it
+ * is writing; the ParitySlot staleness check turns that into a thrown error,
+ * and any residual divergence shows up in the comparison below.
+ */
+async function assertParityMatchesAcrossReallocation(
+  prebuilt: SimHarness,
+  reference: SimHarness,
+  graph: CodeTreeGraph,
+  label: string,
+  tolerance: number,
+): Promise<void> {
+  try {
+    const oddTicks = 3;
+    await prebuilt.tick(oddTicks);
+    await reference.tick(oddTicks);
+    assertEquals(prebuilt.parity, 1, "the reallocation must land while parity is odd");
+    assertEquals(reference.parity, 1);
+
+    await prebuilt.reallocate();
+    await reference.reallocate();
+
+    await prebuilt.tick(TICKS);
+    await reference.tick(TICKS);
+
+    const a = await prebuilt.readPositions();
+    const b = await reference.readPositions();
+
+    assertEquals(countNonFinite(a.x, a.y), 0);
+    assertEvolved(a, graph, label);
+    assertPositionsAgree(a, b, tolerance, label);
+  } finally {
+    prebuilt.dispose();
+    reference.dispose();
+  }
+}
+
+/**
  * Bit-identity is required under CONFIG_EXACT. With the per-edge passes live,
  * atomic accumulation order lets two runs of identical code drift; measured
  * at ~5e-3 units after five ticks on this fixture, versus the ~40 units a
@@ -159,6 +220,19 @@ async function assertParityMatchesReference(
  */
 const EXACT = 0;
 const ATOMIC_ORDER_SLACK = 0.05;
+
+/**
+ * Barnes-Hut's slack. Its tree build aggregates centre-of-mass with atomics
+ * and its traversal order depends on the Morton sort, so it is not bit-exact
+ * across runs even with the per-edge passes silenced. Measured prebuilt-vs-
+ * rebuilt divergence after five ticks: 1.07e-4 at this fixture's 200 nodes and
+ * 4.39e-3 at 1008 nodes. 0.05 covers both with an order of magnitude to spare
+ * while staying ~3 orders below the tens of units a wrong parity index costs.
+ */
+const BARNES_HUT_SLACK = 0.05;
+
+/** Bounds refresh cadence for the spatial algorithms (mirrors graph.ts's sync). */
+const BOUNDS_SYNC_INTERVAL = 2;
 
 /** Loads an algorithm plugin factory with its .wgsl imports inlined. */
 async function loadAlgorithm(
@@ -292,6 +366,103 @@ gpuTest(
       graph,
       "t-fdp passes",
       ATOMIC_ORDER_SLACK,
+    );
+  },
+);
+
+gpuTest(
+  "GPU bind group parity: Barnes-Hut matches per-tick rebuilds",
+  async (device) => {
+    // Barnes-Hut binds positions in its bounds, Morton, tree-build and
+    // traversal passes, so a wrong parity index is immediately visible. It
+    // needs 10 storage buffers per compute stage for the Karras tree layout —
+    // on a device that cannot supply them the pipelines are invalid and every
+    // submit is silently discarded, so skip rather than assert on a frozen run.
+    if (device.limits.maxStorageBuffersPerShaderStage < HARNESS_STORAGE_BUFFERS_PER_STAGE) {
+      console.warn(
+        `[gpu] skipping Barnes-Hut parity: device supports only ` +
+          `${device.limits.maxStorageBuffersPerShaderStage} storage buffers per stage ` +
+          `(needs ${HARNESS_STORAGE_BUFFERS_PER_STAGE})`,
+      );
+      return;
+    }
+    const graph = fixture();
+    await assertParityMatchesReference(
+      await createAlgorithmSimHarness(
+        device,
+        await loadAlgorithm("barnes-hut.ts", "createBarnesHutAlgorithm"),
+        graph,
+        CONFIG,
+        undefined,
+        { boundsSyncInterval: BOUNDS_SYNC_INTERVAL },
+      ),
+      await createAlgorithmSimHarness(
+        device,
+        await loadAlgorithm("barnes-hut.ts", "createBarnesHutAlgorithm"),
+        graph,
+        CONFIG,
+        undefined,
+        {
+          boundsSyncInterval: BOUNDS_SYNC_INTERVAL,
+          bindGroupMode: "rebuild-each-tick",
+        },
+      ),
+      graph,
+      "barnes-hut passes",
+      BARNES_HUT_SLACK,
+    );
+  },
+);
+
+gpuTest(
+  "GPU bind group parity: simulation buffers reallocated at odd parity stay in sync",
+  async (device) => {
+    // Reallocation is the path no test used to reach: every simulation buffer
+    // is replaced mid-run and both parity variants must be rebuilt against the
+    // new buffers at the parity the run has already reached.
+    const graph = fixture();
+    await assertParityMatchesAcrossReallocation(
+      await createSimHarness(device, graph, CONFIG_EXACT),
+      await createSimHarness(
+        device,
+        graph,
+        CONFIG_EXACT,
+        undefined,
+        undefined,
+        "rebuild-each-tick",
+      ),
+      graph,
+      "simulation passes across reallocation (exact config)",
+      EXACT,
+    );
+  },
+);
+
+gpuTest(
+  "GPU bind group parity: algorithm bind groups survive reallocation at odd parity",
+  async (device) => {
+    // Same, for the algorithm's own bind groups: graph.ts rebuilds them from
+    // the replaced simulation buffers even when the algorithm's own buffers
+    // are untouched (reallocateNodeBuffers).
+    const graph = fixture();
+    await assertParityMatchesAcrossReallocation(
+      await createAlgorithmSimHarness(
+        device,
+        await loadAlgorithm("n2.ts", "createN2Algorithm"),
+        graph,
+        CONFIG_EXACT,
+      ),
+      await createAlgorithmSimHarness(
+        device,
+        await loadAlgorithm("n2.ts", "createN2Algorithm"),
+        graph,
+        CONFIG_EXACT,
+        undefined,
+        { bindGroupMode: "rebuild-each-tick" },
+      ),
+      graph,
+      "n2 repulsion across reallocation (exact config)",
+      EXACT,
     );
   },
 );

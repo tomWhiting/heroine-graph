@@ -19,7 +19,8 @@ struct CollisionUniforms {
     node_count: u32,
     collision_strength: f32,   // How strongly nodes push apart (0-1)
     radius_multiplier: f32,    // Multiplier for node radii
-    iterations: u32,           // Number of resolution iterations
+    _pad_iterations: u32,      // Reserved: the loop count lives on the CPU
+                               // (recordCollisionPass), no shader reads it
     default_radius: f32,       // Default node radius if not specified
     _pad0: f32,
     _pad1: f32,

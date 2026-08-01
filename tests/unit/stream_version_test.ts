@@ -90,3 +90,67 @@ Deno.test("StreamManager: no-op mutations on missing streams leave version untou
 
   assertEquals(manager.version, before);
 });
+
+Deno.test("ValueStream: every mutator advances the stream's own version", () => {
+  // StreamManager.version only moves for mutations routed through the manager.
+  // Both classes are public exports, so `manager.getStream(id).setValue(...)`
+  // is reachable and must still invalidate everything derived from the stream
+  // — the intensity cache keys on this counter for exactly that reason.
+  const manager = createStreamManager();
+  const stream = manager.defineStream(streamConfig("errors"));
+  let previous = stream.version;
+
+  const expectBump = (label: string, mutate: () => void): void => {
+    mutate();
+    assert(
+      stream.version > previous,
+      `${label} did not advance ValueStream.version (still ${stream.version})`,
+    );
+    previous = stream.version;
+  };
+
+  expectBump("setValue", () => stream.setValue(0, 5));
+  expectBump("setData", () => stream.setData([{ nodeIndex: 1, value: 6 }]));
+  expectBump("setBulkData", () =>
+    stream.setBulkData({
+      indices: new Int32Array([2, 3]),
+      values: new Float32Array([7, 8]),
+    }));
+  expectBump("clearValue", () => stream.clearValue(0));
+  expectBump("clear", () => stream.clear());
+  // The colour scale carries the domain the intensity cache normalizes with,
+  // so it is as much a cache input as the values are.
+  expectBump("setColorScale", () =>
+    stream.setColorScale({
+      domain: [0, 100],
+      stops: [
+        { position: 0, color: [0, 0, 0, 0] },
+        { position: 1, color: [1, 1, 1, 1] },
+      ],
+    }));
+  expectBump("setBlendMode", () => stream.setBlendMode("multiply"));
+  expectBump("setOpacity", () => stream.setOpacity(0.5));
+  expectBump("disable", () => stream.disable());
+  expectBump("enable", () => stream.enable());
+  expectBump("toggle", () => stream.toggle());
+});
+
+Deno.test("ValueStream: reads leave the stream version untouched", () => {
+  const manager = createStreamManager();
+  const stream = manager.defineStream(streamConfig("errors"));
+  stream.setValue(0, 5);
+  const before = stream.version;
+
+  stream.getValue(0);
+  stream.hasValue(0);
+  stream.getNodeIndices();
+  stream.getColor(0);
+  stream.getAllColors();
+  stream.getColorScale();
+  stream.getBlendMode();
+  stream.getOpacity();
+  stream.isEnabled();
+  stream.getInfo();
+
+  assertEquals(stream.version, before);
+});

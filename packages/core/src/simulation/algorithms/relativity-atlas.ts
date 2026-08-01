@@ -19,6 +19,7 @@
 
 import type { GPUContext } from "../../webgpu/context.ts";
 import { calculateWorkgroups } from "../../renderer/commands.ts";
+import { assertAlgorithmSupportedOnDevice } from "./types.ts";
 import type {
   AlgorithmBindGroups,
   AlgorithmBuffers,
@@ -47,6 +48,8 @@ const RELATIVITY_ATLAS_INFO: ForceAlgorithmInfo = {
   minNodes: 100,
   maxNodes: -1, // Unlimited
   complexity: "O(N + E)",
+  // The sibling-repulsion pass binds 9 storage buffers; the default is 8.
+  minStorageBuffersPerShaderStage: 9,
 };
 
 // Configuration constants
@@ -239,6 +242,10 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
+
+    // Same hazard as Barnes-Hut, one buffer lower: an over-limit layout is
+    // invalid and poisons every encoder its bind group is recorded into.
+    assertAlgorithmSupportedOnDevice(this.info, device);
 
     // Create shader modules
     const degreesModule = device.createShaderModule({

@@ -16,7 +16,7 @@
  */
 
 import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1";
-import { GPU_SKIP_MESSAGE, probeAdapter } from "../helpers/gpu.ts";
+import { GPU_SKIP_MESSAGE, probeAdapter, requestHarnessDevice } from "../helpers/gpu.ts";
 import {
   type IntensityStreamSource,
   StreamIntensityCache,
@@ -34,7 +34,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -51,6 +51,8 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
  */
 class CountingStream implements IntensityStreamSource {
   reads = 0;
+  /** Mirrors ValueStream.version: bumped by this stub's own mutators. */
+  version = 0;
   constructor(
     private values: Array<number | undefined>,
     private domain: [number, number] = [0, 10],
@@ -65,13 +67,15 @@ class CountingStream implements IntensityStreamSource {
     return { domain: this.domain };
   }
 
-  /** Mutates the underlying values; callers must also advance the version. */
+  /** Mutates the underlying values, advancing this stream's own version. */
   setValue(nodeIndex: number, value: number): void {
     this.values[nodeIndex] = value;
+    this.version++;
   }
 
   setDomain(domain: [number, number]): void {
     this.domain = domain;
+    this.version++;
   }
 }
 
@@ -111,9 +115,11 @@ gpuTest(
       // same buffer is handed back (no reallocation either).
       stream.reads = 0;
       for (let frame = 0; frame < 9; frame++) {
-        assertEquals(
-          cache.sync(device, "errors", stream, 1, nodeCount),
-          first,
+        // Identity, not structural equality: assertEquals compares GPUBuffer
+        // by shape, so two distinct same-size buffers would pass it and a
+        // cache that reallocated every sync would look correct.
+        assert(
+          cache.sync(device, "errors", stream, 1, nodeCount) === first,
           "unchanged sync should return the same buffer",
         );
       }
@@ -121,7 +127,10 @@ gpuTest(
 
       // A mutation (version bump) triggers exactly one recompute.
       stream.setValue(0, 10);
-      assertEquals(cache.sync(device, "errors", stream, 2, nodeCount), first);
+      assert(
+        cache.sync(device, "errors", stream, 2, nodeCount) === first,
+        "a recompute must reuse the existing buffer",
+      );
       assertEquals(stream.reads, nodeCount, "a stream mutation should recompute exactly once");
 
       // ...and only one: the frames after it are free again.
@@ -204,11 +213,52 @@ gpuTest(
       // Shrinking keeps the (larger) buffer and the (larger) scratch array;
       // only the live prefix is uploaded, so stale tail values never leak in.
       const shrunk = cache.sync(device, "errors", stream, 1, 3);
-      assertEquals(shrunk, grown, "shrinking must reuse the existing buffer");
+      assert(shrunk === grown, "shrinking must reuse the existing buffer");
       const readBack = await readBuffer(device, shrunk, 3);
       assertAlmostEquals(readBack[0], 0, 1e-6);
       assertAlmostEquals(readBack[1], 1 / 63, 1e-6);
       assertAlmostEquals(readBack[2], 2 / 63, 1e-6);
+    } finally {
+      cache.destroy();
+    }
+  },
+);
+
+gpuTest(
+  "stream intensity cache: a stream mutated directly recomputes without a manager bump",
+  async (device) => {
+    // The escape hatch this guards: ValueStream and StreamManager are both
+    // public exports, so `manager.getStream(id).setValue(...)` mutates the
+    // stream without StreamManager.version ever moving. Before the stream's
+    // own counter joined the key, the uploaded buffer froze permanently — the
+    // old per-frame rescan had been self-healing.
+    const nodeCount = 4;
+    const stream = new CountingStream([0, 2.5, 5, 7.5]);
+    const cache = new StreamIntensityCache("test");
+    const managerVersion = 1; // deliberately never advanced below
+
+    try {
+      const buffer = cache.sync(device, "errors", stream, managerVersion, nodeCount);
+      assertAlmostEquals((await readBuffer(device, buffer, nodeCount))[1], 0.25, 1e-6);
+
+      // Direct mutation, no manager involvement.
+      stream.setValue(1, 10);
+      stream.reads = 0;
+      const after = cache.sync(device, "errors", stream, managerVersion, nodeCount);
+      assertEquals(stream.reads, nodeCount, "direct stream mutation must force a recompute");
+      assertAlmostEquals((await readBuffer(device, after, nodeCount))[1], 1, 1e-6);
+
+      // A domain change through the stream is equally invisible to the manager.
+      stream.setDomain([0, 20]);
+      stream.reads = 0;
+      const rescaled = cache.sync(device, "errors", stream, managerVersion, nodeCount);
+      assertEquals(stream.reads, nodeCount, "direct domain change must force a recompute");
+      assertAlmostEquals((await readBuffer(device, rescaled, nodeCount))[1], 0.5, 1e-6);
+
+      // ...and it still settles: no further reads once nothing changes.
+      stream.reads = 0;
+      cache.sync(device, "errors", stream, managerVersion, nodeCount);
+      assertEquals(stream.reads, 0, "an unchanged stream must not recompute");
     } finally {
       cache.destroy();
     }

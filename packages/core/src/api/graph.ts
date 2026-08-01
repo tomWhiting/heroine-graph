@@ -70,8 +70,7 @@ import {
 import { createEdgeIndicesBuffer } from "../graph/parser.ts";
 import { boundsCenter, fitBoundsScale } from "../viewport/transforms.ts";
 import {
-  type BufferParity,
-  buildForBothParities,
+  BindGroupParitySets,
   copyEdgesToSimulation,
   copyPositionsToReadback,
   copyPositionsToSimulation,
@@ -81,14 +80,12 @@ import {
   DEAD_SLOT_RADIUS,
   NODE_FLAG_DEAD,
   NODE_FLAG_PINNED,
-  type ParityPair,
   readbackPositions,
   recordSimulationStepWithOptions,
   type SimulationBindGroups,
   type SimulationBuffers,
   type SimulationPipeline,
   startSettlingTelemetry,
-  swapSimulationBuffers,
   updateSimulationUniforms,
 } from "../simulation/pipeline.ts";
 import {
@@ -153,6 +150,7 @@ import {
   initializeBuiltinAlgorithms,
   RelativityAtlasAlgorithm,
   RelativityAtlasBuffers,
+  supportsAlgorithmOnDevice,
   TidyTreeAlgorithm,
   uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
@@ -386,8 +384,6 @@ export class GraphMother {
 
   // GPU resources
   private buffers: GPUBuffers | null = null;
-  private nodeBindGroupSets: ParityPair<GPUBindGroup> | null = null;
-  private edgeBindGroupSets: ParityPair<GPUBindGroup> | null = null;
   private viewportBindGroup: GPUBindGroup | null = null;
   private renderConfigBindGroup: GPUBindGroup | null = null;
   private renderConfigBuffer: GPUBuffer | null = null;
@@ -421,65 +417,75 @@ export class GraphMother {
 
   // GPU Simulation resources
   private simBuffers: SimulationBuffers | null = null;
-  private simBindGroupSets: ParityPair<SimulationBindGroups> | null = null;
 
   /**
-   * Which ping-pong orientation the simulation buffers are in this frame.
+   * The ping-pong parity state machine (packages/core/src/simulation/pipeline.ts).
    *
-   * Every bind group that references a ping-pong buffer is built twice — once
-   * per parity — when the buffers are allocated (see rebuildAllBindGroups), so
-   * advancing a frame is an index flip rather than ~14 createBindGroup calls.
-   * simBuffers itself is still swapped in place, so `simBuffers.positions` is
-   * always the buffer the simulation reads this frame.
+   * Owns the parity counter, every parity-indexed bind-group set, and the
+   * swap-and-flip step; this class only delegates. Nothing about the mechanism
+   * is reimplemented here, so it is covered by the tests for that unit
+   * (tests/unit/parity_sets_test.ts, tests/gpu/bind_group_parity_test.ts)
+   * rather than by hand-reading graph.ts.
+   *
+   * simBuffers is swapped in place by `paritySets.advance()`, so
+   * `simBuffers.positions` is always the buffer the simulation reads this frame.
    */
-  private bufferParity: BufferParity = 0;
+  private readonly paritySets = new BindGroupParitySets(() => this.simBuffers);
+
+  private readonly simBindGroupSlot = this.paritySets.slot<SimulationBindGroups>("simulation");
+  private readonly nodeBindGroupSlot = this.paritySets.slot<GPUBindGroup>("node render");
+  private readonly edgeBindGroupSlot = this.paritySets.slot<GPUBindGroup>("edge render");
+  private readonly algorithmBindGroupSlot = this.paritySets.slot<AlgorithmBindGroups>("algorithm");
+  private readonly collisionBindGroupSlot = this.paritySets.slot<CollisionBindGroup>("collision");
+  private readonly gridCollisionBindGroupSlot = this.paritySets.slot<GridCollisionBindGroups>(
+    "grid collision",
+  );
 
   // Force algorithm resources
   private currentAlgorithm: ForceAlgorithm | null = null;
   private algorithmPipelines: AlgorithmPipelines | null = null;
   private algorithmBuffers: AlgorithmBuffers | null = null;
-  private algorithmBindGroupSets: ParityPair<AlgorithmBindGroups> | null = null;
 
   // Collision detection resources
   private collisionPipeline: CollisionPipeline | null = null;
   private collisionBuffers: CollisionBuffers | null = null;
-  private collisionBindGroupSets: ParityPair<CollisionBindGroup> | null = null;
 
   // Grid collision resources (O(n·k) spatial hash for large graphs)
   private gridCollisionPipeline: GridCollisionPipeline | null = null;
   private gridCollisionBuffers: GridCollisionBuffers | null = null;
-  private gridCollisionBindGroupSets: ParityPair<GridCollisionBindGroups> | null = null;
   private maxNodeRadius: number = 5.0;
   private frameBounds: BoundingBox | undefined;
 
   // ------------------------------------------------------------------------
   // Bind groups for the current ping-pong parity.
-  // Each reads one half of a pair built by rebuildAllBindGroups; nothing here
-  // allocates, so these are safe to touch on the per-frame path.
+  // Each delegates to its ParitySlot, which selects the variant matching the
+  // current parity and throws if that variant was not built from the buffer
+  // the simulation is reading this frame. Nothing here allocates, so these are
+  // safe to touch on the per-frame path.
   // ------------------------------------------------------------------------
 
   private get simBindGroups(): SimulationBindGroups | null {
-    return this.simBindGroupSets?.[this.bufferParity] ?? null;
+    return this.simBindGroupSlot.current;
   }
 
   private get nodeBindGroup(): GPUBindGroup | null {
-    return this.nodeBindGroupSets?.[this.bufferParity] ?? null;
+    return this.nodeBindGroupSlot.current;
   }
 
   private get edgeBindGroup(): GPUBindGroup | null {
-    return this.edgeBindGroupSets?.[this.bufferParity] ?? null;
+    return this.edgeBindGroupSlot.current;
   }
 
   private get algorithmBindGroups(): AlgorithmBindGroups | null {
-    return this.algorithmBindGroupSets?.[this.bufferParity] ?? null;
+    return this.algorithmBindGroupSlot.current;
   }
 
   private get collisionBindGroup(): CollisionBindGroup | null {
-    return this.collisionBindGroupSets?.[this.bufferParity] ?? null;
+    return this.collisionBindGroupSlot.current;
   }
 
   private get gridCollisionBindGroups(): GridCollisionBindGroups | null {
-    return this.gridCollisionBindGroupSets?.[this.bufferParity] ?? null;
+    return this.gridCollisionBindGroupSlot.current;
   }
 
   // Interaction
@@ -917,7 +923,7 @@ export class GraphMother {
       }
 
       // simBuffers is always in the current parity's orientation, so this
-      // context matches the bind groups selected by `bufferParity`.
+      // context matches the bind groups the parity slots select.
       this.currentAlgorithm.updateUniforms(
         device,
         this.algorithmBuffers,
@@ -1015,19 +1021,14 @@ export class GraphMother {
   /**
    * Rotate the ping-pong buffers after a simulation step.
    *
-   * No bind group is created here: both parity variants of every bind group
-   * that references a ping-pong buffer were built when those buffers were
+   * The swap and the parity flip happen together inside
+   * BindGroupParitySets.advance() — they are one state transition, and every
+   * bind-group read asserts the two are still in agreement. No bind group is
+   * created here: both parity variants were built when the buffers were
    * allocated (rebuildAllBindGroups), so advancing a frame is an index flip.
-   *
-   * simBuffers is still swapped in place because everything else in the class
-   * reads `simBuffers.positions` as "the buffer holding current positions"
-   * (readback, drag writes, layer render contexts).
    */
   private advanceFrameParity(): void {
-    if (!this.simBuffers) return;
-
-    swapSimulationBuffers(this.simBuffers);
-    this.bufferParity = (this.bufferParity ^ 1) as BufferParity;
+    this.paritySets.advance();
 
     // Layers must point at the new read buffer, not the buffer the simulation
     // is about to write. Stream-derived uploads inside are dirty-gated.
@@ -1342,6 +1343,15 @@ export class GraphMother {
     this.prevSyncPositionsY = null;
     this.convergenceCheckCount = 0;
     this.lastBirthTime = 0;
+
+    // Stream-derived intensity buffers are slot-indexed and grow-only, so a
+    // large graph followed by a small one would otherwise pin the old scratch
+    // array and GPU buffer for the process lifetime. syncStreamIntensities
+    // recreates the cache for any layer that still needs one.
+    for (const cache of this.streamIntensityCaches.values()) {
+      cache.destroy();
+    }
+    this.streamIntensityCaches.clear();
   }
 
   // ==========================================================================
@@ -1873,8 +1883,8 @@ export class GraphMother {
       this.buffers = null;
     }
 
-    this.nodeBindGroupSets = null;
-    this.edgeBindGroupSets = null;
+    this.nodeBindGroupSlot.clear();
+    this.edgeBindGroupSlot.clear();
   }
 
   // ==========================================================================
@@ -3328,11 +3338,13 @@ export class GraphMother {
   // Bind group construction
   //
   // Every bind group below references at least one ping-pong buffer, so each
-  // is built twice — once per BufferParity — and the per-frame path only flips
-  // the index (see advanceFrameParity). These MUST be re-run whenever any
-  // referenced buffer is reallocated (load, node/edge capacity growth,
-  // algorithm switch, collision buffer recreation): a bind group holding a
-  // destroyed buffer is a device-loss bug.
+  // is built twice — once per BufferParity, by its ParitySlot — and the
+  // per-frame path only flips the index (see advanceFrameParity). These MUST
+  // be re-run whenever any referenced buffer is reallocated (load, node/edge
+  // capacity growth, algorithm switch, collision buffer recreation): a bind
+  // group holding a destroyed buffer is a device-loss bug. A missed rebuild
+  // that leaves a slot pointing at a replaced positions buffer is caught by
+  // the slot's own staleness check on the next read.
   // ==========================================================================
 
   /**
@@ -3346,20 +3358,14 @@ export class GraphMother {
     const { device } = this.gpuContext;
     const pipeline = this.simulationPipeline;
 
-    this.simBindGroupSets = buildForBothParities(
-      this.simBuffers,
-      this.bufferParity,
-      (view) => createSimulationBindGroups(device, pipeline, view),
-    );
+    this.simBindGroupSlot.rebuild((view) => createSimulationBindGroups(device, pipeline, view));
 
     // Render reads the simulation's current position buffer directly — the
     // separate render position buffer is only the pre-simulation upload target.
     if (this.nodePipeline && this.buffers) {
       const nodePipeline = this.nodePipeline;
       const nodeAttributes = this.buffers.nodeAttributes;
-      this.nodeBindGroupSets = buildForBothParities(
-        this.simBuffers,
-        this.bufferParity,
+      this.nodeBindGroupSlot.rebuild(
         (view) => createNodeBindGroup(device, nodePipeline, view.positions, nodeAttributes),
       );
     }
@@ -3367,9 +3373,7 @@ export class GraphMother {
     if (this.edgePipeline && this.buffers) {
       const edgePipeline = this.edgePipeline;
       const { edgeIndices, edgeAttributes } = this.buffers;
-      this.edgeBindGroupSets = buildForBothParities(
-        this.simBuffers,
-        this.bufferParity,
+      this.edgeBindGroupSlot.rebuild(
         (view) =>
           createEdgeBindGroup(device, edgePipeline, view.positions, edgeIndices, edgeAttributes),
       );
@@ -3386,7 +3390,7 @@ export class GraphMother {
       !this.simBuffers || !this.currentAlgorithm || !this.algorithmPipelines ||
       !this.algorithmBuffers
     ) {
-      this.algorithmBindGroupSets = null;
+      this.algorithmBindGroupSlot.clear();
       return;
     }
 
@@ -3397,9 +3401,7 @@ export class GraphMother {
     // O(n) over the CPU position shadow — computed once, not once per parity.
     const bounds = this.computeCurrentBounds();
 
-    this.algorithmBindGroupSets = buildForBothParities(
-      this.simBuffers,
-      this.bufferParity,
+    this.algorithmBindGroupSlot.rebuild(
       (view) =>
         algorithm.createBindGroups(
           device,
@@ -3426,9 +3428,7 @@ export class GraphMother {
     if (this.collisionPipeline && this.collisionBuffers) {
       const pipeline = this.collisionPipeline;
       const buffers = this.collisionBuffers;
-      this.collisionBindGroupSets = buildForBothParities(
-        this.simBuffers,
-        this.bufferParity,
+      this.collisionBindGroupSlot.rebuild(
         (view) =>
           createCollisionBindGroup(device, pipeline, buffers, view.positionsOut, view.nodeFlags),
       );
@@ -3438,9 +3438,7 @@ export class GraphMother {
       const pipeline = this.gridCollisionPipeline;
       const gridBuffers = this.gridCollisionBuffers;
       const { nodeSizes, displacements } = this.collisionBuffers;
-      this.gridCollisionBindGroupSets = buildForBothParities(
-        this.simBuffers,
-        this.bufferParity,
+      this.gridCollisionBindGroupSlot.rebuild(
         (view) =>
           createGridCollisionBindGroups(
             device,
@@ -3735,7 +3733,7 @@ export class GraphMother {
    */
   setForceAlgorithm(type: ForceAlgorithmType): void {
     const registry = getAlgorithmRegistry();
-    const algorithm = registry.get(type);
+    let algorithm = registry.get(type);
 
     if (!algorithm) {
       throw new GraphMotherError(
@@ -3746,14 +3744,36 @@ export class GraphMother {
       );
     }
 
+    // Some algorithms bind more storage buffers per compute stage than the
+    // WebGPU default of 8 (Barnes-Hut 10, Relativity Atlas 9). On a device
+    // that cannot supply them, their bind group layouts are invalid — and an
+    // invalid bind group poisons the compute pass, the pass poisons the
+    // encoder, and submit() then discards the whole frame, springs and
+    // integration included. That is a frozen canvas, not a slower layout, so
+    // substitute a working algorithm and say so rather than honouring the
+    // request. createPipelines throws on the same condition; this keeps the
+    // public setter from being the thing that throws.
+    const { device } = this.gpuContext;
+    if (!supportsAlgorithmOnDevice(algorithm.info, device)) {
+      const fallback = registry.get("n2") ?? registry.getRecommended(this.state.nodeCount, device);
+      console.warn(
+        `[GraphMother] ${algorithm.info.name} needs maxStorageBuffersPerShaderStage >= ` +
+          `${algorithm.info.minStorageBuffersPerShaderStage}, but this device supports ` +
+          `${device.limits.maxStorageBuffersPerShaderStage}. Falling back to ` +
+          `${fallback?.info.name ?? "no algorithm"}.`,
+      );
+      if (!fallback || fallback.info.id === this.currentAlgorithm?.info.id) return;
+      algorithm = fallback;
+    }
+
     // Skip if already using this algorithm
-    if (this.currentAlgorithm?.info.id === type) {
+    if (this.currentAlgorithm?.info.id === algorithm.info.id) {
       return;
     }
 
     // Destroy old algorithm resources. Clearing the bind group sets first is
     // what keeps the compute path from binding groups whose buffers are gone.
-    this.algorithmBindGroupSets = null;
+    this.algorithmBindGroupSlot.clear();
     this.algorithmBuffers?.destroy();
     this.algorithmBuffers = null;
 
@@ -6616,31 +6636,27 @@ export class GraphMother {
       this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
-    this.simBindGroupSets = null;
-    // The node/edge render bind groups read the simulation position buffers
-    // destroyed above, so they must go with them. rebuildSimulationBindGroups
-    // recreates them once fresh buffers exist.
-    this.nodeBindGroupSets = null;
-    this.edgeBindGroupSets = null;
+    // Every parity-indexed bind group references at least one buffer destroyed
+    // above — including the node/edge render sets, which read the simulation
+    // position buffers directly. rebuildAllBindGroups recreates them once
+    // fresh buffers exist.
+    this.paritySets.clearAll();
 
     // Destroy algorithm-specific buffers
     this.algorithmBuffers?.destroy();
     this.algorithmBuffers = null;
-    this.algorithmBindGroupSets = null;
 
     // Destroy collision buffers
     if (this.collisionBuffers) {
       destroyCollisionBuffers(this.collisionBuffers);
       this.collisionBuffers = null;
     }
-    this.collisionBindGroupSets = null;
 
     // Destroy grid collision buffers
     if (this.gridCollisionBuffers) {
       destroyGridCollisionBuffers(this.gridCollisionBuffers);
       this.gridCollisionBuffers = null;
     }
-    this.gridCollisionBindGroupSets = null;
   }
 
   // ==========================================================================

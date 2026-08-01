@@ -18,6 +18,7 @@ import {
   NODE_FLAG_DEAD,
   NODE_FLAG_PINNED,
   probeAdapter,
+  requestHarnessDevice,
   runCollision,
 } from "../helpers/gpu.ts";
 
@@ -33,7 +34,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

@@ -25,6 +25,7 @@ import {
   loadModuleInliningWgsl,
   NODE_FLAG_DEAD,
   probeAdapter,
+  requestHarnessDevice,
   waitForQueue,
 } from "../helpers/gpu.ts";
 import { countNonFinite, maxRadius, meanEdgeLength } from "../helpers/invariants.ts";
@@ -46,7 +47,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {
@@ -435,6 +436,20 @@ gpuTest(
   },
 );
 
+/** Mean position over all nodes, the reference point maxRadius measures from. */
+function centroid(
+  positions: { x: Float32Array; y: Float32Array },
+  nodeCount: number,
+): { x: number; y: number } {
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    cx += positions.x[i] / nodeCount;
+    cy += positions.y[i] / nodeCount;
+  }
+  return { x: cx, y: cy };
+}
+
 gpuTest(
   "GPU t-FDP: layout extent stabilizes on a code tree (no unbounded inflation)",
   async (device) => {
@@ -448,6 +463,21 @@ gpuTest(
     const harness = await createTFdpHarness(device, tree);
 
     try {
+      // Every assertion below is a property of the RUN, so it must be anchored
+      // to where the run started rather than to literals the fixture already
+      // satisfies: the generated tree is born with radius > 60 and mean edge
+      // length > 5, and a frozen simulation trivially has r400 == r200. The
+      // initial measurements below turn each of those into a real comparison.
+      const initial = await harness.readPositions();
+      const initialCenter = centroid(initial, tree.nodeCount);
+      const rInitial = maxRadius(initial.x, initial.y, initialCenter.x, initialCenter.y);
+      const initialEdgeLen = meanEdgeLength(
+        initial.x,
+        initial.y,
+        tree.edgeSources,
+        tree.edgeTargets,
+      );
+
       await harness.tick(200);
       const mid = await harness.readPositions();
       assertEquals(countNonFinite(mid.x, mid.y), 0);
@@ -470,20 +500,44 @@ gpuTest(
       }
       const r400 = maxRadius(end.x, end.y, cx, cy);
 
+      // The layout must have actually reorganized the fixture by tick 200 —
+      // otherwise the ratio below is 1.0 by construction and proves nothing
+      // (a frozen simulation passed every assertion in this test before this
+      // anchor existed). Measured r200/rInitial with the t-kernel live: ~6.1.
+      // Requiring a 10% change in extent is a weak lower bound on "it ran"
+      // while staying well clear of any legitimate retuning.
+      assert(
+        Math.abs(r200 - rInitial) > 0.1 * rInitial,
+        `layout never evolved: rInitial=${rInitial.toFixed(1)}, r200=${r200.toFixed(1)}`,
+      );
+
       // Bounded: not still inflating between tick 200 and tick 400
       assert(
         r400 < 1.35 * r200,
         `layout still inflating: r200=${r200.toFixed(1)}, r400=${r400.toFixed(1)}`,
       );
       // ...and not collapsed to a point (the pre-normalization failure
-      // mode: kernel ~0 at world spacing, attraction wins everywhere)
-      assert(r400 > 60, `layout collapsed: r400=${r400.toFixed(1)}`);
+      // mode: kernel ~0 at world spacing, attraction wins everywhere).
+      // Measured against the fixture's own starting extent, not a literal it
+      // already exceeds before the first tick.
+      // Measured r400/rInitial: ~6.7, so half the starting extent is a 13x
+      // margin against the real failure mode (extent decaying toward zero).
+      assert(
+        r400 > 0.5 * rInitial,
+        `layout collapsed: r400=${r400.toFixed(1)}, rInitial=${rInitial.toFixed(1)}`,
+      );
       const edgeLen = meanEdgeLength(end.x, end.y, tree.edgeSources, tree.edgeTargets);
-      assert(edgeLen > 5, `edges collapsed: mean length ${edgeLen.toFixed(2)}`);
+      // Measured edgeLen/initialEdgeLen: ~2.9.
+      assert(
+        edgeLen > 0.5 * initialEdgeLen,
+        `edges collapsed: mean length ${edgeLen.toFixed(2)} vs initial ` +
+          `${initialEdgeLen.toFixed(2)}`,
+      );
 
       console.log(
-        `[gpu] t-FDP extent: r200=${r200.toFixed(1)}, r400=${r400.toFixed(1)}, ` +
-          `ratio=${(r400 / r200).toFixed(3)}, meanEdge=${edgeLen.toFixed(1)}`,
+        `[gpu] t-FDP extent: rInitial=${rInitial.toFixed(1)}, r200=${r200.toFixed(1)}, ` +
+          `r400=${r400.toFixed(1)}, ratio=${(r400 / r200).toFixed(3)}, ` +
+          `meanEdge=${edgeLen.toFixed(1)} (initial ${initialEdgeLen.toFixed(1)})`,
       );
     } finally {
       harness.dispose();

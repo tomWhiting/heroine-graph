@@ -11,6 +11,7 @@
  */
 
 import type { GPUContext } from "../webgpu/context.ts";
+import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { calculateWorkgroups } from "../renderer/commands.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
@@ -818,6 +819,180 @@ export function buildForBothParities<T>(
   const asIs = build(buffers);
   const flipped = build(swappedPingPongView(buffers));
   return currentParity === 0 ? [asIs, flipped] : [flipped, asIs];
+}
+
+/**
+ * One parity-indexed group of bind groups (e.g. "the simulation compute bind
+ * groups", "the collision bind group").
+ *
+ * A slot holds the {@link ParityPair} produced by {@link buildForBothParities}
+ * plus the identity of the positions buffer each half was built from. Reading
+ * {@link current} checks that identity against the buffer the simulation is
+ * reading this frame, which is what turns the otherwise-silent failure mode
+ * (an off-by-one in the parity index, a reallocation that forgot to rebuild,
+ * a swap without a flip) into a thrown error instead of a simulation that
+ * reads the buffer it is writing.
+ *
+ * Slots are created by {@link BindGroupParitySets.slot} and never constructed
+ * directly; the owner supplies the parity counter and the live buffers.
+ */
+export class ParitySlot<T> {
+  readonly #label: string;
+  readonly #owner: BindGroupParitySets;
+  /**
+   * Both variants, each carrying the positions buffer it was built from.
+   *
+   * The buffer identity travels *with* the value rather than in a parallel
+   * array, so any mis-ordering of the pair — including one introduced inside
+   * buildForBothParities — moves the identity with it and trips the check in
+   * {@link current} instead of silently swapping the two bind groups.
+   */
+  #variants: ParityPair<{ value: T; positions: GPUBuffer }> | null = null;
+
+  /** @internal Use {@link BindGroupParitySets.slot}. */
+  constructor(label: string, owner: BindGroupParitySets) {
+    this.#label = label;
+    this.#owner = owner;
+  }
+
+  /** Human-readable name, used in invariant failures. */
+  get label(): string {
+    return this.#label;
+  }
+
+  /** True once {@link rebuild} has run and {@link clear} has not. */
+  get built(): boolean {
+    return this.#variants !== null;
+  }
+
+  /**
+   * Build both parity variants from the owner's current buffers.
+   *
+   * `build` must be a pure function of the buffers in its argument (see
+   * {@link buildForBothParities}); it is called twice, once per orientation.
+   * No-op when the owner holds no buffers.
+   */
+  rebuild(build: (view: SimulationBuffers) => T): void {
+    const buffers = this.#owner.buffers;
+    if (!buffers) {
+      this.clear();
+      return;
+    }
+    this.#variants = buildForBothParities(
+      buffers,
+      this.#owner.parity,
+      (view) => ({ value: build(view), positions: view.positions }),
+    );
+  }
+
+  /** Drop both variants (the buffers they reference are gone or stale). */
+  clear(): void {
+    this.#variants = null;
+  }
+
+  /**
+   * The variant matching the current parity, or null when nothing is built.
+   *
+   * @throws GraphMotherError if the selected variant was not built from the
+   *   buffer currently being read — i.e. the parity bookkeeping and the buffer
+   *   orientation have diverged.
+   */
+  get current(): T | null {
+    const variants = this.#variants;
+    if (!variants) return null;
+    const buffers = this.#owner.buffers;
+    if (!buffers) {
+      throw new GraphMotherError(
+        ErrorCode.INVALID_POSITIONS,
+        `Bind group set "${this.#label}" outlived its simulation buffers`,
+        { slot: this.#label },
+        "Clear the parity sets whenever the simulation buffers are destroyed.",
+      );
+    }
+    const parity = this.#owner.parity;
+    const selected = variants[parity];
+    if (selected.positions !== buffers.positions) {
+      throw new GraphMotherError(
+        ErrorCode.INVALID_POSITIONS,
+        `Bind group set "${this.#label}" is stale: the variant selected for parity ` +
+          `${parity} was built from a different positions buffer than the one the ` +
+          `simulation reads this frame`,
+        { slot: this.#label, parity },
+        "Rebuild this set (ParitySlot.rebuild) after every reallocation of a " +
+          "ping-pong buffer, and advance parity only through BindGroupParitySets.advance().",
+      );
+    }
+    return selected.value;
+  }
+}
+
+/**
+ * The ping-pong parity state machine: the parity counter, the buffers it
+ * describes, and every parity-indexed bind-group set built against them.
+ *
+ * Position/velocity buffers ping-pong every frame, so a bind group that
+ * references them has exactly two forms. Both are built once at allocation
+ * time ({@link ParitySlot.rebuild}) and the per-frame path is an index flip
+ * ({@link advance}) rather than ~14 createBindGroup calls.
+ *
+ * The counter and the buffer orientation MUST move together, which is why
+ * {@link advance} owns both: it swaps the buffers and flips the counter in one
+ * step. Every read goes through {@link ParitySlot.current}, which verifies the
+ * two are still in agreement.
+ *
+ * The owner keeps the buffers; this object reads them through the accessor
+ * passed to the constructor, so it never holds a stale reference of its own.
+ */
+export class BindGroupParitySets {
+  readonly #buffersRef: () => SimulationBuffers | null;
+  readonly #slots: ParitySlot<unknown>[] = [];
+  #parity: BufferParity = 0;
+
+  /**
+   * @param buffersRef - Reads the owner's live simulation buffers. Must return
+   *   the same object the owner passes to the GPU, or null when none exist.
+   */
+  constructor(buffersRef: () => SimulationBuffers | null) {
+    this.#buffersRef = buffersRef;
+  }
+
+  /** The live simulation buffers, in orientation {@link parity}. */
+  get buffers(): SimulationBuffers | null {
+    return this.#buffersRef();
+  }
+
+  /** Which ping-pong orientation the buffers are in this frame. */
+  get parity(): BufferParity {
+    return this.#parity;
+  }
+
+  /** Create a parity-indexed slot owned by this set. */
+  slot<T>(label: string): ParitySlot<T> {
+    const slot = new ParitySlot<T>(label, this);
+    this.#slots.push(slot as ParitySlot<unknown>);
+    return slot;
+  }
+
+  /**
+   * Rotate the ping-pong buffers and the parity counter together, after a
+   * simulation step has been submitted.
+   *
+   * No bind group is created: both variants of every slot were built when the
+   * buffers were allocated, so advancing a frame is an index flip. The buffers
+   * are still swapped in place because callers read `buffers.positions` as
+   * "the buffer holding current positions" (readback, drag writes, layers).
+   */
+  advance(): void {
+    const buffers = this.#buffersRef();
+    if (!buffers) return;
+    swapSimulationBuffers(buffers);
+    this.#parity = (this.#parity ^ 1) as BufferParity;
+  }
+
+  /** Drop every slot's bind groups (their buffers are gone or stale). */
+  clearAll(): void {
+    for (const slot of this.#slots) slot.clear();
+  }
 }
 
 /**

@@ -46,6 +46,19 @@ export class ValueStream {
   /** Cached color output (invalidated on data change) */
   private colorCache: Map<number, [number, number, number, number]> | null = null;
 
+  /**
+   * Monotonic counter bumped by every mutator on this stream.
+   *
+   * Consumers that derive GPU data from a stream (layers/stream_intensity.ts)
+   * cache on it. StreamManager.version only advances for mutations routed
+   * through the manager, and both this class and StreamManager are public
+   * exports — `manager.getStream(id).setValue(...)` mutates the stream without
+   * the manager ever hearing about it. Including this counter in the derived
+   * caches' keys makes those mutations visible by construction instead of by
+   * convention.
+   */
+  private mutationVersion = 0;
+
   constructor(config: ValueStreamConfig) {
     this.id = config.id;
     this.name = config.name ?? config.id;
@@ -63,6 +76,7 @@ export class ValueStream {
       this.values.set(point.nodeIndex, point.value);
     }
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -78,6 +92,7 @@ export class ValueStream {
       );
     }
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -86,6 +101,7 @@ export class ValueStream {
   setValue(nodeIndex: number, value: number): void {
     this.values.set(nodeIndex, value);
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -94,6 +110,7 @@ export class ValueStream {
   clearValue(nodeIndex: number): void {
     this.values.delete(nodeIndex);
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -102,6 +119,7 @@ export class ValueStream {
   clear(): void {
     this.values.clear();
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -211,6 +229,7 @@ export class ValueStream {
   setColorScale(scale: ValueColorScale): void {
     this.colorScale = scale;
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -225,6 +244,7 @@ export class ValueStream {
    */
   setBlendMode(mode: BlendMode): void {
     this.blendMode = mode;
+    this.mutationVersion++;
   }
 
   /**
@@ -239,6 +259,7 @@ export class ValueStream {
    */
   enable(): void {
     this.enabled = true;
+    this.mutationVersion++;
   }
 
   /**
@@ -247,6 +268,7 @@ export class ValueStream {
   disable(): void {
     this.enabled = false;
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -257,6 +279,7 @@ export class ValueStream {
     if (!this.enabled) {
       this.colorCache = null;
     }
+    this.mutationVersion++;
     return this.enabled;
   }
 
@@ -273,6 +296,7 @@ export class ValueStream {
   setOpacity(opacity: number): void {
     this.opacity = Math.max(0, Math.min(1, opacity));
     this.colorCache = null;
+    this.mutationVersion++;
   }
 
   /**
@@ -301,5 +325,13 @@ export class ValueStream {
    */
   get size(): number {
     return this.values.size;
+  }
+
+  /**
+   * Mutation counter for this stream: changes on every mutator call and never
+   * repeats a previous value. See {@link mutationVersion}.
+   */
+  get version(): number {
+    return this.mutationVersion;
   }
 }

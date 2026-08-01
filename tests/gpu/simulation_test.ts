@@ -9,7 +9,12 @@
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
-import { createSimHarness, GPU_SKIP_MESSAGE, probeAdapter } from "../helpers/gpu.ts";
+import {
+  createSimHarness,
+  GPU_SKIP_MESSAGE,
+  probeAdapter,
+  requestHarnessDevice,
+} from "../helpers/gpu.ts";
 import {
   countNonFinite,
   kineticEnergy,
@@ -36,7 +41,7 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      const device = await adapter!.requestDevice();
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

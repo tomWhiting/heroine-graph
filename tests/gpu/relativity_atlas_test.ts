@@ -18,6 +18,7 @@ import {
   type HarnessForceAlgorithm,
   loadModuleInliningWgsl,
   probeAdapter,
+  requestHarnessDevice,
 } from "../helpers/gpu.ts";
 import { countNonFinite } from "../helpers/invariants.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
@@ -34,17 +35,9 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      // RA's sibling pass binds 9 storage buffers; production requests 10
-      // via webgpu/context.ts REQUIRED_LIMITS, so mirror that here instead
-      // of the base WebGPU limit of 8.
-      const device = await adapter!.requestDevice({
-        requiredLimits: {
-          maxStorageBuffersPerShaderStage: Math.min(
-            10,
-            adapter!.limits.maxStorageBuffersPerShaderStage,
-          ),
-        },
-      });
+      // RA's sibling pass binds 9 storage buffers; requestHarnessDevice asks
+      // for production's 10 rather than the base WebGPU limit of 8.
+      const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
       } finally {

@@ -29,7 +29,11 @@ export type {
   ForceAlgorithmInfo,
   ForceAlgorithmType,
 } from "./types.ts";
-export { EmptyAlgorithmBuffers } from "./types.ts";
+export {
+  assertAlgorithmSupportedOnDevice,
+  EmptyAlgorithmBuffers,
+  supportsAlgorithmOnDevice,
+} from "./types.ts";
 
 // Registry
 export {
