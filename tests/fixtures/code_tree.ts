@@ -62,6 +62,32 @@ export interface CodeTreeGraph {
 }
 
 /**
+ * The three scales the performance envelope and the LOD work are stated at:
+ * a demo-sized repo, this project's own symbol graph, and the Meridian
+ * target. Shape parameters are identical across all three so the only
+ * variable is node count.
+ *
+ * `large` generates in ~1.1 s and is intended for benchmarks and opt-in
+ * scale checks, not for the default test run.
+ */
+const CODE_TREE_SHAPE = {
+  seed: 42,
+  maxDepth: 16,
+  minChildren: 2,
+  maxChildren: 5,
+  crossEdgeRatio: 0.15,
+} as const;
+
+export const CODE_TREE_SCALES = {
+  /** 2 500 nodes / 2 874 edges */
+  small: { ...CODE_TREE_SHAPE, maxNodes: 2_500 },
+  /** 35 000 nodes / 40 249 edges */
+  medium: { ...CODE_TREE_SHAPE, maxNodes: 35_000 },
+  /** 220 000 nodes / 252 999 edges */
+  large: { ...CODE_TREE_SHAPE, maxNodes: 220_000 },
+} as const satisfies Record<string, CodeTreeOptions>;
+
+/**
  * Node type by depth: directories down to maxDepth-2, files at maxDepth-1,
  * symbols at maxDepth.
  */

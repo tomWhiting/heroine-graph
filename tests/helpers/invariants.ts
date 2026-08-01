@@ -8,8 +8,15 @@
  * (nested-bubble algorithm tuning) should assert against these same
  * metrics.
  *
+ * The trailing section holds the semantic-LOD invariants: what "collapsed"
+ * must mean for the nodes it hides (frozen), what it must not change for
+ * the nodes it leaves visible (their layout), and the geometric cut those
+ * two follow from.
+ *
  * @module
  */
+
+import { AssertionError } from "jsr:@std/assert@^1";
 
 /**
  * Number of non-finite (NaN or +/-Inf) coordinates across both arrays.
@@ -226,4 +233,193 @@ export function densityDispersionIndex(
   const mean = sum / cellCount;
   const variance = sumSq / cellCount - mean * mean;
   return variance / mean;
+}
+
+// =============================================================================
+// Semantic LOD invariants
+// =============================================================================
+
+/** Node positions as returned by `SimHarness.readPositions`. */
+export interface PositionSnapshot {
+  readonly x: Float32Array;
+  readonly y: Float32Array;
+}
+
+/**
+ * Asserts that every listed node sits at exactly the coordinates it had
+ * before, i.e. that it did not move at all.
+ *
+ * This is the "collapsed is frozen" invariant: a hidden node must be skipped
+ * by integration, not merely excluded from rendering, so that expanding it
+ * again restores the arrangement it was collapsed with. Equality is exact —
+ * a frozen node that drifts by any amount, or turns non-finite, is a
+ * dispatch or masking bug, never rounding.
+ *
+ * Nodes outside `indices` are ignored; the caller decides which set is
+ * expected to be frozen.
+ */
+export function assertFrozen(
+  before: PositionSnapshot,
+  after: PositionSnapshot,
+  indices: ArrayLike<number>,
+): void {
+  let moved = 0;
+  let firstMoved = -1;
+  for (let k = 0; k < indices.length; k++) {
+    const i = indices[k];
+    if (after.x[i] === before.x[i] && after.y[i] === before.y[i]) continue;
+    if (firstMoved < 0) firstMoved = i;
+    moved++;
+  }
+  if (moved === 0) return;
+  throw new AssertionError(
+    `${moved}/${indices.length} nodes expected to be frozen moved; first is node ` +
+      `${firstMoved}: (${before.x[firstMoved]}, ${before.y[firstMoved]}) -> ` +
+      `(${after.x[firstMoved]}, ${after.y[firstMoved]})`,
+  );
+}
+
+/**
+ * Asserts that each listed node is within `tolerance` graph units of where a
+ * reference run put it.
+ *
+ * This is the primary LOD correctness invariant: hiding a subtree must not
+ * change the layout of what stays visible, whether the mechanism is flag
+ * masking or an active-index dispatch. The reference run is typically the
+ * same graph laid out with nothing hidden, or a graph built from only the
+ * visible nodes — the latter has a compacted slot space, so
+ * `referenceIndices` maps each entry of `indices` to its slot in the
+ * reference arrays. It defaults to `indices`, for reference runs that share
+ * the slot space.
+ *
+ * A non-finite coordinate always counts as a violation.
+ */
+export function assertVisibleSetMatchesReference(
+  actual: PositionSnapshot,
+  reference: PositionSnapshot,
+  indices: ArrayLike<number>,
+  tolerance: number,
+  referenceIndices: ArrayLike<number> = indices,
+): void {
+  if (referenceIndices.length !== indices.length) {
+    throw new AssertionError(
+      `index sets differ in length: ${indices.length} actual vs ` +
+        `${referenceIndices.length} reference`,
+    );
+  }
+
+  let violations = 0;
+  let worstIndex = -1;
+  let worstDistance = 0;
+  for (let k = 0; k < indices.length; k++) {
+    const i = indices[k];
+    const j = referenceIndices[k];
+    const distance = Math.hypot(actual.x[i] - reference.x[j], actual.y[i] - reference.y[j]);
+    // Negated comparisons so a NaN distance is a violation and the worst
+    // offender, rather than silently passing both tests.
+    if (!(distance <= worstDistance)) {
+      worstDistance = distance;
+      worstIndex = i;
+    }
+    if (!(distance <= tolerance)) violations++;
+  }
+  if (violations === 0) return;
+  throw new AssertionError(
+    `${violations}/${indices.length} visible nodes diverge from the reference layout by more ` +
+      `than ${tolerance}; worst is node ${worstIndex} at ${worstDistance}`,
+  );
+}
+
+/** Inputs to {@link computeVisibleCut}. */
+export interface VisibleCutInput {
+  /**
+   * Containment parent per node. Any value outside `[0, parent.length)` marks
+   * a root, which covers both the fixtures' `Int32Array` (-1) and
+   * `HierarchyColumns`' `Uint32Array` (0xFFFFFFFF) conventions. Forests are
+   * legal; nodes not reachable from a root are never visible.
+   */
+  readonly parent: ArrayLike<number>;
+  /** Subtree extent per node, in graph units. */
+  readonly wellRadius: ArrayLike<number>;
+  /** Graph units to screen pixels. */
+  readonly zoom: number;
+  /** Screen-space extent (`wellRadius * zoom`) at or above which a node expands. */
+  readonly expandThreshold: number;
+}
+
+/** The set of nodes a zoom level leaves on screen, and which of them stand in for a subtree. */
+export interface VisibleCut {
+  /** Visible slots, ascending. */
+  readonly visible: Uint32Array;
+  /** Visible slots that have children but did not expand, ascending. Subset of `visible`. */
+  readonly collapsed: Uint32Array;
+}
+
+/**
+ * Computes the visible cut of a containment tree at one zoom level.
+ *
+ * A node expands when its subtree covers at least `expandThreshold` pixels;
+ * a node is visible when every one of its ancestors expanded. So the cut is
+ * the frontier of the expanded region: roots, plus the children of every
+ * expanded node. A visible node that has children but did not expand is
+ * `collapsed` — it is the proxy standing in for its whole subtree.
+ *
+ * Pure and allocation-bounded (one children CSR per call), so it is
+ * table-testable against hand-computed cuts and cheap enough to call on a
+ * band crossing.
+ */
+export function computeVisibleCut(input: VisibleCutInput): VisibleCut {
+  const { parent, wellRadius, zoom, expandThreshold } = input;
+  const nodeCount = parent.length;
+  const isRoot = (slot: number): boolean => {
+    const p = parent[slot];
+    return p < 0 || p >= nodeCount;
+  };
+
+  // Children CSR over the dense slot space.
+  const childStart = new Uint32Array(nodeCount + 1);
+  let rootCount = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    if (isRoot(i)) rootCount++;
+    else childStart[parent[i] + 1]++;
+  }
+  for (let i = 0; i < nodeCount; i++) childStart[i + 1] += childStart[i];
+  const cursor = childStart.slice(0, nodeCount);
+  const childList = new Uint32Array(nodeCount - rootCount);
+  // Each node is pushed at most once (one parent each), so the stack is bounded by nodeCount.
+  const stack = new Uint32Array(nodeCount);
+  let top = 0;
+  for (let i = nodeCount - 1; i >= 0; i--) {
+    if (isRoot(i)) stack[top++] = i;
+    else childList[cursor[parent[i]]++] = i;
+  }
+
+  const visibleMask = new Uint8Array(nodeCount);
+  const collapsedMask = new Uint8Array(nodeCount);
+  let visibleCount = 0;
+  let collapsedCount = 0;
+  while (top > 0) {
+    const slot = stack[--top];
+    visibleMask[slot] = 1;
+    visibleCount++;
+    const start = childStart[slot];
+    const end = childStart[slot + 1];
+    if (start === end) continue;
+    if (wellRadius[slot] * zoom >= expandThreshold) {
+      for (let c = start; c < end; c++) stack[top++] = childList[c];
+    } else {
+      collapsedMask[slot] = 1;
+      collapsedCount++;
+    }
+  }
+
+  const visible = new Uint32Array(visibleCount);
+  const collapsed = new Uint32Array(collapsedCount);
+  let v = 0;
+  let c = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    if (visibleMask[i]) visible[v++] = i;
+    if (collapsedMask[i]) collapsed[c++] = i;
+  }
+  return { visible, collapsed };
 }
