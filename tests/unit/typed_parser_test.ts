@@ -255,6 +255,59 @@ Deno.test("parseGraphTypedInput: passes a supplied hierarchy through, and ignore
   assertEquals(parsed.hierarchy, hierarchy);
 });
 
+Deno.test("parseGraphTypedInput: retains per-slot metadata for cards and getNode", () => {
+  // The typed path used to hard-code empty metadata maps, which silently made
+  // CardNode.label and contentRef dead for every typed-input producer — the
+  // exact columns the code-graph card renderer reads.
+  const parsed = parseGraphTypedInput({
+    nodeCount: 3,
+    edgeCount: 1,
+    edgePairs: new Uint32Array([0, 1]),
+    nodeMetadata: [
+      { label: "src/", data: { contentRef: "sha256:aa" } },
+      undefined as unknown as { label: string },
+      { label: "mod.ts" },
+    ],
+    edgeMetadata: [{ label: "imports" }],
+  });
+
+  assertEquals(parsed.nodeMetadata.get(0), { label: "src/", data: { contentRef: "sha256:aa" } });
+  assertEquals(parsed.nodeMetadata.has(1), false, "a hole is a node without metadata");
+  assertEquals(parsed.nodeMetadata.get(2), { label: "mod.ts" });
+  assertEquals(parsed.edgeMetadata.get(0), { label: "imports" });
+
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 3,
+        nodeMetadata: [{ label: "short" }],
+      }),
+    GraphMotherError,
+    "nodeMetadata length",
+  );
+  assertThrows(
+    () =>
+      parseGraphTypedInput({
+        nodeCount: 2,
+        edgeCount: 2,
+        edgePairs: new Uint32Array([0, 1, 1, 0]),
+        edgeMetadata: [{ label: "short" }],
+      }),
+    GraphMotherError,
+    "edgeMetadata length",
+  );
+
+  const invalid = validateGraphTypedInput({
+    nodeCount: 3,
+    edgeCount: 1,
+    edgePairs: new Uint32Array([0, 1]),
+    nodeMetadata: [{ label: "short" }],
+    edgeMetadata: [{}, {}],
+  });
+  assertEquals(invalid.valid, false);
+  assertEquals(invalid.errors.length, 2); // both metadata columns wrong length
+});
+
 Deno.test("validateGraphTypedInput: covers the alias and the kind column", () => {
   assertEquals(
     validateGraphTypedInput({

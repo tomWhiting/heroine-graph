@@ -148,6 +148,57 @@ function semanticColumns(
 }
 
 /**
+ * Adopt the per-slot metadata columns from the input.
+ *
+ * Entries are retained by reference, keyed by slot, exactly as the object
+ * parser retains `node.metadata` — this is what card labels and `contentRef`
+ * read, and what `getNode().metadata` reports. Holes (absent entries) are
+ * simply nodes without metadata. Styling is NOT read from here on the typed
+ * path: `nodeRadii`/`nodeColors`/`edgeWidths`/`edgeColors` are the styling
+ * columns, and a second channel for the same knob would disagree silently.
+ *
+ * Lengths are checked because the arrays are read by slot: a short column
+ * would misattribute every entry after the gap to the wrong node.
+ */
+function metadataColumns(
+  input: GraphTypedInput,
+  nodeCount: number,
+  edgeCount: number,
+): {
+  nodeMetadata: Map<number, Record<string, unknown>>;
+  edgeMetadata: Map<number, Record<string, unknown>>;
+} {
+  if (input.nodeMetadata && input.nodeMetadata.length !== nodeCount) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `nodeMetadata length (${input.nodeMetadata.length}) must equal nodeCount (${nodeCount})`,
+    );
+  }
+  if (input.edgeMetadata && input.edgeMetadata.length !== edgeCount) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `edgeMetadata length (${input.edgeMetadata.length}) must equal edgeCount (${edgeCount})`,
+    );
+  }
+
+  const nodeMetadata = new Map<number, Record<string, unknown>>();
+  if (input.nodeMetadata) {
+    for (let i = 0; i < nodeCount; i++) {
+      const entry = input.nodeMetadata[i];
+      if (entry) nodeMetadata.set(i, entry as Record<string, unknown>);
+    }
+  }
+  const edgeMetadata = new Map<number, Record<string, unknown>>();
+  if (input.edgeMetadata) {
+    for (let i = 0; i < edgeCount; i++) {
+      const entry = input.edgeMetadata[i];
+      if (entry) edgeMetadata.set(i, entry as Record<string, unknown>);
+    }
+  }
+  return { nodeMetadata, edgeMetadata };
+}
+
+/**
  * Parses GraphTypedInput into GPU-ready format
  *
  * This parser is optimized for large graphs where data is already
@@ -179,6 +230,7 @@ export function parseGraphTypedInput(
   const inputEdgePairs = resolveEdgePairs(input);
   const edgeTypes = edgeTypesFromKinds(input, edgeCount);
   const semantics = semanticColumns(input, nodeCount);
+  const metadata = metadataColumns(input, nodeCount, edgeCount);
 
   // Create ID maps (accepts string or number IDs)
   const nodeIdMap = createIdMap<IdLike>();
@@ -321,8 +373,8 @@ export function parseGraphTypedInput(
     edgeSources,
     edgeTargets,
     edgeAttributes,
-    nodeMetadata: new Map(),
-    edgeMetadata: new Map(),
+    nodeMetadata: metadata.nodeMetadata,
+    edgeMetadata: metadata.edgeMetadata,
     edgeTypes,
     hierarchy: input.hierarchy,
     ...semantics,
@@ -403,6 +455,20 @@ export function validateGraphTypedInput(input: unknown): {
   const weightVal = obj["weight"];
   if (weightVal instanceof Float32Array && weightVal.length !== nodeCount) {
     errors.push(`weight length (${weightVal.length}) must equal nodeCount (${nodeCount})`);
+  }
+
+  const nodeMetadataVal = obj["nodeMetadata"];
+  if (Array.isArray(nodeMetadataVal) && nodeMetadataVal.length !== nodeCount) {
+    errors.push(
+      `nodeMetadata length (${nodeMetadataVal.length}) must equal nodeCount (${nodeCount})`,
+    );
+  }
+
+  const edgeMetadataVal = obj["edgeMetadata"];
+  if (Array.isArray(edgeMetadataVal) && edgeMetadataVal.length !== edgeCount) {
+    errors.push(
+      `edgeMetadata length (${edgeMetadataVal.length}) must equal edgeCount (${edgeCount})`,
+    );
   }
 
   if (edgePairsVal instanceof Uint32Array) {
