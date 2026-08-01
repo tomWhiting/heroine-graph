@@ -175,6 +175,15 @@ export interface AlgorithmRenderContext {
    * reference pattern.
    */
   nodeFlags?: GPUBuffer | undefined;
+  /**
+   * Per-node simulation mass buffer (f32 per slot; 1.0 = one body — see
+   * pipeline.ts `nodeMass`). A collapsed LOD subtree rolls its members' mass
+   * into the visible proxy, so any repulsion shader that treats every body as
+   * unit mass silently shrinks the layout when a subtree collapses. Algorithms
+   * that cannot obtain this buffer must fall back to a 1.0-filled one, not a
+   * zeroed one: zero mass is no repulsion.
+   */
+  nodeMass?: GPUBuffer | undefined;
 }
 
 /**

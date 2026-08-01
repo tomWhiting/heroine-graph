@@ -44,6 +44,11 @@ struct ForceUniforms {
 // Node state flags (bit 0 = dead slot from removal) — see pipeline.ts
 @group(0) @binding(8) var<storage, read> node_flags: array<u32>;
 
+// Per-particle simulation mass (f32 per slot), the same buffer init_leaves
+// seeds the tree from. Read here only to know how much of the coincident mass
+// is this particle's own leaf.
+@group(0) @binding(9) var<storage, read> particle_mass: array<f32>;
+
 // Stack depth for tree traversal. For a binary tree with N nodes, the maximum
 // stack depth needed is log₂(N). For 131K nodes (current limit), ~17 levels suffice.
 // However, Karras trees can be unbalanced. We use 128 to handle extreme cases,
@@ -107,9 +112,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let pos = positions[particle_idx];
+    let own_mass = particle_mass[particle_idx];
     var total_force = vec2<f32>(0.0, 0.0);
     // Mass found at (essentially) this particle's own position, including its
-    // own leaf (mass 1). Any excess is other bodies stacked on this one.
+    // own leaf. Any excess is other bodies stacked on this one.
     var coincident_mass = 0.0;
 
     // Handle degenerate cases
@@ -173,10 +179,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if (use_approximation) {
             if (dist_sq < COINCIDENT_DIST_SQ) {
                 // Same position: repulsion direction is degenerate. This is
-                // either the particle's own leaf (always encountered, mass 1)
-                // or a distinct body stacked on it. Tally the mass; the own
-                // contribution is subtracted after the walk and the excess
-                // gets a deterministic separation impulse.
+                // either the particle's own leaf (always encountered, carrying
+                // own_mass) or a distinct body stacked on it. Tally the mass;
+                // the own contribution is subtracted after the walk and the
+                // excess gets a deterministic separation impulse.
                 coincident_mass += cell_mass;
             } else {
                 // Cell is far enough OR is a leaf - treat as single body
@@ -212,13 +218,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    // Coincident mass beyond this particle's own leaf (mass 1) belongs to
-    // genuinely distinct bodies at the same position. Without this they would
-    // never repel and stay permanently fused (springs also vanish at zero
-    // distance). Push along a per-index golden-angle direction — the same
-    // deterministic tiebreaker collision.comp.wgsl uses — at min_distance
-    // repulsion strength.
-    let extra_coincident = coincident_mass - 1.0;
+    // Coincident mass beyond this particle's own leaf belongs to genuinely
+    // distinct bodies at the same position. Without this they would never
+    // repel and stay permanently fused (springs also vanish at zero distance).
+    // Push along a per-index golden-angle direction — the same deterministic
+    // tiebreaker collision.comp.wgsl uses — at min_distance repulsion
+    // strength. Subtracting own_mass rather than 1.0 is what stops a collapsed
+    // proxy shoving itself sideways by its own aggregate mass.
+    let extra_coincident = coincident_mass - own_mass;
     if (extra_coincident > 0.0) {
         let angle = f32(particle_idx) * 0.618033988749895 * 6.28318530718;  // Golden ratio
         let dir = vec2<f32>(cos(angle), sin(angle));

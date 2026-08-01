@@ -550,6 +550,8 @@ export type {
 // =============================================================================
 
 export { CrossfadeScheduler, NODE_ALPHA_OPAQUE, NODE_ALPHA_TRANSPARENT } from "./src/lod/mod.ts";
+export { commitNodeMass, NODE_MASS_HIDDEN, NODE_MASS_UNIT, rollUpMass } from "./src/lod/mod.ts";
+export type { MassDirtyRange } from "./src/lod/mod.ts";
 
 // =============================================================================
 // DOM Card Overlay

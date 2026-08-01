@@ -4,12 +4,12 @@
 // Uses vec2<f32> layout for consolidated position/force data.
 //
 // Two entry points share the pair-force math:
-// - main:        bindings 0-2, no slot masking (used by the N² algorithm
+// - main:        bindings 0-2 + 4, no slot masking (used by the N² algorithm
 //                plugin, whose bind group has no node_flags buffer)
-// - main_masked: bindings 0-3, skips dead slots (holes from removals) —
+// - main_masked: bindings 0-4, skips dead slots (holes from removals) —
 //                used by the core simulation pipeline
 // Auto pipeline layouts only require bindings statically reachable from the
-// chosen entry point, so main's layout stays 0-2.
+// chosen entry point, so main's layout stays free of node_flags.
 
 struct RepulsionUniforms {
     node_count: u32,
@@ -29,10 +29,24 @@ struct RepulsionUniforms {
 // Node state flags (bit 0 = dead slot from removal) - main_masked only
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
 
+// Per-node simulation mass (f32 per slot, 1.0 = one body). A collapsed LOD
+// subtree rolls its members' mass into the visible proxy so the proxy repels
+// like the subtree it stands for. uniforms.repulsion_strength stays the global
+// multiplier; this is per-node on top of it.
+@group(0) @binding(4) var<storage, read> node_mass: array<f32>;
+
 const NODE_FLAG_DEAD: u32 = 1u;
 
-// Coulomb-like repulsion between one pair: F = k / r^2
-fn pair_force(node_pos: vec2<f32>, other_pos: vec2<f32>) -> vec2<f32> {
+// Coulomb-like repulsion between one pair: F = k * m / r^2, where m is the
+// SOURCE node's mass. The integrator has no mass term, so scaling the source
+// alone makes a collapsed proxy of mass M accelerate like the centre of mass
+// of the M bodies it replaces.
+//
+// Mass belongs in the magnitude rather than on the accumulated vector: at unit
+// mass `k * 1.0 / r^2` rounds to exactly `k / r^2`, whereas a trailing
+// `pair * mass` next to `force +=` is an fma-contraction candidate and drifts
+// by ULPs from the mass-free shader (SC-005 is checked bit-exactly).
+fn pair_force(node_pos: vec2<f32>, other_pos: vec2<f32>, other_mass: f32) -> vec2<f32> {
     let delta = node_pos - other_pos;
     let dist_sq = dot(delta, delta);
 
@@ -45,7 +59,7 @@ fn pair_force(node_pos: vec2<f32>, other_pos: vec2<f32>) -> vec2<f32> {
     let safe_dist_sq = max(dist_sq, min_dist_sq);
     let dist = sqrt(safe_dist_sq);
 
-    let force_magnitude = uniforms.repulsion_strength / safe_dist_sq;
+    let force_magnitude = uniforms.repulsion_strength * other_mass / safe_dist_sq;
 
     return delta * (force_magnitude / dist);
 }
@@ -67,7 +81,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        force += pair_force(node_pos, positions[i]);
+        force += pair_force(node_pos, positions[i], node_mass[i]);
     }
 
     forces[node_idx] += force;
@@ -99,7 +113,7 @@ fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        force += pair_force(node_pos, positions[i]);
+        force += pair_force(node_pos, positions[i], node_mass[i]);
     }
 
     forces[node_idx] += force;

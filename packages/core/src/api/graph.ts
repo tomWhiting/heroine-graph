@@ -41,6 +41,7 @@ import {
   retainSuppliedHierarchy,
   selectContainmentEdges,
 } from "../graph/hierarchy.ts";
+import { commitNodeMass, NODE_MASS_UNIT } from "../lod/mass.ts";
 import {
   createNodeBindGroup,
   createNodeRenderPipeline,
@@ -98,6 +99,7 @@ import {
   startSettlingTelemetry,
   updateSimulationUniforms,
   writeOpaqueNodeAlpha,
+  writeUnitNodeMass,
 } from "../simulation/pipeline.ts";
 import {
   type CollisionBindGroup,
@@ -415,6 +417,13 @@ export class GraphMother {
   private suppliedHierarchyStamp: { nodes: number; edges: number } | null = null;
   /** Whether the "no WASM engine, no hierarchy" warning has already been issued. */
   private hierarchyUnavailableWarned = false;
+  /**
+   * CPU mirror of `simBuffers.nodeMass`, or null while the GPU buffer is known
+   * to hold unit mass everywhere (fresh allocation). Exists so
+   * {@link uploadNodeMass} can write only the range a transition actually
+   * changed instead of the whole capacity.
+   */
+  private nodeMassShadow: Float32Array | null = null;
 
   // Components
   private viewport: Viewport;
@@ -1854,6 +1863,7 @@ export class GraphMother {
    */
   private uploadAlgorithmEdgeData(device: GPUDevice): void {
     this.hierarchy = null;
+    this.resetNodeMass();
 
     if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
@@ -3083,6 +3093,61 @@ export class GraphMother {
   }
 
   /**
+   * Return every slot to unit mass.
+   *
+   * Runs with the hierarchy invalidation on any topology change: a rolled-up
+   * mass names a subtree of the *old* slot mapping, and removals compact slots,
+   * so keeping it would leave a proxy weight on whatever node inherited the
+   * slot. The collapse state is the LOD controller's to rebuild from the new
+   * hierarchy; the buffer's job is to be neutral until it does.
+   */
+  private resetNodeMass(): void {
+    if (!this.simBuffers) return;
+    if (this.nodeMassShadow === null) return; // already unit everywhere
+    this.nodeMassShadow = null;
+    writeUnitNodeMass(
+      this.gpuContext.device,
+      this.simBuffers.nodeMass,
+      this.simBuffers.nodeCapacity,
+    );
+  }
+
+  /**
+   * Upload per-slot simulation masses, writing only the range that changed.
+   *
+   * This is the LOD collapse path's other half: `rollUpMass` (lod/mass.ts)
+   * decides what each slot weighs, this puts it on the GPU. The mass buffer is
+   * allocated at capacity and never reallocated by an LOD operation, so a
+   * collapse or expand is a contents write — no bind group is rebuilt and the
+   * ping-pong parity sets are untouched.
+   *
+   * `mass` is indexed by GPU slot and covers `[0, mass.length)`; slots at or
+   * beyond that keep whatever they hold, which is {@link NODE_MASS_UNIT} on a
+   * freshly allocated buffer. Callers that shrink their collapse set must pass
+   * the full array with those slots back at unit mass rather than a shorter
+   * one, or an old proxy stays heavy.
+   *
+   * Nothing here touches simulation alpha: an LOD transition must never reheat
+   * the simulation.
+   *
+   * @throws GraphMotherError if `mass` exceeds the buffer capacity or carries a
+   *   value that is not a finite non-negative number.
+   */
+  uploadNodeMass(mass: Float32Array): void {
+    if (!this.simBuffers) return;
+    const shadow = this.nodeMassShadow ??
+      (this.nodeMassShadow = new Float32Array(this.simBuffers.nodeCapacity).fill(NODE_MASS_UNIT));
+
+    const { lo, hi } = commitNodeMass(shadow, mass);
+    if (lo === hi) return;
+    this.gpuContext.device.queue.writeBuffer(
+      this.simBuffers.nodeMass,
+      lo * 4,
+      toArrayBuffer(shadow.subarray(lo, hi)),
+    );
+  }
+
+  /**
    * Update one slot's liveness: the dead-slot flag in nodeFlags and the
    * collision radius. Pass the node's radius to mark the slot live, or
    * undefined to mark it dead (skipped by simulation and collision shaders).
@@ -3306,6 +3371,7 @@ export class GraphMother {
     this.simBuffers.prevForces.destroy();
     this.simBuffers.nodeFlags.destroy();
     this.simBuffers.nodeAlpha.destroy();
+    this.simBuffers.nodeMass.destroy();
     this.simBuffers.nodeDepth.destroy();
     this.simBuffers.readback.destroy();
 
@@ -3357,6 +3423,16 @@ export class GraphMother {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
     writeOpaqueNodeAlpha(device, this.simBuffers.nodeAlpha, newCapacity);
+    // Likewise not an LOD operation: masses come back at unit and the CPU
+    // shadow is resized to match, so the next uploadNodeMass diffs against
+    // what the GPU actually holds.
+    this.simBuffers.nodeMass = device.createBuffer({
+      label: "Sim Node Mass",
+      size: nodeFlagBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    writeUnitNodeMass(device, this.simBuffers.nodeMass, newCapacity);
+    this.nodeMassShadow = null;
     this.simBuffers.nodeDepth = device.createBuffer({
       label: "Sim Node Depth",
       size: nodeFlagBytes,
@@ -3673,6 +3749,7 @@ export class GraphMother {
       edgeSourcesData: this.graphState?.edgeSources.subarray(0, edgeCount),
       edgeTargetsData: this.graphState?.edgeTargets.subarray(0, edgeCount),
       nodeFlags: view.nodeFlags,
+      nodeMass: view.nodeMass,
     };
   }
 
@@ -6846,6 +6923,7 @@ export class GraphMother {
       this.simBuffers.prevForces.destroy();
       this.simBuffers.nodeFlags.destroy();
       this.simBuffers.nodeAlpha.destroy();
+      this.simBuffers.nodeMass.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
       this.simBuffers.clearUniforms.destroy();
@@ -6856,6 +6934,7 @@ export class GraphMother {
       this.simBuffers.readback.destroy();
       this.simBuffers = null;
     }
+    this.nodeMassShadow = null;
     // Every parity-indexed bind group references at least one buffer destroyed
     // above — including the node/edge render sets, which read the simulation
     // position buffers directly. rebuildAllBindGroups recreates them once

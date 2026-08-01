@@ -18,6 +18,7 @@
 
 import type { GPUContext } from "../../webgpu/context.ts";
 import { calculateWorkgroups } from "../../renderer/commands.ts";
+import { NODE_MASS_UNIT } from "../../lod/mass.ts";
 import { assertAlgorithmSupportedOnDevice } from "./types.ts";
 import type {
   AlgorithmBindGroups,
@@ -112,6 +113,7 @@ interface BarnesHutPipelines extends AlgorithmPipelines {
   // Bind group layouts
   mortonLayout: GPUBindGroupLayout;
   treeLayout: GPUBindGroupLayout;
+  leafLayout: GPUBindGroupLayout;
   traverseLayout: GPUBindGroupLayout;
 }
 
@@ -140,6 +142,8 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     public visitCount: GPUBuffer,
     // Zeroed (= all alive) flags used when the context provides none
     public fallbackNodeFlags: GPUBuffer,
+    // Unit-filled masses used when the context provides none
+    public fallbackNodeMass: GPUBuffer,
     // Maximum node count this buffer set supports
     public maxNodes: number,
   ) {}
@@ -162,6 +166,7 @@ class BarnesHutBuffers implements AlgorithmBuffers {
 
     this.visitCount.destroy();
     this.fallbackNodeFlags.destroy();
+    this.fallbackNodeMass.destroy();
   }
 }
 
@@ -173,6 +178,9 @@ interface BarnesHutBindGroups extends AlgorithmBindGroups {
   sort: RadixSortBindGroups;
   tree: GPUBindGroup; // For full radix sort (reads from keysA/valuesA after 8 passes)
   treeSimpleSort: GPUBindGroup; // For simple sort (reads from keysB/valuesB after 1 pass)
+  // init_leaves' narrower layout, in the same two sort-output variants
+  leaf: GPUBindGroup;
+  leafSimpleSort: GPUBindGroup;
   // repulsion from base interface is for traversal
 
   // Buffer reference for radix sort recording (copyBufferToBuffer)
@@ -246,6 +254,26 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // === Leaf Init Layout ===
+    // init_leaves alone reads the per-particle mass buffer, and the shared
+    // tree layout is already at the 10 storage buffers per stage the device is
+    // asked for. A pipeline layout only has to cover the bindings its entry
+    // point statically uses, so init_leaves gets its own narrower layout
+    // (7 storage buffers) and the other three tree passes keep treeLayout.
+    const leafLayout = device.createBindGroupLayout({
+      label: "Karras Leaf Init Layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
     // === Traversal Layout ===
     const traverseLayout = device.createBindGroupLayout({
       label: "Barnes-Hut Traversal Layout",
@@ -259,6 +287,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -271,6 +300,11 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     const treePipelineLayout = device.createPipelineLayout({
       label: "Karras Tree Pipeline Layout",
       bindGroupLayouts: [treeLayout],
+    });
+
+    const leafPipelineLayout = device.createPipelineLayout({
+      label: "Karras Leaf Init Pipeline Layout",
+      bindGroupLayouts: [leafLayout],
     });
 
     const traversePipelineLayout = device.createPipelineLayout({
@@ -299,7 +333,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       }),
       initLeaves: device.createComputePipeline({
         label: "Init Leaves Pipeline",
-        layout: treePipelineLayout,
+        layout: leafPipelineLayout,
         compute: { module: karrasTreeModule, entryPoint: "init_leaves" },
       }),
       aggregatePass: device.createComputePipeline({
@@ -316,6 +350,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
       mortonLayout,
       treeLayout,
+      leafLayout,
       traverseLayout,
     };
 
@@ -407,6 +442,19 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // Unit masses for contexts without a nodeMass buffer. Unlike the flags
+    // fallback this cannot rely on zero-init: zero mass is no repulsion.
+    const fallbackNodeMass = device.createBuffer({
+      label: "BH Fallback Node Mass",
+      size: safeMaxNodes * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(
+      fallbackNodeMass,
+      0,
+      new Float32Array(safeMaxNodes).fill(NODE_MASS_UNIT),
+    );
+
     return new BarnesHutBuffers(
       mortonUniforms,
       treeUniforms,
@@ -421,6 +469,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       nodeSize,
       visitCount,
       fallbackNodeFlags,
+      fallbackNodeMass,
       safeMaxNodes,
     );
   }
@@ -437,6 +486,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     // Dead-slot masking: dead slots must neither seed leaves (morton) nor
     // receive traversal forces. Fall back to the zeroed all-alive buffer.
     const nodeFlags = context.nodeFlags ?? b.fallbackNodeFlags;
+    // Per-particle mass seeds the leaves and tells the traversal how much of
+    // the coincident mass is the particle's own. Fall back to unit masses.
+    const nodeMass = context.nodeMass ?? b.fallbackNodeMass;
 
     // Morton code bind group — writes keysA (morton codes) and valuesA (node indices)
     const morton = device.createBindGroup({
@@ -492,6 +544,28 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // Leaf init bind groups, one per sort output, over the narrower layout
+    const leafEntries = (sortedIndices: GPUBuffer): GPUBindGroupEntry[] => [
+      { binding: 0, resource: { buffer: b.treeUniforms } },
+      { binding: 2, resource: { buffer: sortedIndices } },
+      { binding: 3, resource: { buffer: context.positions } },
+      { binding: 7, resource: { buffer: b.nodeCom } },
+      { binding: 8, resource: { buffer: b.nodeMass } },
+      { binding: 9, resource: { buffer: b.nodeSize } },
+      { binding: 10, resource: { buffer: b.visitCount } },
+      { binding: 11, resource: { buffer: nodeMass } },
+    ];
+    const leaf = device.createBindGroup({
+      label: "BH Leaf Init Bind Group (Full Sort)",
+      layout: p.leafLayout,
+      entries: leafEntries(b.sortBuffers.valuesA),
+    });
+    const leafSimpleSort = device.createBindGroup({
+      label: "BH Leaf Init Bind Group (Simple Sort)",
+      layout: p.leafLayout,
+      entries: leafEntries(b.sortBuffers.valuesB),
+    });
+
     // Traversal bind group
     const repulsion = device.createBindGroup({
       label: "BH Traversal Bind Group",
@@ -506,6 +580,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 6, resource: { buffer: b.nodeMass } },
         { binding: 7, resource: { buffer: b.nodeSize } },
         { binding: 8, resource: { buffer: nodeFlags } },
+        { binding: 9, resource: { buffer: nodeMass } },
       ],
     });
 
@@ -514,6 +589,8 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       sort,
       tree,
       treeSimpleSort,
+      leaf,
+      leafSimpleSort,
       repulsion,
       sortBuffers: b.sortBuffers,
       treeUniforms: b.treeUniforms,
@@ -670,7 +747,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // Select the correct tree bind group based on sort method.
     // Simple sort (1 pass) outputs to keysB/valuesB; full radix (8 passes) to keysA/valuesA.
-    const treeBindGroup = wasSimpleSort(nodeCount) ? bg.treeSimpleSort : bg.tree;
+    const simpleSort = wasSimpleSort(nodeCount);
+    const treeBindGroup = simpleSort ? bg.treeSimpleSort : bg.tree;
+    const leafBindGroup = simpleSort ? bg.leafSimpleSort : bg.leaf;
 
     // Reset the live tree uniform to record 0 (aggregation_pass = 0) — a
     // previous frame's aggregation loop left it at the last pass number.
@@ -704,7 +783,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     {
       const pass = encoder.beginComputePass({ label: "BH Init Leaves" });
       pass.setPipeline(p.initLeaves);
-      pass.setBindGroup(0, treeBindGroup);
+      pass.setBindGroup(0, leafBindGroup);
       pass.dispatchWorkgroups(nodeWorkgroups);
       pass.end();
     }

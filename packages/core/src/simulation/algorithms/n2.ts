@@ -18,6 +18,7 @@ import type {
   ForceAlgorithmInfo,
 } from "./types.ts";
 // (EmptyAlgorithmBuffers no longer used — N2AlgorithmBuffers replaces it)
+import { NODE_MASS_UNIT } from "../../lod/mass.ts";
 
 // Import shader source
 import REPULSION_N2_WGSL from "../shaders/repulsion_n2.comp.wgsl";
@@ -38,10 +39,15 @@ const N2_ALGORITHM_INFO: ForceAlgorithmInfo = {
  * N² algorithm-specific buffers
  */
 class N2AlgorithmBuffers implements AlgorithmBuffers {
-  constructor(public uniformBuffer: GPUBuffer) {}
+  constructor(
+    public uniformBuffer: GPUBuffer,
+    /** Unit-filled masses for contexts that supply none (see createBuffers) */
+    public fallbackNodeMass: GPUBuffer,
+  ) {}
 
   destroy(): void {
     this.uniformBuffer.destroy();
+    this.fallbackNodeMass.destroy();
   }
 }
 
@@ -53,6 +59,7 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   readonly handlesGravity = false;
 
   private uniformBuffer: GPUBuffer | null = null;
+  private fallbackNodeMass: GPUBuffer | null = null;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -74,15 +81,29 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
     return { repulsion };
   }
 
-  createBuffers(device: GPUDevice, _maxNodes: number): AlgorithmBuffers {
-    // N² algorithm only needs a uniform buffer
+  createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
     this.uniformBuffer = device.createBuffer({
       label: "N² Repulsion Uniforms",
       size: 16, // 4 x u32/f32
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    return new N2AlgorithmBuffers(this.uniformBuffer);
+    // Unit masses for contexts that supply no nodeMass buffer. Unlike the
+    // node-flags fallback this cannot rely on zero-init: a zeroed mass buffer
+    // is a graph with no repulsion at all.
+    const slots = Math.max(maxNodes, 1);
+    this.fallbackNodeMass = device.createBuffer({
+      label: "N² Fallback Node Mass",
+      size: slots * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(
+      this.fallbackNodeMass,
+      0,
+      new Float32Array(slots).fill(NODE_MASS_UNIT),
+    );
+
+    return new N2AlgorithmBuffers(this.uniformBuffer, this.fallbackNodeMass);
   }
 
   createBindGroups(
@@ -91,7 +112,7 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
     _algorithmBuffers: AlgorithmBuffers,
   ): AlgorithmBindGroups {
-    if (!this.uniformBuffer) {
+    if (!this.uniformBuffer || !this.fallbackNodeMass) {
       throw new Error("N² algorithm buffers not initialized");
     }
 
@@ -102,6 +123,7 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
+        { binding: 4, resource: { buffer: context.nodeMass ?? this.fallbackNodeMass } },
       ],
     });
 
@@ -148,6 +170,8 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   destroy(): void {
     this.uniformBuffer?.destroy();
     this.uniformBuffer = null;
+    this.fallbackNodeMass?.destroy();
+    this.fallbackNodeMass = null;
   }
 }
 

@@ -41,6 +41,7 @@ const BUFFER_FIELDS = [
   "integrationUniforms",
   "nodeFlags",
   "nodeAlpha",
+  "nodeMass",
   "nodeDepth",
   "readback",
 ] as const;

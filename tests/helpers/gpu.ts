@@ -56,6 +56,7 @@ interface SimulationBuffers {
   integrationUniforms: GPUBuffer;
   nodeFlags: GPUBuffer;
   nodeAlpha: GPUBuffer;
+  nodeMass: GPUBuffer;
   nodeDepth: GPUBuffer;
   readback: GPUBuffer;
   nodeCount: number;
@@ -625,6 +626,12 @@ export interface HarnessGraphData {
    * bit 1 = NODE_FLAG_PINNED). Uploaded after buffer initialization.
    */
   flags?: Uint32Array;
+  /**
+   * Optional per-slot simulation mass (f32 per node; 1.0 = one body).
+   * Defaults to unit mass everywhere, which is what createSimulationBuffers
+   * already writes.
+   */
+  mass?: Float32Array;
 }
 
 /**
@@ -637,8 +644,19 @@ export interface SimHarness {
   readonly tickCount: number;
   /** Which ping-pong orientation the buffers are in right now */
   readonly parity: 0 | 1;
+  /**
+   * The live per-node mass buffer. Exposed so a test can assert that a
+   * collapse/expand never changes its identity — the property that makes an
+   * LOD transition cost zero bind-group work.
+   */
+  readonly nodeMassBuffer: GPUBuffer;
   /** Advance the simulation by `steps` ticks */
   tick(steps: number): Promise<void>;
+  /**
+   * Overwrite per-slot masses mid-run, the way an LOD collapse or expand does:
+   * a contents write to the buffer that already exists.
+   */
+  setNodeMass(mass: Float32Array): void;
   /**
    * Replace every simulation buffer with a freshly allocated set carrying the
    * current positions, and rebuild the bind groups — the harness equivalent of
@@ -713,6 +731,9 @@ export async function createSimHarness(
     if (graph.flags) {
       device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
     }
+    if (graph.mass) {
+      device.queue.writeBuffer(fresh.nodeMass, 0, graph.mass.slice().buffer);
+    }
     return fresh;
   };
 
@@ -753,6 +774,13 @@ export async function createSimHarness(
     },
     get parity() {
       return paritySets.parity;
+    },
+    get nodeMassBuffer() {
+      return buffers.nodeMass;
+    },
+
+    setNodeMass(mass: Float32Array): void {
+      device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
     },
 
     async tick(steps: number): Promise<void> {
@@ -816,6 +844,7 @@ function destroySimulationBufferSet(buffers: SimulationBuffers): void {
       buffers.integrationUniforms,
       buffers.nodeFlags,
       buffers.nodeAlpha,
+      buffers.nodeMass,
       buffers.nodeDepth,
       buffers.readback,
     ]
@@ -846,6 +875,7 @@ interface HarnessAlgorithmContext {
   edgeSourcesData?: Uint32Array | undefined;
   edgeTargetsData?: Uint32Array | undefined;
   nodeFlags?: GPUBuffer | undefined;
+  nodeMass?: GPUBuffer | undefined;
 }
 
 /**
@@ -967,6 +997,9 @@ export async function createAlgorithmSimHarness(
     if (graph.flags) {
       device.queue.writeBuffer(fresh.nodeFlags, 0, graph.flags.slice().buffer);
     }
+    if (graph.mass) {
+      device.queue.writeBuffer(fresh.nodeMass, 0, graph.mass.slice().buffer);
+    }
     return fresh;
   };
 
@@ -989,6 +1022,7 @@ export async function createAlgorithmSimHarness(
     edgeSourcesData: graph.edgeSources,
     edgeTargetsData: graph.edgeTargets,
     nodeFlags: view.nodeFlags,
+    nodeMass: view.nodeMass,
   });
 
   const bindGroupMode = options.bindGroupMode ?? "prebuilt-parity";
@@ -1040,6 +1074,13 @@ export async function createAlgorithmSimHarness(
     },
     get parity() {
       return paritySets.parity;
+    },
+    get nodeMassBuffer() {
+      return buffers.nodeMass;
+    },
+
+    setNodeMass(mass: Float32Array): void {
+      device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
     },
 
     async tick(steps: number): Promise<void> {

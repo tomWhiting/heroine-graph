@@ -66,6 +66,12 @@ struct TreeUniforms {
 // dispatches (or this thread's own writes), never same-pass strangers.
 @group(0) @binding(10) var<storage, read_write> agg_ready: array<atomic<u32>>;
 
+// Per-particle simulation mass (f32 per slot, 1.0 = one body), seeding the
+// leaves the bottom-up aggregation sums. Bindings 1-10 already exhaust the 10
+// storage buffers per stage the device is asked for, so only init_leaves' own
+// pipeline layout declares this one — the shared tree layout stays at 10.
+@group(0) @binding(11) var<storage, read> particle_mass: array<f32>;
+
 const WORKGROUP_SIZE: u32 = 256u;
 const DEAD_INDEX_BIT: u32 = 0x80000000u;
 
@@ -228,7 +234,9 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Set leaf properties
     node_com[node_idx] = pos;
-    node_mass[node_idx] = select(1.0, 0.0, is_dead);
+    // Dead slots stay massless; live ones carry whatever mass they were given,
+    // which is 1.0 unless a collapsed LOD subtree rolled up into this slot.
+    node_mass[node_idx] = select(particle_mass[particle_idx], 0.0, is_dead);
 
     // Leaf size: minimum floor to prevent zero-size leaves breaking the
     // theta criterion (size/distance < theta would always pass with size=0).

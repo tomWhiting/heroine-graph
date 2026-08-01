@@ -15,6 +15,7 @@ import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { calculateWorkgroups } from "../renderer/commands.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
 import { NODE_ALPHA_OPAQUE } from "../lod/crossfade.ts";
+import { NODE_MASS_UNIT } from "../lod/mass.ts";
 import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
 
 // --- Settling telemetry (temporary, for tuning decay curves) ---
@@ -189,6 +190,11 @@ export interface SimulationBuffers {
   // crossfade scheduler (lod/crossfade.ts) and read only by the node render
   // pipeline; the simulation never touches it. See NODE_ALPHA_OPAQUE.
   nodeAlpha: GPUBuffer;
+  // Per-node simulation mass (f32 per node, 1.0 = one body). Shared by every
+  // repulsion path so a collapsed LOD subtree's proxy repels like the subtree
+  // it replaces. Not ping-ponged: a collapse rewrites contents only, so bind
+  // groups referencing it never go stale. See NODE_MASS_UNIT / rollUpMass.
+  nodeMass: GPUBuffer;
   // Node depth from root (f32 per node) for hierarchical settling
   nodeDepth: GPUBuffer;
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
@@ -425,7 +431,7 @@ export function createSimulationBindGroups(
     ],
   });
 
-  // Repulsion bind group (bindings 0-3)
+  // Repulsion bind group (bindings 0-4)
   const repulsion = device.createBindGroup({
     label: "Repulsion Bind Group",
     layout: pipeline.pipelines.repulsion.getBindGroupLayout(0),
@@ -434,6 +440,7 @@ export function createSimulationBindGroups(
       { binding: 1, resource: { buffer: buffers.positions } },
       { binding: 2, resource: { buffer: buffers.forces } },
       { binding: 3, resource: { buffer: buffers.nodeFlags } },
+      { binding: 4, resource: { buffer: buffers.nodeMass } },
     ],
   });
 
@@ -486,6 +493,23 @@ export function writeOpaqueNodeAlpha(
   if (nodeCount <= 0) return;
   const opaque = new Float32Array(nodeCount).fill(NODE_ALPHA_OPAQUE);
   device.queue.writeBuffer(nodeAlpha, 0, toArrayBuffer(opaque));
+}
+
+/**
+ * Fill a node-mass buffer with {@link NODE_MASS_UNIT} over `[0, nodeCount)`.
+ *
+ * Every path that creates or grows the mass buffer must run this: a fresh GPU
+ * buffer is zero-filled, and zero mass means no repulsion at all.
+ */
+export function writeUnitNodeMass(
+  device: GPUDevice,
+  nodeMass: GPUBuffer,
+  nodeCount: number,
+): void {
+  // Deno's WebGPU backend panics on a zero-length write.
+  if (nodeCount <= 0) return;
+  const unit = new Float32Array(nodeCount).fill(NODE_MASS_UNIT);
+  device.queue.writeBuffer(nodeMass, 0, toArrayBuffer(unit));
 }
 
 /**
@@ -614,6 +638,18 @@ export function createSimulationBuffers(
   });
   writeOpaqueNodeAlpha(device, nodeAlpha, effectiveNodeCap);
 
+  // Per-node simulation mass, read by every repulsion path. Allocated at
+  // capacity here so the existing reallocation path already covers it and no
+  // LOD transition ever changes a buffer identity — a collapse is a contents
+  // write, which never invalidates a bind group. COPY_SRC is for test readback
+  // only, the same allowance nodeAlpha makes.
+  const nodeMass = device.createBuffer({
+    label: "Node Mass",
+    size: nodeFlagBytes, // f32 per node = same size as flags
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  writeUnitNodeMass(device, nodeMass, effectiveNodeCap);
+
   // Node depth from root (f32 per node) for hierarchical settling.
   // Zero-initialized: non-hierarchical algorithms get depth=0 (no effect).
   const nodeDepth = device.createBuffer({
@@ -644,6 +680,7 @@ export function createSimulationBuffers(
     integrationUniforms,
     nodeFlags,
     nodeAlpha,
+    nodeMass,
     nodeDepth,
     readback,
     nodeCount,
