@@ -94,6 +94,19 @@ export interface NodeColumns {
   readonly radiusStride: number;
   /** Element offset of the radius within a node's stride */
   readonly radiusOffset: number;
+  /**
+   * Per-slot state flags, one word per node.
+   *
+   * A slot is skipped entirely when `(flags[i] & skipMask) !== 0`. This is what
+   * keeps the pointer honest about what is on screen: a node the renderer culls
+   * keeps its position and its full-size hit disc, so without the mask a click
+   * inside a collapsed bubble resolves to some hidden descendant behind it
+   * rather than to the bubble the user aimed at. Omit both fields to scan every
+   * slot.
+   */
+  readonly flags?: Uint32Array | undefined;
+  /** Flag bits that take a slot out of hit testing; see {@link NodeColumns.flags} */
+  readonly skipMask?: number | undefined;
 }
 
 /**
@@ -124,6 +137,13 @@ export interface PositionProvider {
   /** Get node count */
   getNodeCount(): number;
   /**
+   * Whether a node can be hit at all, for the accessor path.
+   *
+   * The column path's {@link NodeColumns.flags} mask expressed per node, so
+   * both paths answer the same question. Omitted, every node is hittable.
+   */
+  isNodeHittable?(nodeId: NodeId): boolean;
+  /**
    * Optional fast path: the backing columns, scanned directly.
    *
    * A scan over `getNodeIds` + `getNodePosition` costs an iterator step, a
@@ -149,6 +169,12 @@ export interface EdgeProvider {
    * provider also supplies columns, since an edge scan needs both.
    */
   getEdgeColumns?(): EdgeColumns | null;
+}
+
+/** Whether slot `i` is masked out of the scan by {@link NodeColumns.flags}. */
+function isSkipped(columns: NodeColumns, i: number): boolean {
+  const { flags, skipMask } = columns;
+  return flags !== undefined && skipMask !== undefined && (flags[i] & skipMask) !== 0;
 }
 
 /**
@@ -311,6 +337,7 @@ export class HitTester {
     if (columns) {
       const { count, x, y } = columns;
       for (let i = 0; i < count; i++) {
+        if (isSkipped(columns, i)) continue;
         const px = x[i];
         const py = y[i];
         if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
@@ -321,6 +348,7 @@ export class HitTester {
     }
 
     for (const nodeId of this.positionProvider.getNodeIds()) {
+      if (this.positionProvider.isNodeHittable?.(nodeId) === false) continue;
       const pos = this.positionProvider.getNodePosition(nodeId);
       if (pos && pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY) {
         results.push(nodeId);
@@ -344,6 +372,7 @@ export class HitTester {
     let closestDist = Infinity;
 
     for (let i = 0; i < count; i++) {
+      if (isSkipped(columns, i)) continue;
       const dx = graphX - x[i];
       const dy = graphY - y[i];
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -433,6 +462,7 @@ export class HitTester {
     let closestDist = Infinity;
 
     for (const nodeId of this.positionProvider.getNodeIds()) {
+      if (this.positionProvider.isNodeHittable?.(nodeId) === false) continue;
       const pos = this.positionProvider.getNodePosition(nodeId);
       if (!pos) continue;
 

@@ -49,6 +49,19 @@ export class ProxyRadiusTable {
   }
 
   /**
+   * The radius `slot` had before it started standing in for a subtree, or
+   * `undefined` when it is not a proxy.
+   *
+   * The inflated radius is a render value and nothing else. Anything reading
+   * the attribute row for a physical quantity — collision size, and the grid
+   * cell size derived from the largest of them — has to ask here first, or the
+   * bubble a proxy merely draws becomes a bubble it pushes with.
+   */
+  savedRadiusOf(slot: number): number | undefined {
+    return this.#saved.get(slot)?.radius;
+  }
+
+  /**
    * Make `proxies[0, count)` the complete set of collapsed proxies, at
    * `radii[k]`, giving every slot that has left the set its own radius back.
    *

@@ -18,12 +18,15 @@
 import type { IdLike, IdMap } from "../graph/id_map.ts";
 import { createIdMap } from "../graph/id_map.ts";
 import type { ParsedGraph } from "../graph/parser.ts";
-import { initialCapacity } from "./buffer_capacity.ts";
+import { growCapacity, initialCapacity } from "./buffer_capacity.ts";
 
 /** Number of f32 values per node in the attribute buffer */
 export const NODE_ATTR_FLOATS = 8;
 /** Byte stride per node in the attribute buffer (NODE_ATTR_FLOATS * 4) */
 export const NODE_ATTR_BYTES = 32;
+
+/** Collision radius given to a live slot whose attribute radius is unset. */
+export const DEFAULT_COLLISION_RADIUS = 5;
 
 /**
  * Mutable graph state for incremental mutations
@@ -442,4 +445,136 @@ export class MutableGraphState {
 
     return { offsets, sources };
   }
+}
+
+/**
+ * Re-point every column of `parsed` at the live state, so the two describe one
+ * graph rather than two.
+ *
+ * `MutableGraphState` is the authority for everything a mutation touches, and
+ * `ParsedGraph` is the read surface the renderer, the hit tester and the card
+ * source were written against. Aliasing rather than copying is what makes that
+ * safe: a compaction rebuilds the id maps and the metadata maps against new
+ * slots, and a reader still holding the load-time objects would answer with a
+ * neighbour's identity — its label, its content reference — with no error
+ * anywhere.
+ *
+ * The typed arrays are aliased whole (their contents are slot-indexed and the
+ * state owns them); the edge views are re-sliced because a mutation moves the
+ * live edge count.
+ */
+export function aliasParsedGraphToState(parsed: ParsedGraph, gs: MutableGraphState): void {
+  parsed.positionsX = gs.positionsX;
+  parsed.positionsY = gs.positionsY;
+  parsed.nodeAttributes = gs.nodeAttributes;
+  parsed.edgeSources = gs.edgeSources.subarray(0, gs.edgeCount);
+  parsed.edgeTargets = gs.edgeTargets.subarray(0, gs.edgeCount);
+  parsed.edgeAttributes = gs.edgeAttributes.subarray(0, gs.edgeCount * 8);
+  parsed.nodeCount = gs.nodeHighWater; // slot space, not live count: draw calls index it
+  parsed.edgeCount = gs.edgeCount;
+  parsed.nodeIdMap = gs.nodeIdMap;
+  parsed.edgeIdMap = gs.edgeIdMap;
+  parsed.nodeTypes = gs.nodeTypes as string[];
+  parsed.edgeTypes = gs.edgeTypes as string[];
+  parsed.nodeMetadata = gs.nodeMetadata;
+  parsed.edgeMetadata = gs.edgeMetadata;
+}
+
+/**
+ * Shift a slot-indexed column down to match a compaction, in place.
+ *
+ * `remap` is `oldSlot -> newSlot` for the survivors of a batch removal, which
+ * only ever moves a slot downward; the tail above the last survivor is zeroed
+ * so a dropped node's tag or weight cannot be read back through a slot nobody
+ * occupies. Absent columns (the input carried none) stay absent.
+ */
+export function compactNodeColumn(
+  column: Uint16Array | Float32Array | undefined,
+  remap: ReadonlyMap<number, number>,
+  highWater: number,
+): void {
+  if (!column) return;
+  const end = Math.min(highWater, column.length);
+  let written = 0;
+  for (let oldSlot = 0; oldSlot < end; oldSlot++) {
+    const newSlot = remap.get(oldSlot);
+    if (newSlot === undefined) continue;
+    column[newSlot] = column[oldSlot];
+    written = newSlot + 1;
+  }
+  column.fill(0, written, end);
+}
+
+/**
+ * The same column, sized to hold `slot`.
+ *
+ * These columns are allocated for the loaded graph and the slot space outgrows
+ * them, so an added node needs the column extended before it can be written.
+ * Growth follows the GPU buffers' doubling rather than fitting exactly: adds
+ * arrive one at a time, and a reallocation per node would make a 10 000-node
+ * insert quadratic.
+ *
+ * @returns the column to write through — the original when it already fits
+ */
+export function growSlotColumn<T extends Uint16Array | Float32Array>(
+  column: T | undefined,
+  slot: number,
+  make: new (length: number) => T,
+): T {
+  if (column && slot < column.length) return column;
+  const grown = new make(growCapacity(slot + 1, column?.length ?? 0));
+  if (column) grown.set(column);
+  return grown;
+}
+
+/** What {@link collisionRadiusColumn} has to ask about a slot it cannot see. */
+export interface CollisionRadiusSource {
+  /** Whether the slot holds no live node, and so takes {@link deadRadius}. */
+  isDead(slot: number): boolean;
+  /**
+   * The radius a slot had before it started rendering as a collapsed proxy, or
+   * `undefined` when it is not one (`ProxyRadiusTable.savedRadiusOf`).
+   */
+  proxyRadius(slot: number): number | undefined;
+  /**
+   * The collision sentinel for a dead slot (`DEAD_SLOT_RADIUS`), passed in
+   * because pipeline.ts cannot be imported outside a bundle.
+   */
+  deadRadius: number;
+}
+
+/**
+ * The collision radius of every slot in `[0, count)`, and the largest live one.
+ *
+ * Collision reads a radius the *physics* owns, which is not always the radius
+ * in the attribute row: a collapsed LOD proxy borrows that row to render at its
+ * well radius, which can be two orders of magnitude larger than the node's own.
+ * Letting that reach collision would have the proxy physically shove every node
+ * inside the bubble it is only *drawing*, and would coarsen the spatial-hash
+ * cell size for the whole graph. `proxyRadius` gives the pre-inflation radius
+ * back for a slot currently standing in for a subtree.
+ *
+ * The maximum is returned rather than accumulated by the caller: it sizes the
+ * collision grid, so a radius that only ratchets upward leaves the grid coarse
+ * for the rest of the session after a single inflated read.
+ */
+export function collisionRadiusColumn(
+  attributes: Float32Array,
+  count: number,
+  source: CollisionRadiusSource,
+): { sizes: Float32Array; maxRadius: number } {
+  const { isDead, proxyRadius, deadRadius } = source;
+  const sizes = new Float32Array(count);
+  let maxRadius = 0;
+  for (let i = 0; i < count; i++) {
+    if (isDead(i)) {
+      sizes[i] = deadRadius;
+      continue;
+    }
+    const own = proxyRadius(i) ?? attributes[i * NODE_ATTR_FLOATS];
+    const radius = own > 0 ? own : DEFAULT_COLLISION_RADIUS;
+    sizes[i] = radius;
+    if (radius > maxRadius) maxRadius = radius;
+  }
+  return { sizes, maxRadius };
 }

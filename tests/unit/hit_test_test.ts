@@ -22,6 +22,7 @@ import {
   type PositionProvider,
 } from "../../packages/core/src/interaction/hit_test.ts";
 import type { NodeId, Vec2 } from "../../packages/core/src/types.ts";
+import { NODE_FLAG_DEAD, NODE_FLAG_HIDDEN_LOD } from "../helpers/gpu.ts";
 import { mulberry32 } from "../fixtures/prng.ts";
 
 /** Attribute stride of `parsedGraph.nodeAttributes` (NODE_ATTR_FLOATS). */
@@ -405,4 +406,140 @@ Deno.test({
 
     assert(total < 4, `full-miss scan took ${total.toFixed(3)} ms, expected < 4 ms`);
   },
+});
+
+/**
+ * The LOD cut, seen from the pointer.
+ *
+ * A folded subtree keeps its positions and therefore its full-size hit discs,
+ * and the proxy standing for it is drawn at a well radius covering exactly the
+ * area those discs occupy. Nearest-centre wins, so without a mask the pointer
+ * resolves to whichever invisible descendant happens to be closest and the
+ * bubble the user aimed at is unreachable. Dead slots are the same defect with
+ * a different bit: the node is gone, its last position is not.
+ */
+
+/** Proxy at the origin with three descendants inside its bubble. */
+const BUBBLE_NODES = [
+  [0, 0, 100], // 0 — the proxy, drawn at its well radius
+  [30, 10, 4], // 1 — folded away under it
+  [-20, -40, 4], // 2
+  [56, 6, 4], // 3
+] as const;
+
+const HIDDEN_DESCENDANTS = Uint32Array.from([
+  0,
+  NODE_FLAG_HIDDEN_LOD,
+  NODE_FLAG_HIDDEN_LOD,
+  NODE_FLAG_HIDDEN_LOD,
+]);
+
+/** Inside the bubble and within a descendant's tolerance, one probe per descendant. */
+const INSIDE_BUBBLE: readonly (readonly [number, number])[] = [
+  [30, 10],
+  [-20, -40],
+  [56, 6],
+];
+
+function bubbleFixture(): Fixture {
+  return fixtureFrom(BUBBLE_NODES, []);
+}
+
+Deno.test("hit test: an unmasked scan grabs the hidden descendant, which is the defect", () => {
+  const f = bubbleFixture();
+  const tester = testerFor(columnProviders(f));
+
+  // No flags column: every probe lands on a node the renderer culled.
+  assertEquals(INSIDE_BUBBLE.map(([x, y]) => tester.hitTestNode(x, y)?.nodeId), [1, 2, 3]);
+});
+
+Deno.test("hit test: a click inside a collapsed bubble resolves to the proxy", () => {
+  const f = bubbleFixture();
+  const { nodes, edges } = columnProviders(f);
+  const tester = testerFor({
+    nodes: {
+      ...nodes,
+      getNodeColumns: () => ({
+        count: f.nodeCount,
+        x: f.positionsX,
+        y: f.positionsY,
+        radii: f.nodeAttributes,
+        radiusStride: ATTR_STRIDE,
+        radiusOffset: 0,
+        flags: HIDDEN_DESCENDANTS,
+        skipMask: NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD,
+      }),
+    },
+    edges,
+  });
+
+  for (const [x, y] of INSIDE_BUBBLE) {
+    assertEquals(tester.hitTestNode(x, y)?.nodeId, 0, `probe (${x}, ${y}) must reach the proxy`);
+  }
+  // ...and a probe outside the bubble still hits nothing at all.
+  assertEquals(tester.hitTestNode(400, 400), null);
+});
+
+Deno.test("hit test: a dead slot is not hittable at the position it was freed at", () => {
+  const f = bubbleFixture();
+  const { nodes, edges } = columnProviders(f);
+  const flags = Uint32Array.from([NODE_FLAG_DEAD, 0, 0, 0]);
+  const tester = testerFor({
+    nodes: {
+      ...nodes,
+      getNodeColumns: () => ({
+        count: f.nodeCount,
+        x: f.positionsX,
+        y: f.positionsY,
+        radii: f.nodeAttributes,
+        radiusStride: ATTR_STRIDE,
+        radiusOffset: 0,
+        flags,
+        skipMask: NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD,
+      }),
+    },
+    edges,
+  });
+
+  // Dead centre of the freed slot's disc: the live descendants answer instead.
+  assertEquals(tester.hitTestNode(0, 0), null);
+  assertEquals(tester.hitTestNode(30, 10)?.nodeId, 1);
+});
+
+Deno.test("hit test: a rect query returns only slots the cut leaves visible", () => {
+  const f = bubbleFixture();
+  const { nodes, edges } = columnProviders(f);
+  const tester = testerFor({
+    nodes: {
+      ...nodes,
+      getNodeColumns: () => ({
+        count: f.nodeCount,
+        x: f.positionsX,
+        y: f.positionsY,
+        radii: f.nodeAttributes,
+        radiusStride: ATTR_STRIDE,
+        radiusOffset: 0,
+        flags: HIDDEN_DESCENDANTS,
+        skipMask: NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD,
+      }),
+    },
+    edges,
+  });
+
+  assertEquals(tester.findNodesInRect(-100, -100, 100, 100), [0]);
+});
+
+Deno.test("hit test: the accessor path applies the same cut as the column path", () => {
+  const f = bubbleFixture();
+  const { nodes, edges } = accessorProviders(f);
+  const hittable = (nodeId: NodeId) => (HIDDEN_DESCENDANTS[nodeId] & NODE_FLAG_HIDDEN_LOD) === 0;
+  const tester = testerFor({
+    nodes: { ...nodes, isNodeHittable: hittable, getNodeColumns: () => null },
+    edges: { ...edges, getEdgeColumns: () => null },
+  });
+
+  for (const [x, y] of INSIDE_BUBBLE) {
+    assertEquals(tester.hitTestNode(x, y)?.nodeId, 0, `probe (${x}, ${y}) must reach the proxy`);
+  }
+  assertEquals(tester.findNodesInRect(-100, -100, 100, 100), [0]);
 });

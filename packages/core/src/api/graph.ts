@@ -29,7 +29,13 @@ import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createEventEmitter, type EventEmitter, Events } from "../events/emitter.ts";
 import { createViewport, type Viewport } from "../viewport/viewport.ts";
 import { createViewportUniformBuffer, type ViewportUniformBuffer } from "../viewport/uniforms.ts";
-import { type ParsedGraph, parseGraphInput, type ParserConfig } from "../graph/parser.ts";
+import {
+  clampTag,
+  clampWeight,
+  type ParsedGraph,
+  parseGraphInput,
+  type ParserConfig,
+} from "../graph/parser.ts";
 import { parseGraphTypedInput, type TypedParserConfig } from "../graph/typed_parser.ts";
 import { initializePositions, needsInitialization } from "../graph/initialize.ts";
 import {
@@ -220,7 +226,16 @@ import {
 } from "../overlay/mod.ts";
 import type { IdLike } from "../graph/id_map.ts";
 import { growCapacity, initialCapacity } from "./buffer_capacity.ts";
-import { MutableGraphState, NODE_ATTR_BYTES, NODE_ATTR_FLOATS } from "./graph_state.ts";
+import {
+  aliasParsedGraphToState,
+  collisionRadiusColumn,
+  compactNodeColumn,
+  DEFAULT_COLLISION_RADIUS,
+  growSlotColumn,
+  MutableGraphState,
+  NODE_ATTR_BYTES,
+  NODE_ATTR_FLOATS,
+} from "./graph_state.ts";
 
 // Default well radius for non-bubble mode (matches density field default splat in grid cells)
 const DEFAULT_WELL_RADIUS = 0.0;
@@ -228,6 +243,23 @@ const DEFAULT_WELL_RADIUS = 0.0;
 // Where a DOM card sits when its node has no position left to read — the slot
 // was freed under it, and the overlay releases the card on the same frame.
 const CARD_ORIGIN: Vec2 = { x: 0, y: 0 };
+
+// The flag bits that take a slot out of hit testing. Both mean "not on the
+// screen": a freed slot holds no node, and a node the LOD cut folded away is
+// represented by a proxy the pointer must reach instead. It coincides with
+// NODE_FLAGS_INERT today but answers a different question — one is about what
+// the simulation integrates, this is about what the pointer can name.
+const NODE_FLAGS_UNHITTABLE = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
+
+/** Screen-space travel a press may make and still read as a click, in CSS pixels. */
+const CLICK_THRESHOLD_PX = 5;
+
+/** Whether a release is close enough to its press for the pair to be a click. */
+function isClickDistance(press: Vec2, release: Vec2): boolean {
+  const dx = release.x - press.x;
+  const dy = release.y - press.y;
+  return Math.sqrt(dx * dx + dy * dy) < CLICK_THRESHOLD_PX;
+}
 
 /**
  * WASM engine interface for graph structure and layout.
@@ -664,6 +696,8 @@ export class GraphMother {
     now: () => Date.now(),
   });
   private dragStartScreenPosition: Vec2 | null = null;
+  /** Where a press on empty canvas landed, or null when the press hit a node. */
+  private backgroundPressPosition: Vec2 | null = null;
   private lastClick: { nodeId: NodeId; timestamp: number } | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
 
@@ -1702,11 +1736,12 @@ export class GraphMother {
     // Every other slot-indexed interaction/animation cache is equally stale
     this.resetPerGraphState();
 
-    // The containment hierarchy is per-graph: drop the previous one, and adopt
-    // the producer's columns when this input carries them (typed path only —
-    // the object path assigns slots itself, so supplied columns would be
-    // indexed against slots the producer never saw).
-    this.hierarchy = null;
+    // Everything derived from the topology belongs to the outgoing graph, the
+    // collapse set included. Adopt the producer's hierarchy columns when this
+    // input carries them (typed path only — the object path assigns slots
+    // itself, so supplied columns would be indexed against slots the producer
+    // never saw).
+    this.invalidateTopologyDerived();
     this.suppliedHierarchy = parsed.hierarchy ?? null;
     this.suppliedHierarchyStamp = parsed.hierarchy
       ? { nodes: parsed.nodeCount, edges: parsed.edgeCount }
@@ -1898,18 +1933,13 @@ export class GraphMother {
     // Create new collision buffers
     this.collisionBuffers = createCollisionBuffers(device, nodeCount);
 
-    // Extract node sizes from attributes and compute max radius
-    // Node attributes layout: [radius, r, g, b, selected, hovered, birth_time, tex_index] per node
-    const nodeSizes = new Float32Array(nodeCount);
-    let maxRadius = 0;
-    for (let i = 0; i < nodeCount; i++) {
-      const radius = nodeAttributes[i * NODE_ATTR_FLOATS];
-      const r = radius > 0 ? radius : 5.0; // Default radius if not set
-      nodeSizes[i] = r;
-      if (r > maxRadius) maxRadius = r;
-    }
-    this.maxNodeRadius = maxRadius > 0 ? maxRadius : 5.0;
-    uploadNodeSizes(device, this.collisionBuffers, nodeSizes);
+    const { sizes, maxRadius } = collisionRadiusColumn(nodeAttributes, nodeCount, {
+      isDead: (slot) => this.graphState?.nodeFreeSet.has(slot) ?? false,
+      proxyRadius: (slot) => this.lodProxies.savedRadiusOf(slot),
+      deadRadius: DEAD_SLOT_RADIUS,
+    });
+    this.maxNodeRadius = maxRadius > 0 ? maxRadius : DEFAULT_COLLISION_RADIUS;
+    uploadNodeSizes(device, this.collisionBuffers, sizes);
 
     // Update collision uniforms
     updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
@@ -2043,22 +2073,43 @@ export class GraphMother {
   }
 
   /**
+   * Drop everything derived from the topology that just changed.
+   *
+   * The hierarchy, the rolled-up masses, the inflated proxy radii and the LOD
+   * edge aggregation all name slots and edge indices of the graph they were
+   * computed against, and a mutation moves both: a removal compacts the slot
+   * space and swap-removes edges, an addition appends slots the aggregation's
+   * live-edge list has never heard of. Kept, they do not merely go stale — the
+   * bundled spring pass keeps driving springs from an edge list that now
+   * describes different edges, and a proxy weight stays on whatever node
+   * inherited the slot.
+   *
+   * Every mutation entry point calls this, singular and batch alike, including
+   * the singular paths the plural ones delegate to. Calling it twice on one
+   * mutation is deliberately cheap — each of the four is a no-op when the state
+   * it drops is already neutral — because the alternative is reasoning about
+   * which of two overlapping paths a mutation took.
+   */
+  private invalidateTopologyDerived(): void {
+    this.hierarchy = null;
+    this.resetNodeMass();
+    this.resetLodProxyRadii();
+    this.releaseLodEdgeAggregation();
+  }
+
+  /**
    * Upload edge data for algorithm-specific formats (CSR for Relativity Atlas).
    *
    * CSR data is generated from MutableGraphState's edge arrays, which are the
    * source of truth for GPU buffer slot indices. This ensures the CSR indices
    * match the actual position buffer layout.
    *
-   * Also the topology-change signal for the retained hierarchy: every caller
-   * reaches here after mutating nodes or edges, so the cached hierarchy is
-   * dropped up front — before the algorithm early-out, since the hierarchy is
-   * graph-level and outlives any particular algorithm.
+   * Every caller reaches here after mutating nodes or edges, so the derived
+   * state is dropped up front — before the algorithm early-out, since the
+   * hierarchy is graph-level and outlives any particular algorithm.
    */
   private uploadAlgorithmEdgeData(device: GPUDevice): void {
-    this.hierarchy = null;
-    this.resetNodeMass();
-    this.resetLodProxyRadii();
-    this.releaseLodEdgeAggregation();
+    this.invalidateTopologyDerived();
 
     if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
@@ -2236,6 +2287,47 @@ export class GraphMother {
   // ==========================================================================
 
   /**
+   * Record the per-slot columns of an added node that live outside the
+   * attribute row: its metadata, and the two semantic columns.
+   *
+   * A node added after load reads back through the same accessors as one that
+   * came with the graph — `metadata` is what a DOM card renders, `tag` and
+   * `weight` are what an LOD policy ranks on — so dropping them here is a card
+   * with no label and a policy input stuck at zero, silently.
+   *
+   * Every column is written unconditionally, absent values included: an added
+   * node may be reusing a freed slot, and the previous occupant's label must
+   * not become its own. The semantic columns are absent altogether unless the
+   * graph carried them (an all-zero column and no column read the same), so a
+   * value materialises one only when it has something to say, and grows it when
+   * the slot space has outrun the load-time length.
+   */
+  private recordAddedNodeColumns(slot: number, node: NodeInput): void {
+    const gs = this.graphState;
+    if (!gs) return;
+
+    const metadata = node["metadata"] as Record<string, unknown> | undefined;
+    if (metadata) {
+      gs.nodeMetadata.set(slot, metadata);
+    } else {
+      gs.nodeMetadata.delete(slot);
+    }
+
+    const parsed = this.state.parsedGraph;
+    if (!parsed) return;
+    if (node.tag !== undefined || parsed.nodeTags) {
+      const tags = growSlotColumn(parsed.nodeTags, slot, Uint16Array);
+      tags[slot] = node.tag === undefined ? 0 : clampTag(node.tag);
+      parsed.nodeTags = tags;
+    }
+    if (node.weight !== undefined || parsed.nodeWeights) {
+      const weights = growSlotColumn(parsed.nodeWeights, slot, Float32Array);
+      weights[slot] = node.weight === undefined ? 0 : clampWeight(node.weight);
+      parsed.nodeWeights = weights;
+    }
+  }
+
+  /**
    * Add a single node to the graph.
    *
    * @param node - Node input data
@@ -2290,6 +2382,8 @@ export class GraphMother {
       gs.nodeTypes[slot] = nodeType;
     }
 
+    this.recordAddedNodeColumns(slot, node);
+
     // Track birth pulse for render loop dirty detection (negative = looping)
     if (birthTime !== 0) this.lastBirthTime = birthTime;
 
@@ -2327,6 +2421,7 @@ export class GraphMother {
 
     // Update parsedGraph reference to point to graphState arrays
     this.syncParsedGraphFromState();
+    this.invalidateTopologyDerived();
 
     // Ensure algorithm buffers can handle the new node count
     this.ensureAlgorithmCapacity();
@@ -2396,6 +2491,7 @@ export class GraphMother {
     this.simBuffers.nodeCount = gs.nodeHighWater;
 
     this.syncParsedGraphFromState();
+    this.invalidateTopologyDerived();
     this.bumpSimulationAlpha(0.05);
 
     // Emit event
@@ -2478,6 +2574,7 @@ export class GraphMother {
     this.state.edgeCount = gs.edgeCount;
 
     this.syncParsedGraphFromState();
+    this.invalidateTopologyDerived();
     this.bumpSimulationAlpha(0.05);
 
     // Emit event
@@ -2566,6 +2663,7 @@ export class GraphMother {
     this.state.edgeCount = gs.edgeCount;
 
     this.syncParsedGraphFromState();
+    this.invalidateTopologyDerived();
 
     // Emit event
     if (removedId !== undefined) {
@@ -2638,6 +2736,8 @@ export class GraphMother {
         gs.nodeTypes[slot] = nodeType;
       }
 
+      this.recordAddedNodeColumns(slot, node);
+
       ids.push(slot);
     }
 
@@ -2659,6 +2759,7 @@ export class GraphMother {
     this.state.nodeCount = gs.nodeCount;
     this.simBuffers.nodeCount = gs.nodeHighWater;
     this.syncParsedGraphFromState();
+    this.invalidateTopologyDerived();
     this.ensureAlgorithmCapacity();
 
     // Re-apply type styles after GPU flush to prevent CPU shadow from clobbering styled data
@@ -2803,9 +2904,10 @@ export class GraphMother {
     const survivingNodeIds: (string | number | undefined)[] = [];
     const survivingNodeTypes: (string | undefined)[] = [];
     const survivingNodeMeta = new Map<number, Record<string, unknown>>();
+    const prevNodeHighWater = gs.nodeHighWater;
 
     let nodeWriteIdx = 0;
-    for (let readIdx = 0; readIdx < gs.nodeHighWater; readIdx++) {
+    for (let readIdx = 0; readIdx < prevNodeHighWater; readIdx++) {
       if (deadSlots.has(readIdx)) continue;
 
       survivingNodeIds.push(gs.nodeIdMap.getId(readIdx));
@@ -2832,7 +2934,7 @@ export class GraphMother {
     }
 
     // Zero trailing data (previously occupied slots now beyond nodeWriteIdx)
-    for (let i = nodeWriteIdx; i < gs.nodeHighWater; i++) {
+    for (let i = nodeWriteIdx; i < prevNodeHighWater; i++) {
       gs.positionsX[i] = 0;
       gs.positionsY[i] = 0;
       gs.nodeFlagsShadow[i] = 0;
@@ -2855,6 +2957,16 @@ export class GraphMother {
     // Restore metadata maps with new slot indices
     gs.nodeTypes = survivingNodeTypes;
     gs.nodeMetadata = survivingNodeMeta;
+
+    // The producer's semantic columns are slot-indexed like everything else and
+    // have no MutableGraphState counterpart, so the compaction has to reach
+    // across and move them too or getNodeTag/getNodeWeight answer with the
+    // values of whichever node used to occupy the slot.
+    const parsedColumns = this.state.parsedGraph;
+    if (parsedColumns) {
+      compactNodeColumn(parsedColumns.nodeTags, nodeSlotRemap, prevNodeHighWater);
+      compactNodeColumn(parsedColumns.nodeWeights, nodeSlotRemap, prevNodeHighWater);
+    }
 
     // 5. Remap edge source/target to use new compact node slot indices
     // Safe: edge compaction already removed edges touching dead nodes,
@@ -2882,6 +2994,11 @@ export class GraphMother {
       if (newSlot !== undefined) remappedPinned.add(newSlot);
     }
     this.pinnedNodes = remappedPinned;
+
+    // Drop the derived state before the flush, not after: a collapsed proxy's
+    // borrowed radius is restored through the rebuilt id map, so it has to be
+    // given back while the compacted attribute rows are still only on the CPU.
+    this.invalidateTopologyDerived();
 
     // 7. Single GPU flush for all data (compaction moved slots, so the
     // liveness flags and collision radii must be rewritten for all slots)
@@ -3388,7 +3505,10 @@ export class GraphMother {
    * instance at its well radius (Phase 3 §5.4 v1) — no metaballs and, expressly,
    * nothing built on `SimpleContourLayer`, which is documented broken. Only the
    * render radius moves: the collision radius stays the node's own, so a
-   * transition changes nothing the physics reads.
+   * transition changes nothing the physics reads. That holds because the two
+   * readers of the attribute row for a physical radius go through
+   * {@link ProxyRadiusTable.savedRadiusOf} first — the row itself is where the
+   * inflated value lives, so it cannot be trusted on its own.
    *
    * `proxies` is complete, not a diff, so a caller cannot leak an inflated
    * radius by forgetting to name an expansion.
@@ -3747,17 +3867,16 @@ export class GraphMother {
     this.flushNodeFlagRange(0, hw);
 
     if (this.collisionBuffers) {
-      const sizes = new Float32Array(hw);
-      for (let i = 0; i < hw; i++) {
-        if (gs.nodeFreeSet.has(i)) {
-          sizes[i] = DEAD_SLOT_RADIUS;
-        } else {
-          const radius = gs.nodeAttributes[i * NODE_ATTR_FLOATS];
-          sizes[i] = radius > 0 ? radius : 5.0; // default matches initializeCollisionResources
-          if (sizes[i] > this.maxNodeRadius) this.maxNodeRadius = sizes[i];
-        }
-      }
-      device.queue.writeBuffer(this.collisionBuffers.nodeSizes, 0, sizes);
+      const { sizes, maxRadius } = collisionRadiusColumn(gs.nodeAttributes, hw, {
+        isDead: (slot) => gs.nodeFreeSet.has(slot),
+        proxyRadius: (slot) => this.lodProxies.savedRadiusOf(slot),
+        deadRadius: DEAD_SLOT_RADIUS,
+      });
+      // Recomputed, not ratcheted: this covers every live slot, so a radius
+      // that has since shrunk must be allowed to bring the grid cell size back
+      // down with it.
+      this.maxNodeRadius = maxRadius > 0 ? maxRadius : DEFAULT_COLLISION_RADIUS;
+      device.queue.writeBuffer(this.collisionBuffers.nodeSizes, 0, toArrayBuffer(sizes));
     }
   }
 
@@ -3801,25 +3920,15 @@ export class GraphMother {
   }
 
   /**
-   * Sync parsedGraph reference to use graphState's arrays.
-   * This keeps the existing code that reads from parsedGraph working.
+   * Re-point `parsedGraph` at graph state after a mutation.
+   *
+   * `MutableGraphState` is the single authority; `parsedGraph` is a view of it
+   * kept for the readers written against the load-time shape (see
+   * {@link aliasParsedGraphToState}).
    */
   private syncParsedGraphFromState(): void {
     if (!this.graphState || !this.state.parsedGraph) return;
-
-    const gs = this.graphState;
-    this.state.parsedGraph.positionsX = gs.positionsX;
-    this.state.parsedGraph.positionsY = gs.positionsY;
-    this.state.parsedGraph.nodeAttributes = gs.nodeAttributes;
-    this.state.parsedGraph.edgeSources = gs.edgeSources.subarray(0, gs.edgeCount);
-    this.state.parsedGraph.edgeTargets = gs.edgeTargets.subarray(0, gs.edgeCount);
-    this.state.parsedGraph.edgeAttributes = gs.edgeAttributes.subarray(0, gs.edgeCount * 8);
-    this.state.parsedGraph.nodeCount = gs.nodeHighWater; // Use highWater for draw calls
-    this.state.parsedGraph.edgeCount = gs.edgeCount;
-    this.state.parsedGraph.nodeIdMap = gs.nodeIdMap;
-    this.state.parsedGraph.edgeIdMap = gs.edgeIdMap;
-    this.state.parsedGraph.nodeTypes = gs.nodeTypes as string[];
-    this.state.parsedGraph.edgeTypes = gs.edgeTypes as string[];
+    aliasParsedGraphToState(this.state.parsedGraph, this.graphState);
   }
 
   /**
@@ -4036,8 +4145,8 @@ export class GraphMother {
     // === Rebuild collision buffers (rebuilds their bind groups too) ===
     this.initializeCollisionResources(device, newCapacity, gs.nodeAttributes);
 
-    // Restore per-slot liveness — the recreated nodeFlags buffer is zeroed
-    // and initializeCollisionResources gives holes the default radius
+    // Restore per-slot liveness — the recreated nodeFlags buffer is zeroed, so
+    // every pin and every LOD-hidden bit has to be written back from the shadow
     this.flushNodeSlotFlagsToGPU();
 
     // The recreated alpha buffer is fully opaque; the crossfade scheduler
@@ -5602,8 +5711,11 @@ export class GraphMother {
    * then displays.
    */
   private createCardNodeSource(): CardNodeSource {
+    // Read from graph state, never from the load-time parse: a compaction
+    // rebuilds this map against the new slots, and the card would otherwise
+    // render — and fetch by `contentRef` — a neighbour's document.
     const metadataText = (nodeId: NodeId, key: string): string | undefined => {
-      const value = this.state.parsedGraph?.nodeMetadata.get(nodeId)?.[key];
+      const value = this.graphState?.nodeMetadata.get(nodeId)?.[key];
       return typeof value === "string" ? value : undefined;
     };
 
@@ -6724,11 +6836,15 @@ export class GraphMother {
   /**
    * Show or hide nodes by ID.
    *
-   * Visibility is a bit in the shared nodeFlags buffer (NODE_FLAG_HIDDEN_LOD):
-   * the node render pipeline drops hidden instances, and nothing else about the
-   * node changes — radius, color and simulated position are untouched, so a
-   * hidden node keeps its place in the layout and reappears exactly where it
-   * was. Freed slots are left alone; they are already invisible.
+   * Visibility is a bit in the shared nodeFlags buffer (NODE_FLAG_HIDDEN_LOD),
+   * and hiding is render *and* physics: the node pipeline drops the instance,
+   * and the simulation treats the slot as inert — it exerts no force, receives
+   * none, is excluded from the collision set, and is frozen where it stands.
+   * Its radius, color and position are untouched, so it reappears exactly where
+   * it was; but the nodes still simulating no longer feel it, so hiding a large
+   * share of a graph lets the rest contract, and showing them again re-inflates
+   * it. Hide for a filter, not to keep a layout still. Freed slots are left
+   * alone; they are already invisible.
    *
    * Edges are unaffected: the edge pipeline reads positions only, so an edge
    * with a hidden endpoint still draws.
@@ -7362,6 +7478,11 @@ export class GraphMother {
           this.clearSelection();
         }
 
+        // Where the press landed, kept apart from lastPanPosition (which the
+        // pan consumes as it goes): the click test at pointerup measures total
+        // displacement from the press, not from the last move.
+        this.backgroundPressPosition = { ...e.screenPosition };
+
         // Start panning regardless of edge hit
         this.isPanning = true;
         this.lastPanPosition = { ...e.screenPosition };
@@ -7393,15 +7514,8 @@ export class GraphMother {
         const dragStart = this.dragStartScreenPosition;
         this.dragStartScreenPosition = null;
 
-        // Distinguish click from drag: if pointer moved less than 5px
-        // in screen space, treat as a click rather than a drag end.
-        const CLICK_THRESHOLD = 5;
-        let isClick = false;
-        if (dragStart) {
-          const dx = e.screenPosition.x - dragStart.x;
-          const dy = e.screenPosition.y - dragStart.y;
-          isClick = Math.sqrt(dx * dx + dy * dy) < CLICK_THRESHOLD;
-        }
+        // Distinguish click from drag by how far the pointer travelled.
+        const isClick = dragStart !== null && isClickDistance(dragStart, e.screenPosition);
 
         if (isClick) {
           // Not a drag after all: no `node:dragend`, and the pin the gesture
@@ -7436,6 +7550,19 @@ export class GraphMother {
         } else {
           this.nodeDrag.end(nodeId, e.graphPosition);
         }
+      }
+
+      // A press on empty canvas that released without travelling is a click on
+      // the background — the gesture a consumer dismisses a selection or an LOD
+      // focus with. A pan is the same press with movement in the middle, so the
+      // distance test is what separates them, and a press that hit a node
+      // cannot reach here: it took the branch above.
+      const pressed = this.backgroundPressPosition;
+      this.backgroundPressPosition = null;
+      if (nodeId === null && pressed !== null && isClickDistance(pressed, e.screenPosition)) {
+        this.events.emit(
+          Events.backgroundClick(e.graphPosition, e.originalEvent as PointerEvent),
+        );
       }
 
       // End panning
@@ -7595,6 +7722,10 @@ export class GraphMother {
         }
       },
       getNodeCount: () => parsedGraph.nodeCount,
+      isNodeHittable: (nodeId: NodeId): boolean => {
+        const flags = this.graphState?.nodeFlagsShadow;
+        return flags === undefined || (flags[nodeId] & NODE_FLAGS_UNHITTABLE) === 0;
+      },
       // Read per scan, never captured: growth replaces these arrays.
       getNodeColumns: () => ({
         count: parsedGraph.nodeCount,
@@ -7603,6 +7734,10 @@ export class GraphMother {
         radii: parsedGraph.nodeAttributes,
         radiusStride: NODE_ATTR_FLOATS,
         radiusOffset: 0,
+        // A freed slot and a node the LOD cut folded away are both absent from
+        // the screen, and neither may answer for the proxy drawn over it.
+        flags: this.graphState?.nodeFlagsShadow,
+        skipMask: NODE_FLAGS_UNHITTABLE,
       }),
     });
 
