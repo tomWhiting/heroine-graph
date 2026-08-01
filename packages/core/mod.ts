@@ -407,11 +407,13 @@ export type { BufferCapacity } from "./src/api/buffer_capacity.ts";
 
 export { createHitTester, DEFAULT_HIT_TESTER_CONFIG } from "./src/interaction/hit_test.ts";
 export type {
+  EdgeColumns,
   EdgeHitResult,
   EdgeProvider,
   HitResult,
   HitTester,
   HitTesterConfig,
+  NodeColumns,
   NodeHitResult,
   PositionProvider,
 } from "./src/interaction/hit_test.ts";

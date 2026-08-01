@@ -9,6 +9,10 @@
  * re-synced and rebuilt on every readback, which costs more than the
  * per-pointer-event scan it would replace.
  *
+ * A provider that can expose its backing typed arrays ({@link NodeColumns},
+ * {@link EdgeColumns}) is scanned through them directly; the per-node accessor
+ * interface remains for providers that cannot.
+ *
  * @module
  */
 
@@ -71,6 +75,43 @@ export const DEFAULT_HIT_TESTER_CONFIG: Required<HitTesterConfig> = {
 };
 
 /**
+ * Column-oriented node data for the zero-allocation scan path.
+ *
+ * Node `i` (for `0 <= i < count`) is at `(x[i], y[i])` with radius
+ * `radii[i * radiusStride + radiusOffset]`. The provider must keep `count`
+ * within the extent of every array; a scan does not re-check bounds per node.
+ */
+export interface NodeColumns {
+  /** Number of leading slots to scan */
+  readonly count: number;
+  /** Node X positions */
+  readonly x: Float32Array;
+  /** Node Y positions */
+  readonly y: Float32Array;
+  /** Array holding per-node radii, possibly interleaved with other attributes */
+  readonly radii: Float32Array;
+  /** Distance in elements between consecutive nodes' radii */
+  readonly radiusStride: number;
+  /** Element offset of the radius within a node's stride */
+  readonly radiusOffset: number;
+}
+
+/**
+ * Column-oriented edge data for the zero-allocation scan path.
+ *
+ * Edge `i` (for `0 <= i < count`) runs from node `sources[i]` to node
+ * `targets[i]` and reports `i` as its edge ID.
+ */
+export interface EdgeColumns {
+  /** Number of leading edges to scan */
+  readonly count: number;
+  /** Source node index per edge */
+  readonly sources: Uint32Array;
+  /** Target node index per edge */
+  readonly targets: Uint32Array;
+}
+
+/**
  * Node position provider interface.
  */
 export interface PositionProvider {
@@ -82,6 +123,16 @@ export interface PositionProvider {
   getNodeIds(): Iterable<NodeId>;
   /** Get node count */
   getNodeCount(): number;
+  /**
+   * Optional fast path: the backing columns, scanned directly.
+   *
+   * A scan over `getNodeIds` + `getNodePosition` costs an iterator step, a
+   * `Vec2` allocation and two more calls per node, which dominates the
+   * arithmetic at graph scale. When this returns columns they are used
+   * instead, and must describe the same nodes as the per-node accessors.
+   * Returning `null` (e.g. before a graph is loaded) falls back to those.
+   */
+  getNodeColumns?(): NodeColumns | null;
 }
 
 /**
@@ -92,6 +143,12 @@ export interface EdgeProvider {
   getEdges(): Iterable<[EdgeId, NodeId, NodeId]>;
   /** Get edge count */
   getEdgeCount(): number;
+  /**
+   * Optional fast path over the backing columns; see
+   * {@link PositionProvider.getNodeColumns}. Only used when the position
+   * provider also supplies columns, since an edge scan needs both.
+   */
+  getEdgeColumns?(): EdgeColumns | null;
 }
 
 /**
@@ -163,6 +220,12 @@ export class HitTester {
     }
 
     const radius = hitRadius ?? this.config.edgeHitRadius;
+    const nodeColumns = this.positionProvider.getNodeColumns?.() ?? null;
+    const edgeColumns = this.edgeProvider.getEdgeColumns?.() ?? null;
+    if (nodeColumns && edgeColumns) {
+      return this.columnEdgeHitTest(graphX, graphY, radius, nodeColumns, edgeColumns);
+    }
+
     let closestEdge: EdgeHitResult | null = null;
     let closestDistance = radius;
 
@@ -241,18 +304,116 @@ export class HitTester {
     maxX: number,
     maxY: number,
   ): NodeId[] {
-    if (this.positionProvider) {
-      const results: NodeId[] = [];
-      for (const nodeId of this.positionProvider.getNodeIds()) {
-        const pos = this.positionProvider.getNodePosition(nodeId);
-        if (pos && pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY) {
-          results.push(nodeId);
+    if (!this.positionProvider) return [];
+
+    const results: NodeId[] = [];
+    const columns = this.positionProvider.getNodeColumns?.() ?? null;
+    if (columns) {
+      const { count, x, y } = columns;
+      for (let i = 0; i < count; i++) {
+        const px = x[i];
+        const py = y[i];
+        if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+          results.push(i);
         }
       }
       return results;
     }
 
-    return [];
+    for (const nodeId of this.positionProvider.getNodeIds()) {
+      const pos = this.positionProvider.getNodePosition(nodeId);
+      if (pos && pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY) {
+        results.push(nodeId);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Node hit test over the provider's columns: no iterator, no per-node
+   * allocation, no per-node accessor calls.
+   */
+  private columnNodeHitTest(
+    graphX: number,
+    graphY: number,
+    columns: NodeColumns,
+  ): NodeHitResult | null {
+    const { count, x, y, radii, radiusStride, radiusOffset } = columns;
+
+    let closestId = -1;
+    let closestDist = Infinity;
+
+    for (let i = 0; i < count; i++) {
+      const dx = graphX - x[i];
+      const dy = graphY - y[i];
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // Same 2-unit click tolerance as the generic path below.
+      const hitRadius = radii[i * radiusStride + radiusOffset] + 2;
+
+      if (dist <= hitRadius && dist < closestDist) {
+        closestDist = dist;
+        closestId = i;
+      }
+    }
+
+    if (closestId < 0) return null;
+    return {
+      type: "node",
+      nodeId: closestId,
+      distance: closestDist,
+      position: { x: x[closestId], y: y[closestId] },
+    };
+  }
+
+  /**
+   * Edge hit test over the providers' columns; see {@link columnNodeHitTest}.
+   */
+  private columnEdgeHitTest(
+    graphX: number,
+    graphY: number,
+    maxRadius: number,
+    nodes: NodeColumns,
+    edges: EdgeColumns,
+  ): EdgeHitResult | null {
+    const { x, y, count: nodeCount } = nodes;
+    const { count, sources, targets } = edges;
+
+    let closestId = -1;
+    let closestDistance = maxRadius;
+
+    for (let i = 0; i < count; i++) {
+      const sourceId = sources[i];
+      const targetId = targets[i];
+      // The position arrays commonly extend past `count` (capacity beyond the
+      // high-water mark), so an endpoint past it reads a real but meaningless
+      // coordinate rather than producing NaN. Skip it, as the accessor path
+      // does when `getNodePosition` returns undefined.
+      if (sourceId >= nodeCount || targetId >= nodeCount) continue;
+
+      const distance = this.pointToLineDistance(
+        graphX,
+        graphY,
+        x[sourceId],
+        y[sourceId],
+        x[targetId],
+        y[targetId],
+      );
+
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closestId = i;
+      }
+    }
+
+    if (closestId < 0) return null;
+    return {
+      type: "edge",
+      edgeId: closestId,
+      distance: closestDistance,
+      sourceId: sources[closestId],
+      targetId: targets[closestId],
+    };
   }
 
   /**
@@ -264,6 +425,9 @@ export class HitTester {
     maxRadius: number,
   ): NodeHitResult | null {
     if (!this.positionProvider) return null;
+
+    const columns = this.positionProvider.getNodeColumns?.() ?? null;
+    if (columns) return this.columnNodeHitTest(graphX, graphY, columns);
 
     let closestNode: NodeHitResult | null = null;
     let closestDist = Infinity;

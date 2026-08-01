@@ -112,6 +112,7 @@ import {
   uploadNodeSizes,
 } from "../simulation/collision.ts";
 import { createHitTester, type HitTester } from "../interaction/hit_test.ts";
+import { HoverTracker } from "../interaction/hover.ts";
 import { createPointerManager, type PointerManager } from "../interaction/pointer.ts";
 import {
   type ColorScaleName,
@@ -497,8 +498,7 @@ export class GraphMother {
   private pointerManager: PointerManager | null = null;
   private selectedNodes: Set<NodeId> = new Set();
   private selectedEdges: Set<EdgeId> = new Set();
-  private hoveredNode: NodeId | null = null;
-  private hoveredEdge: EdgeId | null = null;
+  private hover: HoverTracker;
   private draggedNode: NodeId | null = null;
   private lastDragPosition: Vec2 | null = null;
   private dragStartScreenPosition: Vec2 | null = null;
@@ -631,6 +631,53 @@ export class GraphMother {
     // GPU every SYNC_INTERVAL frames). The WASM R-tree is not wired up
     // because its position copy is never synced from the simulation — see
     // populateWasmEngine for the full rationale.
+
+    this.hover = new HoverTracker({
+      nodeAt: (screenX, screenY) => this.getNodeAtPosition(screenX, screenY),
+      edgeAt: (screenX, screenY) => this.getEdgeAtPosition(screenX, screenY),
+      toGraph: (screenX, screenY) => this.viewport.screenToGraph(screenX, screenY),
+      // The edge scan costs a pass over every edge and produces nothing but
+      // these two events, so nobody listening means nothing to compute.
+      edgeHoverWanted: () =>
+        this.events.hasListeners("edge:hoverenter") ||
+        this.events.hasListeners("edge:hoverleave"),
+      onNodeEnter: (nodeId, position) => {
+        this.syncNodeHoverToGPU(nodeId, true);
+        this.markRenderDirty();
+        this.events.emit({
+          type: "node:hoverenter",
+          timestamp: Date.now(),
+          nodeId,
+          position,
+        });
+      },
+      onNodeLeave: (nodeId) => {
+        this.syncNodeHoverToGPU(nodeId, false);
+        this.markRenderDirty();
+        this.events.emit({
+          type: "node:hoverleave",
+          timestamp: Date.now(),
+          nodeId,
+        });
+      },
+      onEdgeEnter: (edgeId, position) => {
+        this.markRenderDirty();
+        this.events.emit({
+          type: "edge:hoverenter",
+          timestamp: Date.now(),
+          edgeId,
+          position,
+        });
+      },
+      onEdgeLeave: (edgeId) => {
+        this.markRenderDirty();
+        this.events.emit({
+          type: "edge:hoverleave",
+          timestamp: Date.now(),
+          edgeId,
+        });
+      },
+    });
 
     // Initialize pointer manager for interaction
     this.pointerManager = createPointerManager({
@@ -1340,8 +1387,7 @@ export class GraphMother {
   private resetPerGraphState(): void {
     this.selectedNodes.clear();
     this.selectedEdges.clear();
-    this.hoveredNode = null;
-    this.hoveredEdge = null;
+    this.hover.reset();
     this.streamColorBackups.clear();
     this.prevSyncPositionsX = null;
     this.prevSyncPositionsY = null;
@@ -6123,14 +6169,19 @@ export class GraphMother {
    * Get currently hovered node.
    */
   getHoveredNode(): NodeId | null {
-    return this.hoveredNode;
+    return this.hover.node;
   }
 
   /**
    * Get currently hovered edge.
+   *
+   * Edge hover is only tracked while something is subscribed to
+   * `edge:hoverenter` or `edge:hoverleave` — the scan costs a pass over every
+   * edge on every frame the pointer moves, and it is skipped when nothing
+   * observes the result. Subscribe (even with a no-op handler) to poll this.
    */
   getHoveredEdge(): EdgeId | null {
-    return this.hoveredEdge;
+    return this.hover.edge;
   }
 
   // ==========================================================================
@@ -6221,8 +6272,8 @@ export class GraphMother {
         this.viewport.panScreen(dx, dy);
         this.lastPanPosition = { ...e.screenPosition };
       } else {
-        // Hover detection
-        this.updateHover(e.screenPosition.x, e.screenPosition.y);
+        // Hover detection — evaluated once per frame, not once per event.
+        this.hover.move(e.screenPosition.x, e.screenPosition.y);
       }
     });
 
@@ -6304,77 +6355,6 @@ export class GraphMother {
         this.viewport.zoom(zoomFactor, e.screenPosition.x, e.screenPosition.y);
       }
     });
-  }
-
-  /**
-   * Update hover state and sync to GPU
-   */
-  private updateHover(screenX: number, screenY: number): void {
-    const nodeId = this.getNodeAtPosition(screenX, screenY);
-    const position = this.viewport.screenToGraph(screenX, screenY);
-
-    if (nodeId !== this.hoveredNode) {
-      // Update previous hovered node
-      if (this.hoveredNode !== null) {
-        this.syncNodeHoverToGPU(this.hoveredNode, false);
-        this.events.emit({
-          type: "node:hoverleave",
-          timestamp: Date.now(),
-          nodeId: this.hoveredNode,
-        });
-      }
-
-      this.hoveredNode = nodeId;
-      this.markRenderDirty();
-
-      // Update new hovered node
-      if (nodeId !== null) {
-        this.syncNodeHoverToGPU(nodeId, true);
-        this.events.emit({
-          type: "node:hoverenter",
-          timestamp: Date.now(),
-          nodeId,
-          position,
-        });
-      }
-    }
-
-    // Only check edge hover if not hovering a node
-    if (nodeId === null) {
-      const edgeId = this.getEdgeAtPosition(screenX, screenY);
-
-      if (edgeId !== this.hoveredEdge) {
-        if (this.hoveredEdge !== null) {
-          this.events.emit({
-            type: "edge:hoverleave",
-            timestamp: Date.now(),
-            edgeId: this.hoveredEdge,
-          });
-        }
-
-        this.hoveredEdge = edgeId;
-        this.markRenderDirty();
-
-        if (edgeId !== null) {
-          this.events.emit({
-            type: "edge:hoverenter",
-            timestamp: Date.now(),
-            edgeId,
-            position,
-          });
-        }
-      }
-    } else {
-      // Clear edge hover when hovering a node
-      if (this.hoveredEdge !== null) {
-        this.events.emit({
-          type: "edge:hoverleave",
-          timestamp: Date.now(),
-          edgeId: this.hoveredEdge,
-        });
-        this.hoveredEdge = null;
-      }
-    }
   }
 
   /**
@@ -6514,6 +6494,15 @@ export class GraphMother {
         }
       },
       getNodeCount: () => parsedGraph.nodeCount,
+      // Read per scan, never captured: growth replaces these arrays.
+      getNodeColumns: () => ({
+        count: parsedGraph.nodeCount,
+        x: parsedGraph.positionsX,
+        y: parsedGraph.positionsY,
+        radii: parsedGraph.nodeAttributes,
+        radiusStride: NODE_ATTR_FLOATS,
+        radiusOffset: 0,
+      }),
     });
 
     // Set edge provider
@@ -6525,6 +6514,11 @@ export class GraphMother {
         }
       },
       getEdgeCount: () => parsedGraph.edgeSources.length,
+      getEdgeColumns: () => ({
+        count: parsedGraph.edgeSources.length,
+        sources: parsedGraph.edgeSources,
+        targets: parsedGraph.edgeTargets,
+      }),
     });
   }
 
@@ -6577,6 +6571,9 @@ export class GraphMother {
 
     // Dispose pointer manager
     this.pointerManager?.dispose();
+
+    // Drop any hover evaluation still waiting on a frame callback
+    this.hover.reset();
 
     // Remove visibility change listener
     if (this.visibilityChangeHandler && typeof document !== "undefined") {
