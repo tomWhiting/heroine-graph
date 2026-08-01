@@ -27,9 +27,13 @@ export default {
   publicDir: resolve(__dirname, "../../dist"),
   resolve: {
     alias: {
+      // The wasm-pack output directory, NOT the bundled copy in dist/: the
+      // copy is refreshed only by `deno task bundle`, so aliasing it means
+      // `deno task build:wasm` appears to have no effect — the demo keeps
+      // running a stale binary missing newly exported functions.
       "@graphmother/wasm": resolve(
         __dirname,
-        "../../dist/graphmother_wasm.js",
+        "../../packages/wasm/pkg/graphmother_wasm.js",
       ),
     },
   },
