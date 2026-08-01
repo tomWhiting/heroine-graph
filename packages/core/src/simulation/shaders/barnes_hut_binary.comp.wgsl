@@ -59,9 +59,10 @@ struct ForceUniforms {
 // name.
 @group(0) @binding(10) var<storage, read> live_idx: array<u32>;
 
-// Stack depth for tree traversal. For a binary tree with N nodes, the maximum
-// stack depth needed is log₂(N). For 131K nodes (current limit), ~17 levels suffice.
-// However, Karras trees can be unbalanced. We use 128 to handle extreme cases,
+// Stack depth for tree traversal. For a balanced binary tree with N nodes the
+// maximum stack depth needed is log₂(N) — 23 levels at the 8,388,480-node
+// ceiling (see MAX_BARNES_HUT_NODES in algorithms/barnes-hut.ts). However,
+// Karras trees can be unbalanced. We use 128 to handle extreme cases,
 // supporting trees up to 128 levels deep with massive safety margin.
 const MAX_STACK_DEPTH: u32 = 128u;
 const WORKGROUP_SIZE: u32 = 256u;
@@ -242,7 +243,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 // than computing individual contributions.
                 //
                 // With MAX_STACK_DEPTH=128, this should never occur in practice
-                // (would require a tree deeper than 128 levels, far beyond the ~17 levels needed for 131K nodes).
+                // (would require a tree deeper than 128 levels, far beyond the
+                // ~23 a balanced tree needs at the 8,388,480-node ceiling).
                 total_force += compute_repulsion(delta, cell_mass);
             }
         }
