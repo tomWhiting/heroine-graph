@@ -530,6 +530,31 @@ export type {
 } from "./src/styling/mod.ts";
 
 // =============================================================================
+// DOM Card Overlay
+// =============================================================================
+
+export {
+  CardDriver,
+  createDefaultCardProvider,
+  DEFAULT_DOM_OVERLAY_CONFIG,
+  externalIdForSlot,
+  slotForExternalId,
+} from "./src/overlay/mod.ts";
+export type {
+  CardChange,
+  CardDriverOptions,
+  CardNode,
+  CardPlacement,
+  CardPlacementChange,
+  CardProvider,
+  CardSize,
+  CardStateChange,
+  DefaultCardState,
+  DomOverlayConfig,
+  NodeIdentitySource,
+} from "./src/overlay/mod.ts";
+
+// =============================================================================
 // Central Configuration Nexus
 // =============================================================================
 

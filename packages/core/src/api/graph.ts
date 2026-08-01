@@ -169,6 +169,8 @@ import {
   type NodeTypeStyleMap,
   type TypeStyleManager,
 } from "../styling/mod.ts";
+import { externalIdForSlot, slotForExternalId } from "../overlay/mod.ts";
+import type { IdLike } from "../graph/id_map.ts";
 import { growCapacity, initialCapacity } from "./buffer_capacity.ts";
 import { MutableGraphState, NODE_ATTR_BYTES, NODE_ATTR_FLOATS } from "./graph_state.ts";
 
@@ -6065,6 +6067,44 @@ export class GraphMother {
       x: this.state.parsedGraph.positionsX[idx],
       y: this.state.parsedGraph.positionsY[idx],
     };
+  }
+
+  /**
+   * Get the identifier the producer supplied for a node slot.
+   *
+   * `NodeId` is a GPU slot index, recycled on removal and meaningless outside
+   * this instance, so anything keeping its own per-node record — a DOM card,
+   * a selection set, a search result — needs this to key on. Without it a
+   * consumer has to maintain a duplicate slot table of its own.
+   *
+   * Returns `undefined` — never throws — for a slot that is out of range, was
+   * freed by a removal, or was never mapped, so a stale id held across a
+   * mutation is safe to look up.
+   *
+   * @param nodeId Node slot index
+   * @returns Producer identifier, or undefined if the slot holds no live node
+   */
+  getExternalId(nodeId: NodeId): IdLike | undefined {
+    const gs = this.graphState;
+    if (!gs) return undefined;
+    return externalIdForSlot(gs, nodeId);
+  }
+
+  /**
+   * Get the node slot currently holding a producer identifier.
+   *
+   * The inverse of {@link GraphMother.getExternalId}. Returns `undefined` if
+   * the identifier was never loaded or its node has been removed; because
+   * slots are recycled, the returned value is only valid until the next
+   * mutation.
+   *
+   * @param externalId Identifier the producer supplied for the node
+   * @returns Node slot index, or undefined if no live node carries that id
+   */
+  getNodeId(externalId: IdLike): NodeId | undefined {
+    const gs = this.graphState;
+    if (!gs) return undefined;
+    return slotForExternalId(gs, externalId);
   }
 
   /**

@@ -2883,6 +2883,10 @@
       "integrity": "sha512-B58NGBEoc8Y9MWWCQGl/gq9xBCe4IiKM0a2x7GZdQKOW5Exr8S1W24J6OgM1njK8xCRGvAJIL/MxXHf6SkmQKQ=="
     }
   },
+  "remote": {
+    "https://esm.sh/linkedom@0.18.11/denonext/worker.mjs": "50a84bbd3c3bf642d51c6b3f10ce39a20472be5676f663aae0cd0985b4bdce11",
+    "https://esm.sh/linkedom@0.18.11/worker": "2ea487138958b75ce0a20cd01d09e8fc033217a4c9c029b73a68b7e902dbc5d6"
+  },
   "workspace": {
     "packageJson": {
       "dependencies": [
