@@ -15,6 +15,14 @@
  * order), across duplicate-heavy and full-range distributions, on both the
  * single-pass-scan (<= 512 histogram buckets) and three-phase-scan paths,
  * plus the small-N simple-sort path.
+ *
+ * The large cases below cover the hierarchical phase-2 scan (task #8). Phase 2
+ * used to be a single 512-wide Blelloch pass over the per-workgroup sums, so
+ * recordRadixSort refused anything past 512 * 256 = 131,072 elements and
+ * Barnes-Hut was simply unavailable above that. It is now three dispatches
+ * (scan_sums_blocks / scan_block_sums / propagate_block_offsets) whenever there
+ * are more workgroup sums than one pass covers, which is why the boundary
+ * tests straddle 131,072 exactly.
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
@@ -170,6 +178,47 @@ function assertSortedStablePermutation(
   }
 }
 
+/**
+ * The stable CPU sort of `keys`, as the permutation of original indices the
+ * GPU's payload column must equal.
+ *
+ * {@link assertSortedStablePermutation} already pins the result uniquely — a
+ * non-decreasing permutation that preserves index order among equal keys IS
+ * the stable sort — but the large cases compare against this explicitly, since
+ * an independent reference is what makes a 200K-element result checkable
+ * rather than merely self-consistent.
+ */
+function cpuStableSortIndices(keys: Uint32Array): Uint32Array {
+  const order = new Uint32Array(keys.length);
+  for (let i = 0; i < order.length; i++) order[i] = i;
+  // Keys are full-range u32; the differences stay exact in f64.
+  return order.sort((a, b) => (keys[a] - keys[b]) || (a - b));
+}
+
+/** Asserts the GPU result equals {@link cpuStableSortIndices} element for element. */
+function assertMatchesCpuSort(
+  input: Uint32Array,
+  keys: Uint32Array,
+  values: Uint32Array,
+  label: string,
+): void {
+  const reference = cpuStableSortIndices(input);
+  for (let i = 0; i < reference.length; i++) {
+    assertEquals(values[i], reference[i], `${label}: payload differs from CPU sort at ${i}`);
+    assertEquals(keys[i], input[reference[i]], `${label}: key differs from CPU sort at ${i}`);
+  }
+}
+
+/** Seeded full-range u32 keys with a scattering of forced duplicates. */
+function randomKeys(n: number, seed: number, duplicateRate = 0.02): Uint32Array<ArrayBuffer> {
+  const rng = mulberry32(seed);
+  const keys = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    keys[i] = rng() < duplicateRate ? 0xC0FFEE00 : (Math.floor(rng() * 0x100000000) >>> 0);
+  }
+  return keys;
+}
+
 gpuTest(
   "GPU radix sort: 12K duplicate-heavy keys come out sorted and stable",
   async (device) => {
@@ -229,5 +278,77 @@ gpuTest(
     }
     const { keys: sorted, values } = await runSort(device, keys);
     assertSortedStablePermutation(keys, sorted, values, "simple-sort");
+  },
+);
+
+gpuTest(
+  "GPU radix sort: 200K keys above the old 131,072 cap sort correctly",
+  async (device) => {
+    // 200,000 elements -> 782 workgroups -> 2 phase-2 blocks (the second one
+    // partial). Before the hierarchical scan this call refused to record at
+    // all, so runSort's `recorded` assertion is half the test.
+    const keys = randomKeys(200_000, 505);
+    const { keys: sorted, values } = await runSort(device, keys);
+    assertSortedStablePermutation(keys, sorted, values, "200K");
+    assertMatchesCpuSort(keys, sorted, values, "200K");
+  },
+);
+
+gpuTest(
+  "GPU radix sort: exactly 131,072 keys (last single-dispatch phase 2)",
+  async (device) => {
+    // 512 workgroups exactly: the flat phase-2 path, at the element count that
+    // used to be the hard ceiling. Must keep working unchanged.
+    const keys = randomKeys(131_072, 606);
+    const { keys: sorted, values } = await runSort(device, keys);
+    assertSortedStablePermutation(keys, sorted, values, "131072");
+    assertMatchesCpuSort(keys, sorted, values, "131072");
+  },
+);
+
+gpuTest(
+  "GPU radix sort: 131,073 keys (first hierarchical phase 2)",
+  async (device) => {
+    // One element past the old ceiling: 513 workgroups, so block 1 holds a
+    // single workgroup sum. Catches an off-by-one in the block partition or in
+    // the tail zero-padding that a round count would hide.
+    const keys = randomKeys(131_073, 707);
+    const { keys: sorted, values } = await runSort(device, keys);
+    assertSortedStablePermutation(keys, sorted, values, "131073");
+    assertMatchesCpuSort(keys, sorted, values, "131073");
+  },
+);
+
+gpuTest(
+  "GPU radix sort: exactly two full phase-2 blocks (262,144 keys)",
+  async (device) => {
+    // 512 * 256 * 2 elements -> 1024 workgroups -> exactly 2 full blocks, no
+    // partial tail. The complement of the 131,073 case: here every block total
+    // comes from a fully populated Blelloch pass, so a block total captured
+    // from the wrong slot shows up as a misplaced run rather than as padding.
+    const keys = randomKeys(262_144, 808);
+    const { keys: sorted, values } = await runSort(device, keys);
+    assertSortedStablePermutation(keys, sorted, values, "262144");
+    assertMatchesCpuSort(keys, sorted, values, "262144");
+  },
+);
+
+gpuTest(
+  "GPU radix sort: 200K duplicate-heavy keys across the block hierarchy",
+  async (device) => {
+    // Only 64 distinct keys over 200,000 elements — roughly 3,000 equal keys
+    // each, spanning many workgroups and both phase-2 blocks. This is the
+    // shape Morton codes actually take at scale (a 32-bit code collides freely
+    // once N passes ~2^16), and it is where a lost block offset stops looking
+    // like noise: whole equal-key runs land on top of each other.
+    const n = 200_000;
+    const rng = mulberry32(909);
+    const keys = new Uint32Array(n);
+    for (let i = 0; i < n; i++) {
+      keys[i] = Math.floor(rng() * 64) * 0x04101041; // bits in every radix digit
+    }
+    const { keys: sorted, values } = await runSort(device, keys);
+    assertSortedStablePermutation(keys, sorted, values, "200K-duplicates");
+    assertMatchesCpuSort(keys, sorted, values, "200K-duplicates");
   },
 );

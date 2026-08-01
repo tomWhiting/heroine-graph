@@ -55,6 +55,31 @@ import KARRAS_TREE_WGSL from "../shaders/karras_tree.comp.wgsl";
 import TRAVERSE_WGSL from "../shaders/barnes_hut_binary.comp.wgsl";
 
 /**
+ * Particle ceiling this algorithm advertises.
+ *
+ * Four independent constraints bound the pipeline; this is the tightest of
+ * them, and it is the tree dispatch width — NOT the radix sort's prefix scan,
+ * which used to bind at 131,072 before the scan of per-workgroup sums became
+ * hierarchical (see MAX_SCAN_WORKGROUPS in utils/radix_sort.ts):
+ *
+ *  1. Prefix scan: 512 blocks * 512 workgroup sums * 256 threads =
+ *     67,108,864 particles. No longer binding.
+ *  2. Bottom-up aggregation: {@link MAX_AGGREGATION_PASSES} = 24 dispatches,
+ *     and {@link aggregationPassCount} asks for ceil(log2 N) + 1, so the
+ *     one-pass proof margin survives up to N = 2^23 = 8,388,608.
+ *  3. Tree dispatch width: the clear and aggregate passes dispatch over the
+ *     2N-1 tree nodes at 256 threads per workgroup, against a
+ *     `maxComputeWorkgroupsPerDimension` of 65,535 (the WebGPU default, and
+ *     what every adapter we target reports): 2N-1 <= 16,776,960, so
+ *     N <= 8,388,480.
+ *  4. `nodeCom` is a (2N-1) * 8-byte storage binding against the 128 MiB
+ *     default `maxStorageBufferBindingSize`: N <= 8,388,608.
+ *
+ * (3) binds by 128 particles, so that is the number. 64x the old ceiling.
+ */
+const MAX_BARNES_HUT_NODES = 8_388_480;
+
+/**
  * Barnes-Hut algorithm info
  */
 const BARNES_HUT_ALGORITHM_INFO: ForceAlgorithmInfo = {
@@ -62,7 +87,7 @@ const BARNES_HUT_ALGORITHM_INFO: ForceAlgorithmInfo = {
   name: "Barnes-Hut (Karras)",
   description: "GPU binary radix tree with O(N log N) construction. Optimal for 5K-100K+ nodes.",
   minNodes: 100,
-  maxNodes: 131072, // Limited by radix sort prefix scan (512 workgroups * 256 threads)
+  maxNodes: MAX_BARNES_HUT_NODES,
   complexity: "O(N log N)",
   // The Karras tree layout binds 10 storage buffers (bindings 4-10 read_write
   // plus 1-3 read-only); the WebGPU default is 8.
@@ -76,8 +101,10 @@ const WORKGROUP_SIZE = 256;
  * Maximum bottom-up aggregation dispatches per frame. Aggregation is
  * multi-pass because WGSL provides no cross-workgroup visibility for plain
  * stores within one dispatch (see karras_tree.comp.wgsl). With the in-pass
- * upward walk, ceil(log2(N)) passes provably complete the tree; for the
- * 131,072-node ceiling that is 17, so 24 leaves generous margin.
+ * upward walk, ceil(log2(N)) passes provably complete the tree, and
+ * {@link aggregationPassCount} asks for one more than that. 24 therefore
+ * covers every N up to 2^23 with the extra pass intact — comfortably past
+ * {@link MAX_BARNES_HUT_NODES}, which a different constraint pins lower.
  */
 const MAX_AGGREGATION_PASSES = 24;
 
@@ -755,7 +782,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // === PHASE 2: Sort by Morton code ===
     // Uses shared radix sort utility: simple sort for <1024 nodes, full 8-pass LSD for larger.
-    // Returns false if workgroup count exceeds prefix scan capacity (~131K nodes).
+    // Returns false only if the workgroup count exceeds the prefix scan's
+    // hierarchical capacity (67,108,864 elements) — far above
+    // MAX_BARNES_HUT_NODES, so in practice this refusal no longer fires.
     const sortSucceeded = recordRadixSort(
       encoder,
       p.sort,

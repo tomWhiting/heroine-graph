@@ -6,7 +6,10 @@
  * and grid-based collision detection.
  *
  * Sort algorithm: LSD radix sort with 4-bit digits (8 passes for 32-bit keys).
- * Prefix scan: Blelloch exclusive scan, three-phase for large arrays.
+ * Prefix scan: Blelloch exclusive scan — single-pass for histograms that fit
+ * one workgroup, reduce/scan/propagate for larger ones, with the scan of the
+ * per-workgroup sums itself becoming hierarchical past
+ * {@link SCAN_BLOCK_SIZE} workgroups (see prefix_scan.comp.wgsl).
  *
  * @module
  */
@@ -23,11 +26,30 @@ const RADIX_PASSES = 8; // 32-bit keys / 4 bits per pass
 const RADIX_SIZE = 16; // 2^4 = 16 buckets per radix digit
 
 /**
- * Maximum number of workgroups the prefix scan can handle.
- * This limit comes from the Blelloch scan's 512-element shared memory array.
- * 512 workgroups * 256 threads = 131,072 elements maximum.
+ * Elements one Blelloch pass covers — the size of `scan_data` in
+ * prefix_scan.comp.wgsl. Every level of the workgroup-sums scan works in
+ * blocks of this many values.
  */
-const MAX_SCAN_WORKGROUPS = 512;
+const SCAN_BLOCK_SIZE = 512;
+
+/**
+ * Maximum number of sort workgroups the prefix scan can handle.
+ *
+ * The per-workgroup sums are scanned in blocks of {@link SCAN_BLOCK_SIZE}, and
+ * the block totals are then scanned by a single Blelloch pass that likewise
+ * covers SCAN_BLOCK_SIZE values — so the hierarchy tops out at
+ * 512 blocks * 512 sums = 262,144 workgroups, i.e. 67,108,864 elements. (A
+ * further level would lift it again; nothing in GraphMother is close.)
+ *
+ * Note this is the *shader's* ceiling. In practice
+ * `maxComputeWorkgroupsPerDimension` — 65,535 by default, and what every
+ * adapter we target reports — binds first: the reduce/propagate/scatter passes
+ * dispatch one workgroup per sort workgroup, so a sort stops being dispatchable
+ * at 65,535 * 256 = 16,776,960 elements. That limit belongs to the device, not
+ * to this module, so callers that size buffers from a device limit should check
+ * it there.
+ */
+const MAX_SCAN_WORKGROUPS = SCAN_BLOCK_SIZE * SCAN_BLOCK_SIZE;
 
 /**
  * GPU pipelines for radix sort and prefix scan.
@@ -41,12 +63,18 @@ export interface RadixSortPipeline {
   scatter: GPUComputePipeline;
   /** Simple O(n^2) counting sort fallback for small arrays */
   simpleSort: GPUComputePipeline;
-  /** Single-pass Blelloch scan for small histograms (<=512 elements) */
+  /** Single-pass Blelloch scan for histograms of at most SCAN_BLOCK_SIZE buckets */
   scanSinglePass: GPUComputePipeline;
   /** Phase 1: Per-workgroup reduction for large histograms */
   scanReduce: GPUComputePipeline;
-  /** Phase 2: Scan of workgroup sums */
+  /** Phase 2, flat: single-pass scan of workgroup sums (<= SCAN_BLOCK_SIZE) */
   scanWorkgroupSums: GPUComputePipeline;
+  /** Phase 2a: per-block scan of workgroup sums, publishing block totals */
+  scanSumsBlocks: GPUComputePipeline;
+  /** Phase 2b: single-pass scan of the block totals */
+  scanBlockSums: GPUComputePipeline;
+  /** Phase 2c: fold each block's offset back into its workgroup sums */
+  scanBlockOffsets: GPUComputePipeline;
   /** Phase 3: Propagate base offsets into per-element prefix sums */
   scanPropagate: GPUComputePipeline;
   /** Bind group layout for sort passes (7 bindings) */
@@ -79,7 +107,12 @@ export interface RadixSortBuffers {
   valuesB: GPUBuffer;
   /** Per-workgroup histogram (workgroupCount * 16 atomic u32) */
   histogram: GPUBuffer;
-  /** Prefix sums (workgroupCount * 17 u32, extra space for workgroup sums) */
+  /**
+   * Prefix sums, plus the scan's own scratch regions. With E = workgroupCount *
+   * 16, W = workgroupCount and B = ceil(W / SCAN_BLOCK_SIZE): [0, E) final
+   * per-bucket sums, [E, E+W) workgroup sums, [E+W, E+W+B) level-2 block
+   * totals. See the region map in prefix_scan.comp.wgsl.
+   */
   prefixSums: GPUBuffer;
   /** Maximum element count this buffer set supports */
   maxElements: number;
@@ -186,6 +219,21 @@ export function createRadixSortPipeline(
       layout: scanPipelineLayout,
       compute: { module: prefixScanModule, entryPoint: "scan_workgroup_sums" },
     }),
+    scanSumsBlocks: device.createComputePipeline({
+      label: `${label} Scan Sums Blocks`,
+      layout: scanPipelineLayout,
+      compute: { module: prefixScanModule, entryPoint: "scan_sums_blocks" },
+    }),
+    scanBlockSums: device.createComputePipeline({
+      label: `${label} Scan Block Sums`,
+      layout: scanPipelineLayout,
+      compute: { module: prefixScanModule, entryPoint: "scan_block_sums" },
+    }),
+    scanBlockOffsets: device.createComputePipeline({
+      label: `${label} Propagate Block Offsets`,
+      layout: scanPipelineLayout,
+      compute: { module: prefixScanModule, entryPoint: "propagate_block_offsets" },
+    }),
     scanPropagate: device.createComputePipeline({
       label: `${label} Scan Propagate`,
       layout: scanPipelineLayout,
@@ -213,8 +261,15 @@ export function createRadixSortBuffers(
   const elementBytes = safeMax * 4;
   const workgroupCount = calculateWorkgroups(safeMax, WORKGROUP_SIZE);
   const histogramBytes = Math.max(workgroupCount * RADIX_SIZE * 4, 64);
-  // Extra space for workgroup sums during three-phase scan
-  const prefixSumsBytes = Math.max(workgroupCount * (RADIX_SIZE + 1) * 4, 64);
+  // Per-bucket sums (workgroupCount * RADIX_SIZE), then the multi-phase scan's
+  // two scratch regions: one workgroup sum per workgroup, and one level-2 block
+  // total per block of SCAN_BLOCK_SIZE workgroup sums. The block-total region is
+  // unused below SCAN_BLOCK_SIZE workgroups but costs at most one u32 there.
+  const scanBlocks = calculateWorkgroups(workgroupCount, SCAN_BLOCK_SIZE);
+  const prefixSumsBytes = Math.max(
+    (workgroupCount * (RADIX_SIZE + 1) + scanBlocks) * 4,
+    64,
+  );
 
   const sortUniforms = device.createBuffer({
     label: `${label} Sort Uniforms`,
@@ -446,7 +501,8 @@ export function recordRadixSort(
     if (nodeWorkgroups > MAX_SCAN_WORKGROUPS) {
       console.error(
         `RadixSort: Element count ${elementCount} requires ${nodeWorkgroups} workgroups, ` +
-          `but prefix scan supports max ${MAX_SCAN_WORKGROUPS} (~131K elements).`,
+          `but the hierarchical prefix scan supports max ${MAX_SCAN_WORKGROUPS} ` +
+          `(${MAX_SCAN_WORKGROUPS * WORKGROUP_SIZE} elements).`,
       );
       return false;
     }
@@ -481,8 +537,10 @@ export function recordRadixSort(
       }
 
       // Prefix scan
+      // The whole histogram fits one Blelloch pass, so the reduce/scan/propagate
+      // decomposition is unnecessary: `scan` handles it in a single dispatch.
       const totalHistogramElements = nodeWorkgroups * RADIX_SIZE;
-      const useSinglePassScan = totalHistogramElements <= 512;
+      const useSinglePassScan = totalHistogramElements <= SCAN_BLOCK_SIZE;
 
       if (useSinglePassScan) {
         const computePass = encoder.beginComputePass({ label: `${label} Scan Single ${pass}` });
@@ -491,7 +549,10 @@ export function recordRadixSort(
         computePass.dispatchWorkgroups(1);
         computePass.end();
       } else {
-        // Three-phase parallel scan for large histograms
+        // Reduce / scan-the-sums / propagate for large histograms. Phase 2 (the
+        // middle step) is one dispatch or three depending on how many workgroup
+        // sums there are; either way it leaves the same exclusive global scan
+        // in prefix_sums[element_count ..], so phase 3 does not vary.
         {
           const computePass = encoder.beginComputePass({ label: `${label} Scan Reduce ${pass}` });
           computePass.setPipeline(pipeline.scanReduce);
@@ -499,12 +560,46 @@ export function recordRadixSort(
           computePass.dispatchWorkgroups(nodeWorkgroups);
           computePass.end();
         }
-        {
+        if (nodeWorkgroups <= SCAN_BLOCK_SIZE) {
+          // One Blelloch pass covers every workgroup sum.
           const computePass = encoder.beginComputePass({ label: `${label} Scan WG Sums ${pass}` });
           computePass.setPipeline(pipeline.scanWorkgroupSums);
           computePass.setBindGroup(0, bindGroups.scan);
           computePass.dispatchWorkgroups(1);
           computePass.end();
+        } else {
+          // Hierarchical phase 2. Each level reads what the previous level
+          // wrote from a DIFFERENT workgroup, so each is its own compute pass:
+          // WGSL gives no cross-workgroup visibility for plain stores inside a
+          // dispatch, only WebGPU's pass-to-pass ordering does.
+          const scanBlocks = calculateWorkgroups(nodeWorkgroups, SCAN_BLOCK_SIZE);
+          {
+            const computePass = encoder.beginComputePass({
+              label: `${label} Scan Sums Blocks ${pass}`,
+            });
+            computePass.setPipeline(pipeline.scanSumsBlocks);
+            computePass.setBindGroup(0, bindGroups.scan);
+            computePass.dispatchWorkgroups(scanBlocks);
+            computePass.end();
+          }
+          {
+            const computePass = encoder.beginComputePass({
+              label: `${label} Scan Block Sums ${pass}`,
+            });
+            computePass.setPipeline(pipeline.scanBlockSums);
+            computePass.setBindGroup(0, bindGroups.scan);
+            computePass.dispatchWorkgroups(1);
+            computePass.end();
+          }
+          {
+            const computePass = encoder.beginComputePass({
+              label: `${label} Scan Block Offsets ${pass}`,
+            });
+            computePass.setPipeline(pipeline.scanBlockOffsets);
+            computePass.setBindGroup(0, bindGroups.scan);
+            computePass.dispatchWorkgroups(scanBlocks);
+            computePass.end();
+          }
         }
         {
           const computePass = encoder.beginComputePass({

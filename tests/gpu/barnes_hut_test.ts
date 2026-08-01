@@ -15,6 +15,11 @@
  * - No collapse: a full simulation run must cool (kinetic energy decays)
  *   and keep a bounding radius comparable to the N² reference instead of
  *   collapsing to the center.
+ * - Scale (task #8): above 131,072 particles the radix sort's prefix scan used
+ *   to refuse outright, so recordRepulsionPass returned early and Barnes-Hut
+ *   silently produced no forces at all. The 220K case below is the Meridian
+ *   target scale and asserts both that the pipeline runs and that it still
+ *   agrees with direct summation.
  */
 
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@^1";
@@ -27,7 +32,8 @@ import {
   requestHarnessDevice,
 } from "../helpers/gpu.ts";
 import { countNonFinite, kineticEnergy, maxRadius } from "../helpers/invariants.ts";
-import { generateCodeTree } from "../fixtures/code_tree.ts";
+import { CODE_TREE_SCALES, generateCodeTree } from "../fixtures/code_tree.ts";
+import { mulberry32 } from "../fixtures/prng.ts";
 import {
   type FullForceConfig,
   validateForceConfig,
@@ -361,6 +367,164 @@ gpuTest(
     assert(
       rBh > 0.2 * rInitial,
       `layout collapsed toward center: final=${rBh}, initial=${rInitial}`,
+    );
+  },
+);
+
+/**
+ * Direct-summation repulsion on ONE particle, replicating
+ * `compute_repulsion` in barnes_hut_binary.comp.wgsl term for term (unit
+ * masses, `max_distance` disabled). O(N) per call, which is why the 220K test
+ * references a sample of particles rather than all of them.
+ *
+ * Returns the force and the mass found at (essentially) this particle's own
+ * position — the shader's `coincident_mass`, which the caller checks is just
+ * the particle's own leaf, since the golden-angle separation impulse for
+ * genuinely stacked bodies is not modelled here.
+ */
+function referenceRepulsion(
+  xs: Float32Array,
+  ys: Float32Array,
+  i: number,
+  strength: number,
+  minDistance: number,
+): { fx: number; fy: number; coincidentMass: number } {
+  const minDistSq = minDistance * minDistance;
+  const xi = xs[i];
+  const yi = ys[i];
+  let fx = 0;
+  let fy = 0;
+  let coincidentMass = 0;
+  for (let j = 0; j < xs.length; j++) {
+    const dx = xi - xs[j];
+    const dy = yi - ys[j];
+    const distSq = dx * dx + dy * dy;
+    // COINCIDENT_DIST_SQ; the particle's own leaf always lands here
+    if (distSq < 0.0001) {
+      coincidentMass += 1;
+      continue;
+    }
+    const safeSq = Math.max(distSq, minDistSq);
+    const scale = strength / (safeSq * Math.sqrt(safeSq));
+    fx += dx * scale;
+    fy += dy * scale;
+  }
+  return { fx, fy, coincidentMass };
+}
+
+gpuTest(
+  "GPU Barnes-Hut: 220K particles (above the old 131,072 cap) run and stay accurate",
+  async (device) => {
+    // CODE_TREE_SCALES.large is the Meridian target scale: 860 sort workgroups,
+    // so the radix sort takes the hierarchical phase-2 path. Before task #8
+    // recordRadixSort refused here and recordRepulsionPass returned before
+    // touching the force buffer — which is exactly what the non-zero assertion
+    // below catches, since a refusal leaves every force at zero and would
+    // otherwise sail past a finiteness check.
+    const graph = generateCodeTree(CODE_TREE_SCALES.large);
+    const n = graph.nodeCount;
+    assert(n > 131072, `fixture must exceed the old cap, got ${n}`);
+
+    const repulsionStrength = -50;
+    const repulsionDistanceMin = 1;
+    const forceConfig = validateForceConfig({
+      repulsionStrength,
+      theta: 0.5,
+      repulsionDistanceMin,
+      repulsionDistanceMax: 0,
+    });
+
+    const bh = await loadBarnesHut();
+    const forces = await runRepulsionOnce(
+      device,
+      bh,
+      graph.positionsX,
+      graph.positionsY,
+      forceConfig,
+    );
+
+    assertEquals(
+      countNonFinite(forces, new Float32Array(forces.length)),
+      0,
+      "Barnes-Hut produced non-finite forces at 220K particles",
+    );
+
+    // Every particle in a 220K repulsive cloud is pushed by something. An
+    // all-zero buffer is the signature of a pipeline that refused to run.
+    let moved = 0;
+    for (let i = 0; i < n; i++) {
+      if (forces[2 * i] !== 0 || forces[2 * i + 1] !== 0) moved++;
+    }
+    assert(
+      moved === n,
+      `${n - moved} of ${n} particles received no force — the tree pass did not run`,
+    );
+
+    // Direct summation on a seeded sample. The traversal reads the whole tree,
+    // so a sample of particles still exercises every level of it.
+    const sampleRng = mulberry32(88);
+    const sampleCount = 192;
+    const relErrors = new Float64Array(sampleCount);
+    let magSumRef = 0;
+    let magSumBh = 0;
+    const samples = new Uint32Array(sampleCount);
+    for (let s = 0; s < sampleCount; s++) {
+      samples[s] = Math.floor(sampleRng() * n);
+    }
+
+    const refFx = new Float64Array(sampleCount);
+    const refFy = new Float64Array(sampleCount);
+    for (let s = 0; s < sampleCount; s++) {
+      const i = samples[s];
+      const ref = referenceRepulsion(
+        graph.positionsX,
+        graph.positionsY,
+        i,
+        Math.abs(repulsionStrength),
+        repulsionDistanceMin,
+      );
+      assertEquals(
+        ref.coincidentMass,
+        1,
+        `sampled particle ${i} has a stacked neighbour; the reference does not ` +
+          `model the golden-angle separation impulse`,
+      );
+      refFx[s] = ref.fx;
+      refFy[s] = ref.fy;
+      magSumRef += Math.hypot(ref.fx, ref.fy);
+      magSumBh += Math.hypot(forces[2 * i], forces[2 * i + 1]);
+    }
+    assert(magSumRef > 0, "direct summation produced zero forces — broken rig");
+    const meanMag = magSumRef / sampleCount;
+
+    for (let s = 0; s < sampleCount; s++) {
+      const i = samples[s];
+      const dx = forces[2 * i] - refFx[s];
+      const dy = forces[2 * i + 1] - refFy[s];
+      // Same denominator floor as the 5K comparison: particles near the field
+      // null have |F| ~ 0 and unbounded relative error.
+      const denom = Math.max(Math.hypot(refFx[s], refFy[s]), 0.05 * meanMag);
+      relErrors[s] = Math.hypot(dx, dy) / denom;
+    }
+    const sorted = relErrors.slice().sort();
+    const median = sorted[Math.floor(sampleCount / 2)];
+    const p95 = sorted[Math.floor(sampleCount * 0.95)];
+    const magRatio = magSumBh / magSumRef;
+
+    console.log(
+      `[gpu] BH vs direct summation (n=${n}, ${sampleCount} samples): ` +
+        `median relErr=${median.toFixed(4)} p95=${p95.toFixed(4)} ` +
+        `magRatio=${magRatio.toFixed(4)}`,
+    );
+
+    // theta = 0.5 tolerances, as in the 5K comparison. A dropped block offset
+    // in the hierarchical scan mis-sorts whole Morton runs, which scrambles
+    // the tree and drives these far past 1.
+    assert(median < 0.05, `median relative error too high: ${median}`);
+    assert(p95 < 0.15, `p95 relative error too high: ${p95}`);
+    assert(
+      magRatio > 0.9 && magRatio < 1.1,
+      `aggregate force magnitude off: BH/direct = ${magRatio}`,
     );
   },
 );
