@@ -204,6 +204,13 @@ export function createSimulationController(
   };
 
   /**
+   * Whether the current cool-down has already announced its "end". Re-armed by
+   * anything that reheats: restart, a fresh start, or alpha pushed back above
+   * alphaMin. One settle, one event — the tick loop keeps running regardless.
+   */
+  let hasSettled = false;
+
+  /**
    * Perform one simulation tick
    * @returns true if simulation should continue
    */
@@ -223,8 +230,11 @@ export function createSimulationController(
     // the integration shader produces zero acceleration and damping
     // zeroes out remaining velocities within a few frames.
     // bumpSimulationAlpha() reheats above alphaMin when new data arrives.
+    let settledNow = false;
     if (state.alpha < state.alphaMin && state.alphaTarget <= state.alphaMin) {
       state.alpha = 0;
+      settledNow = !hasSettled;
+      hasSettled = true;
     }
 
     // Check for warm-up completion
@@ -237,6 +247,10 @@ export function createSimulationController(
       alpha: state.alpha,
       tickCount: state.tickCount,
     });
+
+    if (settledNow) {
+      events.emit("end", { tickCount: state.tickCount });
+    }
 
     // Note: We do NOT stop the simulation when alpha < alphaMin.
     // The simulation should always run - alpha just controls movement intensity.
@@ -258,6 +272,7 @@ export function createSimulationController(
       // Fresh start
       state.alpha = finalConfig.alpha;
       state.isWarmingUp = finalConfig.warmUpTicks > 0;
+      hasSettled = false;
     }
   }
 
@@ -291,6 +306,7 @@ export function createSimulationController(
     // (e.g. 0 for convergence mode) that should survive restarts.
     state.tickCount = 0;
     state.isWarmingUp = finalConfig.warmUpTicks > 0;
+    hasSettled = false;
     events.emit("restart", { alpha: state.alpha });
   }
 
@@ -299,6 +315,7 @@ export function createSimulationController(
    */
   function setAlpha(alpha: number): void {
     state.alpha = Math.max(0, Math.min(1, alpha));
+    if (state.alpha > state.alphaMin) hasSettled = false;
   }
 
   /**
@@ -308,6 +325,7 @@ export function createSimulationController(
     const clamped = Math.max(0, Math.min(1, target));
     state.alphaTarget = clamped;
     finalConfig.alphaTarget = clamped;
+    if (clamped > state.alphaMin) hasSettled = false;
   }
 
   /**

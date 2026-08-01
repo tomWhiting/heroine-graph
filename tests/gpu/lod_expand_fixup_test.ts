@@ -201,7 +201,7 @@ function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig 
   };
 
   const controller = new LODController(host);
-  controller.setConfig({ enabled: true });
+  controller.setConfig({ enabled: true }, 0);
 
   return {
     controller,

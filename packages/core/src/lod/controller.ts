@@ -209,6 +209,8 @@ type MutableContext = { -readonly [K in keyof LodContext]: LodContext[K] };
 const EMPTY_U8 = new Uint8Array(0);
 const EMPTY_U32 = new Uint32Array(0);
 const EMPTY_F32 = new Float32Array(0);
+/** Shared empty proxy list for releases with nothing to announce. */
+const EMPTY_RELEASED: readonly NodeId[] = [];
 
 /** Empty transition diff, for a proxy re-declaration that changes no state. */
 const NO_NODES: readonly NodeId[] = [];
@@ -358,12 +360,19 @@ export class LODController {
    *
    * Disabling releases the cut immediately — every node returns to visible and
    * fully opaque — so `enabled: false` is a true off switch and not a freeze.
+   * The release announces itself like any other transition: one `node:expand`
+   * per proxy and a final `lod:change`, or a listener tracking the fold state
+   * (a HUD, a host reconciling cards) is left describing a cut that no longer
+   * exists.
+   *
+   * @param nowMs - Caller's clock, stamped onto the release events; never read
+   *   here otherwise (see the module doc)
    */
-  setConfig(patch: Partial<LodConfig>): void {
+  setConfig(patch: Partial<LodConfig>, nowMs: number): void {
     const previous = this.#config;
     this.#config = resolveLodConfig(patch, previous);
     if (!this.#config.enabled) {
-      if (previous.enabled) this.#release(true);
+      if (previous.enabled) this.#release(true, nowMs);
       return;
     }
     this.#forceFull = true;
@@ -542,7 +551,7 @@ export class LODController {
 
     const hierarchy = this.#host.getHierarchy();
     if (hierarchy === null) {
-      if (this.#hasCut) this.#release(false);
+      if (this.#hasCut) this.#release(false, nowMs);
       return false;
     }
     if (hierarchy !== this.#hierarchy) this.#adopt(hierarchy);
@@ -1283,15 +1292,29 @@ export class LODController {
   /**
    * Return every node to visible and opaque, and drop the cut.
    *
+   * A release is a transition like any other, so it emits like one: a
+   * `node:expand` per proxy and a closing `lod:change`. Skipping them leaves
+   * every fold-state listener — a HUD counter, a host mirroring cards into its
+   * own UI — describing a cut that no longer exists, with nothing to correct
+   * it, because no further LOD events come once the controller is off.
+   *
    * @param restore - Whether to unfold the proxies as an expand would, rather
    *   than merely forgetting them. False only when the graph has dropped the
    *   hierarchy the collapsed set was named against, where the descendant
-   *   walk would follow a tree that no longer describes the slot space.
+   *   walk would follow a tree that no longer describes the slot space — and
+   *   where per-proxy expand events would name subtrees of that vanished tree,
+   *   so only the closing `lod:change` is emitted.
+   * @param nowMs - Caller's clock, stamped onto the events.
    */
-  #release(restore: boolean): void {
+  #release(restore: boolean, nowMs: number): void {
+    const hadCut = this.#hasCut;
+    let released: readonly NodeId[] = EMPTY_RELEASED;
     if (restore) {
       const count = this.#gatherProxies();
       for (let k = 0; k < count; k++) this.#restoreSubtree(this.#proxies[k]);
+      if (hadCut && count > 0) {
+        released = Array.from(this.#proxies.subarray(0, count));
+      }
     }
     this.#collapsedMask.fill(0);
     this.#anchorX.fill(NaN);
@@ -1317,6 +1340,26 @@ export class LODController {
     this.#host.uploadNodeAlpha(this.#crossfade);
     this.#host.syncCards([]);
     this.#hasCut = false;
+
+    if (!hadCut) return;
+    const h = this.#hierarchy;
+    for (const slot of released) {
+      this.#host.emit({
+        type: "node:expand",
+        timestamp: nowMs,
+        nodeId: slot,
+        childCount: h === null ? 0 : h.children.offsets[slot + 1] - h.children.offsets[slot],
+        reason: REASON_NAMES[this.#reason[slot]],
+      });
+    }
+    this.#host.emit({
+      type: "lod:change",
+      timestamp: nowMs,
+      expanded: released,
+      collapsed: [],
+      visibleCount: this.#visible.length,
+      zoom: this.#zoom,
+    });
   }
 
   /** Slots currently hidden or on their way there, for an alpha rebuild. */

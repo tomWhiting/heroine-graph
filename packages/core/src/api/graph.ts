@@ -791,6 +791,25 @@ export class GraphMother {
     // Create simulation controller
     this.simulationController = createSimulationController();
 
+    // Bridge the internal simulation events onto the public emitter. The
+    // internal controller is clock-free and counts ticks; the public contract
+    // speaks timestamps and "iteration(s)".
+    this.simulationController.events.on("tick", ({ alpha, tickCount }) => {
+      this.events.emit({
+        type: "simulation:tick",
+        timestamp: Date.now(),
+        alpha,
+        iteration: tickCount,
+      });
+    });
+    this.simulationController.events.on("end", ({ tickCount }) => {
+      this.events.emit({
+        type: "simulation:end",
+        timestamp: Date.now(),
+        iterations: tickCount,
+      });
+    });
+
     // Initialize force configuration
     this.forceConfig = { ...DEFAULT_FORCE_CONFIG };
 
@@ -4385,6 +4404,16 @@ export class GraphMother {
     if (!this.state.parsedGraph) return;
 
     const { positionsX, positionsY, nodeCount } = this.state.parsedGraph;
+    // Dead slots and LOD-hidden nodes are not content: both are frozen out of
+    // the simulation, so their positions are stale (a hidden subtree keeps the
+    // coordinates it had when it was folded, which after a settle can be
+    // nowhere near its visible ancestor). Fitting to them frames empty space.
+    const flags = this.graphState?.nodeFlagsShadow;
+    const skipMask = NODE_FLAG_DEAD | NODE_FLAG_HIDDEN_LOD;
+    // Nodes are discs, not points: a bounds over centers alone clips every
+    // rim node by its own radius, which is very visible when LOD leaves a
+    // handful of large folded bubbles. Same world-unit radius hit testing uses.
+    const attributes = this.graphState?.nodeAttributes;
 
     // Calculate bounds
     let minX = Infinity,
@@ -4393,12 +4422,15 @@ export class GraphMother {
       maxY = -Infinity;
 
     for (let i = 0; i < nodeCount; i++) {
+      if (flags !== undefined && (flags[i] & skipMask) !== 0) continue;
       const x = positionsX[i];
       const y = positionsY[i];
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const r = attributes === undefined ? 0 : attributes[i * NODE_ATTR_FLOATS];
+      if (x - r < minX) minX = x - r;
+      if (y - r < minY) minY = y - r;
+      if (x + r > maxX) maxX = x + r;
+      if (y + r > maxY) maxY = y + r;
     }
 
     if (minX === Infinity) return; // No nodes
@@ -5650,7 +5682,7 @@ export class GraphMother {
    */
   setLodConfig(config: Partial<LodConfig>): void {
     const controller = this.ensureLodController();
-    controller.setConfig(config);
+    controller.setConfig(config, performance.now());
     // The card budget and the anti-flicker floor exist on both sides — the
     // controller ranks and truncates, the overlay admits and holds — and two
     // separately settable copies of one knob disagree silently. The controller's

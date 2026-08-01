@@ -297,7 +297,7 @@ function rig(
 ): Rig {
   const log = recorder(hierarchy);
   const controller = new LODController(log.host);
-  controller.setConfig({ enabled: true, ...config });
+  controller.setConfig({ enabled: true, ...config }, 0);
   return { controller, log };
 }
 
@@ -714,11 +714,44 @@ Deno.test("lifecycle: disabling releases the cut and shows everything again", ()
   assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2]);
   assert(controller.hasCut);
 
-  controller.setConfig({ enabled: false });
+  controller.setConfig({ enabled: false }, 0);
   assertEquals(controller.hasCut, false);
   assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3, 4]);
   assertEquals(log.visibility.at(-1)?.hidden, []);
   assertEquals(log.cards.at(-1), []);
+});
+
+Deno.test("lifecycle: disabling announces the release like any other transition", () => {
+  // A listener mirroring the fold state — a HUD counter, a host reconciling
+  // cards — has only the events to go by. A silent release leaves it
+  // describing a cut that no longer exists, and nothing arrives later to
+  // correct it: the controller is off.
+  const hierarchy = hierarchyOf([-1, 0, 0, 1, 1], (slot) => (slot === 0 ? 4000 : 10));
+  const { controller, log } = rig(hierarchy);
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assert(controller.hasCut, "the fixture must fold node 1 or the test is vacuous");
+
+  const before = log.events.length;
+  controller.setConfig({ enabled: false }, 0);
+  const released = log.events.slice(before);
+  assert(
+    released.includes("node:expand/1/zoom"),
+    `the released proxy must announce its expand; got ${JSON.stringify(released)}`,
+  );
+  assertEquals(
+    released.at(-1),
+    "lod:change/5",
+    "the closing lod:change reports every node visible",
+  );
+
+  // Disabling with nothing folded stays silent: there is no transition to
+  // announce, and a spurious lod:change would ripple through listeners.
+  const idle = rig(hierarchy);
+  const idleBefore = idle.log.events.length;
+  idle.controller.setConfig({ enabled: false }, 0);
+  assertEquals(idle.log.events.length, idleBefore, "no cut, no events");
+  assertNoReheat(log);
 });
 
 // =============================================================================
@@ -938,7 +971,7 @@ Deno.test("proxies: disabling LOD unfolds the proxies and returns every slot to 
   controller.evaluateNow(0);
 
   positions.set(1, { x: -8, y: 2 });
-  controller.setConfig({ enabled: false });
+  controller.setConfig({ enabled: false }, 0);
 
   assertEquals(log.translations, [{ lo: 3, hi: 5, dx: -8, dy: 2 }]);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
@@ -1008,7 +1041,7 @@ Deno.test("edges: disabling LOD releases the aggregation", () => {
   controller.evaluateNow(0);
   assertEquals(log.aggregationReleases, 0);
 
-  controller.setConfig({ enabled: false });
+  controller.setConfig({ enabled: false }, 0);
   assertEquals(log.aggregationReleases, 1, "springs must go back to the source edge list");
   assertNoReheat(log);
 });

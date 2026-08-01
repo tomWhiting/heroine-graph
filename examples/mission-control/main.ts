@@ -229,6 +229,7 @@ async function run(
     setStatus(`Uploading ${built.nodeCount.toLocaleString()} nodes…`);
     await nextFrame();
     await graph.load(built.input);
+    fitOnSettle = true;
 
     graph.setLodConfig(lodConfigFromKnobs(knobs));
     if (labelsAvailable) {
@@ -248,7 +249,20 @@ async function run(
   graph.on("node:collapse", () => hud.nodeFolded());
   graph.on("node:expand", () => hud.nodeUnfolded());
   graph.on("simulation:tick", () => hud.tick(performance.now()));
-  graph.on("simulation:end", () => hud.simulationStopped());
+
+  // `load` fits the camera to the seeded positions, but the settled bubble
+  // layout is much larger than the seed: one containment spring holds back a
+  // whole subtree's aggregate repulsion, so top-level bubbles equilibrate far
+  // apart and drift out of the load-time frame. Refit once, when the layout
+  // first settles after a load; after that the camera belongs to the user.
+  let fitOnSettle = false;
+  graph.on("simulation:end", () => {
+    hud.simulationStopped();
+    if (fitOnSettle) {
+      fitOnSettle = false;
+      graph.fitToView();
+    }
+  });
 
   // A click declares focus: the node is carded whatever its screen size says.
   graph.on("node:click", (event) => graph.setLodFocus([event.nodeId]));

@@ -64,3 +64,40 @@ Deno.test("alpha snaps to exactly 0 below alphaMin so equilibrium jitter dies", 
   for (let t = 0; t < 1000; t++) controller.tick();
   assertEquals(controller.state.alpha, 0);
 });
+
+/**
+ * "end" announces a settle exactly once per cool-down.
+ *
+ * The tick loop deliberately never stops (alpha only controls movement), so
+ * settling is an event, not a state transition: it must fire on the tick that
+ * snaps alpha to 0, not fire again on the next thousand idle ticks, and be
+ * re-armed by everything that reheats — restart, and alpha pushed back above
+ * alphaMin. Downstream "fit the camera when the layout settles" logic depends
+ * on all three properties.
+ */
+Deno.test("end fires once per settle and re-arms on reheat", () => {
+  const controller = createSimulationController();
+  const ends: number[] = [];
+  controller.events.on("end", ({ tickCount }) => ends.push(tickCount));
+
+  controller.start();
+  for (let t = 0; t < 1000; t++) controller.tick();
+  assertEquals(ends.length, 1, "one settle, one end");
+  assertEquals(controller.state.alpha, 0);
+  assert(
+    ends[0] < 1000,
+    "end must fire on the settling tick, not after the loop",
+  );
+
+  controller.restart();
+  for (let t = 0; t < 1000; t++) controller.tick();
+  assertEquals(ends.length, 2, "restart re-arms the settle event");
+
+  controller.setAlpha(0.5);
+  for (let t = 0; t < 1000; t++) controller.tick();
+  assertEquals(ends.length, 3, "setAlpha above alphaMin re-arms the settle event");
+
+  controller.setAlpha(0.0001);
+  for (let t = 0; t < 1000; t++) controller.tick();
+  assertEquals(ends.length, 3, "setAlpha below alphaMin must not re-arm");
+});
