@@ -42,6 +42,8 @@ import {
   selectContainmentEdges,
 } from "../graph/hierarchy.ts";
 import { commitNodeMass, NODE_MASS_UNIT } from "../lod/mass.ts";
+import type { CrossfadeScheduler } from "../lod/crossfade.ts";
+import { type LodConfig, LODController, type LodHost, type LodPolicy } from "../lod/mod.ts";
 import {
   createNodeBindGroup,
   createNodeRenderPipeline,
@@ -595,6 +597,13 @@ export class GraphMother {
    */
   private domOverlay: DomCardOverlay | null = null;
 
+  /**
+   * Semantic-LOD controller. Created by the first LOD API call, and inert
+   * until {@link GraphMother.setLodConfig} enables it, so a graph that never
+   * asks for LOD pays nothing and behaves exactly as it did before it existed.
+   */
+  private lodController: LODController | null = null;
+
   // Value stream system
   private streamManager: StreamManager;
 
@@ -642,6 +651,10 @@ export class GraphMother {
         this.markRenderDirty();
         // Viewport has no gesture-end signal; the overlay debounces here.
         this.domOverlay?.viewportChanged();
+        // The LOD cut is a function of zoom, so this is its only input. It
+        // marks itself dirty and decides on the next frame whether the change
+        // was large enough to be worth an evaluation.
+        this.lodController?.viewportChanged();
         this.events.emit({
           type: "viewport:change",
           timestamp: Date.now(),
@@ -1180,6 +1193,12 @@ export class GraphMother {
 
     // Skip rendering if canvas has no valid dimensions
     if (this.canvas.width === 0 || this.canvas.height === 0) return;
+
+    // Semantic LOD, before the dirty gate: a crossfade in flight is itself a
+    // reason to draw, and the controller is the only thing that knows one is.
+    if (this.lodController?.tick(performance.now())) {
+      this.renderDirty = true;
+    }
 
     // Tier 1: Gate GPU simulation compute on needsCompute (alpha > 0).
     // All wake triggers (drag, mutations, config changes) set alpha > 0,
@@ -3476,6 +3495,10 @@ export class GraphMother {
     // and initializeCollisionResources gives holes the default radius
     this.flushNodeSlotFlagsToGPU();
 
+    // The recreated alpha buffer is fully opaque; the crossfade scheduler
+    // rebuilds its shadow against the live cut and re-uploads it whole.
+    this.lodController?.handleNodeCapacityChange(newCapacity, performance.now());
+
     // === Update layer render contexts ===
     this.refreshLayerRenderContexts();
 
@@ -4926,9 +4949,10 @@ export class GraphMother {
    *
    * Closed over `this` rather than over the current graph, so cards follow a
    * reload and a mutation instead of snapshotting whatever was loaded when the
-   * overlay was enabled. `tag`, `weight` and `depth` are the semantic and
-   * hierarchy columns the LOD packages introduce; until those land every node
-   * reports the neutral value, which is what a card then displays.
+   * overlay was enabled. `tag` and `weight` are the producer's semantic columns
+   * and `depth` comes from the retained containment hierarchy; each reports the
+   * neutral value when the graph carries no such column, which is what a card
+   * then displays.
    */
   private createCardNodeSource(): CardNodeSource {
     const metadataText = (nodeId: NodeId, key: string): string | undefined => {
@@ -4939,20 +4963,14 @@ export class GraphMother {
     return {
       externalId: (nodeId) => this.getExternalId(nodeId),
       label: (nodeId) => metadataText(nodeId, "label"),
-      tag: () => 0,
-      weight: () => 0,
-      depth: () => 0,
+      tag: (nodeId) => this.getNodeTag(nodeId),
+      weight: (nodeId) => this.getNodeWeight(nodeId),
+      depth: (nodeId) => this.getNodeDepth(nodeId),
       contentRef: (nodeId) => metadataText(nodeId, "contentRef"),
       // The CPU position shadow, bounded by the slot space rather than by
       // nodeCount: after a removal a live node can sit in a slot above the
       // count, and a card on it must still track its node.
-      position: (nodeId) => {
-        const parsed = this.state.parsedGraph;
-        if (parsed === null || nodeId < 0 || nodeId >= parsed.positionsX.length) {
-          return CARD_ORIGIN;
-        }
-        return { x: parsed.positionsX[nodeId], y: parsed.positionsY[nodeId] };
-      },
+      position: (nodeId) => this.getNodePositionOrOrigin(nodeId),
       isPinned: (nodeId) => this.isNodePinned(nodeId),
       setPinned: (nodeId, pinned) => {
         if (pinned) {
@@ -4962,6 +4980,189 @@ export class GraphMother {
         }
       },
     };
+  }
+
+  /** Graph-space position of a slot, or the origin when the slot has none. */
+  private getNodePositionOrOrigin(nodeId: NodeId): Vec2 {
+    const parsed = this.state.parsedGraph;
+    if (parsed === null || nodeId < 0 || nodeId >= parsed.positionsX.length) {
+      return CARD_ORIGIN;
+    }
+    return { x: parsed.positionsX[nodeId], y: parsed.positionsY[nodeId] };
+  }
+
+  /**
+   * Producer-supplied semantic tag for a slot, or 0.
+   *
+   * Opaque to core: it exists so an LOD policy can compare an integer instead
+   * of walking a metadata map on the evaluation path.
+   */
+  getNodeTag(nodeId: NodeId): number {
+    const tags = this.state.parsedGraph?.nodeTags;
+    return tags && nodeId >= 0 && nodeId < tags.length ? tags[nodeId] : 0;
+  }
+
+  /** Producer-supplied importance for a slot in 0..1, or 0. */
+  getNodeWeight(nodeId: NodeId): number {
+    const weights = this.state.parsedGraph?.nodeWeights;
+    return weights && nodeId >= 0 && nodeId < weights.length ? weights[nodeId] : 0;
+  }
+
+  /** Containment depth of a slot; roots and graphs with no hierarchy report 0. */
+  getNodeDepth(nodeId: NodeId): number {
+    const hierarchy = this.getHierarchy();
+    if (!hierarchy || nodeId < 0 || nodeId >= hierarchy.nodeCount) return 0;
+    return hierarchy.columns.depth[nodeId];
+  }
+
+  // ==========================================================================
+  // Public API - Semantic LOD
+  // ==========================================================================
+
+  /**
+   * Configure semantic level of detail.
+   *
+   * LOD folds subtrees that are too small to read into a single visible proxy,
+   * and unfolds them as the camera comes in. It is independent of the DOM card
+   * overlay — collapsing works with no cards enabled, and cards work with LOD
+   * off — and is disabled until this is called with `enabled: true`.
+   *
+   * A transition never reheats the simulation. Hidden nodes keep their
+   * positions and are restored exactly where they were, so zooming in and out
+   * is not a layout operation.
+   *
+   * @param config - Settings to change; anything omitted keeps its value
+   */
+  setLodConfig(config: Partial<LodConfig>): void {
+    this.ensureLodController().setConfig(config);
+  }
+
+  /** Current LOD configuration, including defaults never explicitly set. */
+  getLodConfig(): LodConfig {
+    return this.ensureLodController().getConfig();
+  }
+
+  /**
+   * Register a semantic policy, or `null` for the built-in geometric rule.
+   *
+   * The policy is consulted only for nodes that crossed a threshold since the
+   * last evaluation, and must be pure, synchronous and allocation-free.
+   */
+  setLodPolicy(policy: LodPolicy | null): void {
+    this.ensureLodController().setPolicy(policy);
+  }
+
+  /**
+   * Declare the focus set: nodes carded regardless of their screen size.
+   *
+   * Focus does not expand ancestors — a focus node inside a collapsed subtree
+   * stays folded, and {@link GraphMother.getVisibleAncestor} names the proxy
+   * standing in for it.
+   */
+  setLodFocus(nodes: Iterable<NodeId>): void {
+    this.ensureLodController().setFocus(nodes);
+  }
+
+  /** Expand a node now, whatever its screen size says. */
+  expandNode(node: NodeId): void {
+    this.ensureLodController().expandNode(node, performance.now());
+  }
+
+  /** Collapse a node now, whatever its screen size says. */
+  collapseNode(node: NodeId): void {
+    this.ensureLodController().collapseNode(node, performance.now());
+  }
+
+  /**
+   * The nodes the current cut leaves on screen, ascending by slot.
+   *
+   * Every live slot when LOD is off or has not evaluated yet, so a caller can
+   * treat this as "what is drawn" without asking whether LOD is on.
+   */
+  getVisibleNodes(): Uint32Array {
+    const controller = this.lodController;
+    if (controller !== null && controller.hasCut) return controller.getVisibleNodes();
+
+    const gs = this.graphState;
+    if (!gs) return new Uint32Array(0);
+    const live: number[] = [];
+    for (let slot = 0; slot < gs.nodeHighWater; slot++) {
+      if ((gs.nodeFlagsShadow[slot] & NODE_FLAG_DEAD) === 0) live.push(slot);
+    }
+    return Uint32Array.from(live);
+  }
+
+  /**
+   * The lowest ancestor of `node` that is in the cut — `node` itself when it is
+   * visible, or -1 when nothing on its root path is.
+   */
+  getVisibleAncestor(node: NodeId): NodeId {
+    const controller = this.lodController;
+    return controller === null ? node : controller.getVisibleAncestor(node);
+  }
+
+  /** Create the controller on first use; it holds no GPU resources. */
+  private ensureLodController(): LODController {
+    if (this.lodController === null) {
+      this.lodController = new LODController(this.createLodHost());
+    }
+    return this.lodController;
+  }
+
+  /**
+   * The graph seam the LOD controller drives.
+   *
+   * Deliberately narrow, and deliberately without any route to simulation
+   * alpha: an LOD transition must never reheat the simulation, and a seam that
+   * cannot express a reheat is a stronger guarantee than a comment saying not
+   * to.
+   */
+  private createLodHost(): LodHost {
+    return {
+      getHierarchy: () => this.getHierarchy(),
+      getViewport: () => this.viewport.state,
+      getNodePosition: (node) => this.getNodePositionOrOrigin(node),
+      getNodeRadius: (node) => {
+        const gs = this.graphState;
+        if (!gs || node < 0 || node >= gs.nodeHighWater) return 0;
+        return gs.nodeAttributes[node * NODE_ATTR_FLOATS];
+      },
+      getNodeTag: (node) => this.getNodeTag(node),
+      getNodeWeight: (node) => this.getNodeWeight(node),
+      applyVisibility: (lo, hi, visible) => this.applyLodVisibility(lo, hi, visible),
+      uploadNodeAlpha: (scheduler) => this.uploadNodeAlpha(scheduler),
+      syncCards: (entries) => this.syncDomCards(entries),
+      emit: (event) => this.events.emit(event),
+    };
+  }
+
+  /**
+   * Apply the cut's visibility across a slot range as one flag upload.
+   *
+   * Dead slots are skipped: they are already invisible, and clearing
+   * `HIDDEN_LOD` on one would say the opposite about a slot the free list owns.
+   */
+  private applyLodVisibility(lo: number, hi: number, visible: Uint8Array): void {
+    const gs = this.graphState;
+    if (!gs) return;
+
+    const end = Math.min(hi, gs.nodeHighWater);
+    let changedLo = end;
+    let changedHi = lo;
+    for (let slot = Math.max(0, lo); slot < end; slot++) {
+      if ((gs.nodeFlagsShadow[slot] & NODE_FLAG_DEAD) !== 0) continue;
+      if (!gs.setNodeFlagBits(slot, NODE_FLAG_HIDDEN_LOD, visible[slot] === 0)) continue;
+      if (slot < changedLo) changedLo = slot;
+      changedHi = slot + 1;
+    }
+    this.flushNodeFlagRange(changedLo, changedHi);
+  }
+
+  /** Upload the crossfade scheduler's dirty alpha range, if buffers exist. */
+  private uploadNodeAlpha(scheduler: CrossfadeScheduler): void {
+    if (this.simBuffers) {
+      scheduler.flush(this.gpuContext.device, this.simBuffers.nodeAlpha);
+    }
   }
 
   // ==========================================================================

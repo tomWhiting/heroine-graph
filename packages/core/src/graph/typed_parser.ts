@@ -10,7 +10,7 @@
 import type { GraphTypedInput } from "../types.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { createIdMap, type IdLike } from "./id_map.ts";
-import type { ParsedGraph } from "./parser.ts";
+import { clampWeight, type ParsedGraph } from "./parser.ts";
 import { NODE_ATTR_FLOATS } from "../api/graph_state.ts";
 import { CONTAINMENT_EDGE_TYPE } from "./hierarchy.ts";
 
@@ -110,6 +110,44 @@ function edgeTypesFromKinds(
 }
 
 /**
+ * Adopt the semantic LOD columns from the input.
+ *
+ * Lengths are checked and a mismatch throws: these columns are read by slot
+ * with no bounds signal of their own, so a short column silently reports 0 for
+ * every node past its end — a wrong policy decision that looks exactly like a
+ * producer that supplied no column at all.
+ *
+ * `tag` is adopted by reference, since `Uint16Array` already is the storage
+ * format. `weight` is copied, because clamping it into 0..1 must not mutate the
+ * caller's array.
+ */
+function semanticColumns(
+  input: GraphTypedInput,
+  nodeCount: number,
+): { nodeTags?: Uint16Array | undefined; nodeWeights?: Float32Array | undefined } {
+  const { tag, weight } = input;
+  if (tag && tag.length !== nodeCount) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `tag length (${tag.length}) must equal nodeCount (${nodeCount})`,
+    );
+  }
+  if (weight && weight.length !== nodeCount) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `weight length (${weight.length}) must equal nodeCount (${nodeCount})`,
+    );
+  }
+
+  let nodeWeights: Float32Array | undefined;
+  if (weight) {
+    nodeWeights = new Float32Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) nodeWeights[i] = clampWeight(weight[i]);
+  }
+  return { nodeTags: tag, nodeWeights };
+}
+
+/**
  * Parses GraphTypedInput into GPU-ready format
  *
  * This parser is optimized for large graphs where data is already
@@ -140,6 +178,7 @@ export function parseGraphTypedInput(
   const edgeCount = input.edgeCount ?? 0;
   const inputEdgePairs = resolveEdgePairs(input);
   const edgeTypes = edgeTypesFromKinds(input, edgeCount);
+  const semantics = semanticColumns(input, nodeCount);
 
   // Create ID maps (accepts string or number IDs)
   const nodeIdMap = createIdMap<IdLike>();
@@ -286,6 +325,7 @@ export function parseGraphTypedInput(
     edgeMetadata: new Map(),
     edgeTypes,
     hierarchy: input.hierarchy,
+    ...semantics,
   };
 }
 
@@ -353,6 +393,16 @@ export function validateGraphTypedInput(input: unknown): {
         `nodeColors length (${nodeColorsVal.length}) must be nodeCount * 3 (${nodeCount * 3})`,
       );
     }
+  }
+
+  const tagVal = obj["tag"];
+  if (tagVal instanceof Uint16Array && tagVal.length !== nodeCount) {
+    errors.push(`tag length (${tagVal.length}) must equal nodeCount (${nodeCount})`);
+  }
+
+  const weightVal = obj["weight"];
+  if (weightVal instanceof Float32Array && weightVal.length !== nodeCount) {
+    errors.push(`weight length (${weightVal.length}) must equal nodeCount (${nodeCount})`);
   }
 
   if (edgePairsVal instanceof Uint32Array) {

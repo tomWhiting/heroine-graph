@@ -58,6 +58,17 @@ export interface ParsedGraph {
   edgeTypes?: string[] | undefined;
 
   /**
+   * Producer-supplied semantic tag per slot, for the LOD policy hook.
+   *
+   * Absent when the input carried none: an all-zero column and no column are
+   * the same thing to every reader, so the allocation is skipped rather than
+   * costing 2 bytes per node on every graph that never uses it.
+   */
+  nodeTags?: Uint16Array | undefined;
+  /** Producer-supplied importance per slot in 0..1. Absent when unsupplied. */
+  nodeWeights?: Float32Array | undefined;
+
+  /**
    * Producer-supplied containment hierarchy, indexed by slot.
    *
    * Only the typed input path carries this: its slots are the producer's, so
@@ -154,6 +165,10 @@ export function parseGraphInput(
   let hasNodeTypes = false;
   let hasEdgeTypes = false;
 
+  // Semantic LOD columns, allocated only if the input actually carries them.
+  let nodeTags: Uint16Array | undefined;
+  let nodeWeights: Float32Array | undefined;
+
   // Parse nodes
   for (let i = 0; i < nodeCount; i++) {
     const node = nodes[i];
@@ -191,6 +206,18 @@ export function parseGraphInput(
     if (nodeType) {
       nodeTypes[idx] = nodeType;
       hasNodeTypes = true;
+    }
+
+    // Semantic LOD columns. Non-finite and out-of-range values are clamped
+    // rather than rejected: they are advisory inputs to a tie-break, and one
+    // bad node should not fail a 220K-node load.
+    if (node.tag !== undefined) {
+      nodeTags ??= new Uint16Array(nodeCount);
+      nodeTags[idx] = clampTag(node.tag);
+    }
+    if (node.weight !== undefined) {
+      nodeWeights ??= new Float32Array(nodeCount);
+      nodeWeights[idx] = clampWeight(node.weight);
     }
   }
 
@@ -266,7 +293,21 @@ export function parseGraphInput(
     // Only include types if any were found
     nodeTypes: hasNodeTypes ? nodeTypes : undefined,
     edgeTypes: hasEdgeTypes ? edgeTypes : undefined,
+    nodeTags,
+    nodeWeights,
   };
+}
+
+/** Coerce a producer tag to the `Uint16Array` column's range. */
+export function clampTag(tag: number): number {
+  if (!Number.isFinite(tag)) return 0;
+  return Math.min(0xFFFF, Math.max(0, Math.trunc(tag)));
+}
+
+/** Coerce a producer weight to the 0..1 the column is defined over. */
+export function clampWeight(weight: number): number {
+  if (!Number.isFinite(weight)) return 0;
+  return Math.min(1, Math.max(0, weight));
 }
 
 /**

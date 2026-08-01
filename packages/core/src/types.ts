@@ -364,6 +364,21 @@ export interface NodeInput {
   readonly group?: string;
   /** Label importance (0-1) */
   readonly importance?: number;
+  /**
+   * Producer-defined semantic tag index, for the LOD policy hook.
+   *
+   * Opaque to core: it is compared, never interpreted, and the producer's tag
+   * table never crosses the boundary. Defaults to 0.
+   */
+  readonly tag?: number;
+  /**
+   * Producer-defined importance in 0..1, for the LOD policy hook.
+   *
+   * Distinct from {@link NodeInput.importance}, which ranks *labels*. This one
+   * ranks the node itself and is used as a tie-break by core even with no
+   * policy registered. Values outside 0..1 are clamped. Defaults to 0.
+   */
+  readonly weight?: number;
   /** Birth time for animation (from getAnimationTime()). 0 = no animation. */
   readonly birthTime?: number;
   /** Additional metadata */
@@ -452,6 +467,23 @@ export interface GraphTypedInput {
   readonly nodeIds?: readonly (string | number)[] | undefined;
   /** Optional edge IDs (string or number) */
   readonly edgeIds?: readonly (string | number)[] | undefined;
+  /**
+   * Producer-defined semantic tag per slot, for the LOD policy hook.
+   *
+   * Opaque to core: the values are compared against whatever the consumer's
+   * policy expects and the tag table itself never crosses the boundary. An
+   * integer column rather than a metadata lookup because it is read on the
+   * evaluation path, once per node that crossed a band. Missing slots read 0.
+   */
+  readonly tag?: Uint16Array | undefined;
+  /**
+   * Producer-defined importance per slot, in 0..1, for the LOD policy hook.
+   *
+   * Used by core as a tie-break between nodes of equal screen size even with
+   * no policy registered, so supplying it improves default behaviour. Values
+   * outside 0..1 are clamped. Missing slots read 0.
+   */
+  readonly weight?: Float32Array | undefined;
   /** Optional node radii */
   readonly nodeRadii?: Float32Array | undefined;
   /** Optional node colors as [r0, g0, b0, r1, g1, b1, ...] */
@@ -639,6 +671,41 @@ export interface EdgeRemoveEvent extends GraphEvent {
   readonly edgeId: string | number;
 }
 
+/** What drove a semantic-LOD state change. */
+export type LodTransitionReason = "zoom" | "policy" | "imperative" | "budget";
+
+/**
+ * Summary of one LOD evaluation that changed the cut.
+ *
+ * `expanded` and `collapsed` list the nodes whose *proxy* status changed — a
+ * node entering `collapsed` now stands for its whole subtree, a node leaving it
+ * has handed that role back to its children. Nodes merely hidden underneath a
+ * collapsed proxy are not listed; they are accounted for by `visibleCount`.
+ */
+export interface LodChangeEvent extends GraphEvent {
+  readonly type: "lod:change";
+  readonly expanded: readonly NodeId[];
+  readonly collapsed: readonly NodeId[];
+  readonly visibleCount: number;
+  readonly zoom: number;
+}
+
+/** A node became the visible proxy for its subtree. */
+export interface NodeCollapseEvent extends GraphEvent {
+  readonly type: "node:collapse";
+  readonly nodeId: NodeId;
+  readonly subtreeSize: number;
+  readonly reason: LodTransitionReason;
+}
+
+/** A node stopped standing in for its subtree; its children are in the cut. */
+export interface NodeExpandEvent extends GraphEvent {
+  readonly type: "node:expand";
+  readonly nodeId: NodeId;
+  readonly childCount: number;
+  readonly reason: LodTransitionReason;
+}
+
 /** Batch mutation summary event */
 export interface GraphMutateEvent extends GraphEvent {
   readonly type: "graph:mutate";
@@ -673,7 +740,10 @@ export type GraphMotherEvent =
   | EdgeAddEvent
   | EdgeRemoveEvent
   | GraphMutateEvent
-  | DeviceLostEvent;
+  | DeviceLostEvent
+  | LodChangeEvent
+  | NodeCollapseEvent
+  | NodeExpandEvent;
 
 /** Event handler function */
 export type EventHandler<E extends GraphEvent> = (event: E) => void;
@@ -704,4 +774,7 @@ export interface EventMap {
   "edge:remove": EdgeRemoveEvent;
   "graph:mutate": GraphMutateEvent;
   "device:lost": DeviceLostEvent;
+  "lod:change": LodChangeEvent;
+  "node:collapse": NodeCollapseEvent;
+  "node:expand": NodeExpandEvent;
 }

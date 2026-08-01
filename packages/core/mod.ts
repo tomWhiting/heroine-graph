@@ -49,14 +49,19 @@ export type {
   LayerConfig,
   // Layer types
   LayerType,
+  // Semantic LOD event types
+  LodChangeEvent,
+  LodTransitionReason,
   MetaballLayerConfig,
   Node,
   NodeAddEvent,
   NodeClickEvent,
+  NodeCollapseEvent,
   NodeDoubleClickEvent,
   NodeDragEndEvent,
   NodeDragMoveEvent,
   NodeDragStartEvent,
+  NodeExpandEvent,
   NodeHoverEnterEvent,
   NodeHoverLeaveEvent,
   // Identifiers
@@ -549,7 +554,27 @@ export type {
 // Semantic LOD
 // =============================================================================
 
-export { CrossfadeScheduler, NODE_ALPHA_OPAQUE, NODE_ALPHA_TRANSPARENT } from "./src/lod/mod.ts";
+export {
+  CrossfadeScheduler,
+  DEFAULT_LOD_CONFIG,
+  defaultLodPolicy,
+  LOD_FORCE_CARD_PRIORITY,
+  LOD_PAN_REEVALUATE_FRACTION,
+  LOD_ZOOM_QUANTA_PER_OCTAVE,
+  LODController,
+  NODE_ALPHA_OPAQUE,
+  NODE_ALPHA_TRANSPARENT,
+  quantiseZoom,
+  resolveLodConfig,
+} from "./src/lod/mod.ts";
+export type {
+  LodCandidate,
+  LodConfig,
+  LodContext,
+  LodDecision,
+  LodHost,
+  LodPolicy,
+} from "./src/lod/mod.ts";
 export { commitNodeMass, NODE_MASS_HIDDEN, NODE_MASS_UNIT, rollUpMass } from "./src/lod/mod.ts";
 export type { MassDirtyRange } from "./src/lod/mod.ts";
 
