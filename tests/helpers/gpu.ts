@@ -28,6 +28,7 @@ import {
  */
 export const NODE_FLAG_DEAD = 1;
 export const NODE_FLAG_PINNED = 2;
+export const NODE_FLAG_HIDDEN_LOD = 4;
 /** Collision node_sizes sentinel for dead slots, mirroring pipeline.ts. */
 export const DEAD_SLOT_RADIUS = -1;
 

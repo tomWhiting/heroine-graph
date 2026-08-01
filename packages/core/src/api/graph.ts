@@ -79,6 +79,7 @@ import {
   createSimulationPipeline,
   DEAD_SLOT_RADIUS,
   NODE_FLAG_DEAD,
+  NODE_FLAG_HIDDEN_LOD,
   NODE_FLAG_PINNED,
   readbackPositions,
   recordSimulationStepWithOptions,
@@ -2459,8 +2460,6 @@ export class GraphMother {
     const survivingNodeIds: (string | number | undefined)[] = [];
     const survivingNodeTypes: (string | undefined)[] = [];
     const survivingNodeMeta = new Map<number, Record<string, unknown>>();
-    const survivingHiddenRadii = new Map<number, number>();
-    const survivingHiddenSlots = new Set<number>();
 
     let nodeWriteIdx = 0;
     for (let readIdx = 0; readIdx < gs.nodeHighWater; readIdx++) {
@@ -2472,15 +2471,14 @@ export class GraphMother {
       const meta = gs.nodeMetadata.get(readIdx);
       if (meta) survivingNodeMeta.set(nodeWriteIdx, meta);
 
-      const hiddenRadius = gs.nodeHiddenRadii.get(readIdx);
-      if (hiddenRadius !== undefined) survivingHiddenRadii.set(nodeWriteIdx, hiddenRadius);
-      if (gs.nodeHiddenSlots.has(readIdx)) survivingHiddenSlots.add(nodeWriteIdx);
-
       nodeSlotRemap.set(readIdx, nodeWriteIdx);
 
       if (readIdx !== nodeWriteIdx) {
         gs.positionsX[nodeWriteIdx] = gs.positionsX[readIdx]!;
         gs.positionsY[nodeWriteIdx] = gs.positionsY[readIdx]!;
+        // Pin and visibility travel with the slot's contents; survivors are
+        // live by construction, so no dead bit can be carried across.
+        gs.nodeFlagsShadow[nodeWriteIdx] = gs.nodeFlagsShadow[readIdx]!;
         const srcAttr = readIdx * NODE_ATTR_FLOATS;
         const dstAttr = nodeWriteIdx * NODE_ATTR_FLOATS;
         for (let k = 0; k < NODE_ATTR_FLOATS; k++) {
@@ -2494,6 +2492,7 @@ export class GraphMother {
     for (let i = nodeWriteIdx; i < gs.nodeHighWater; i++) {
       gs.positionsX[i] = 0;
       gs.positionsY[i] = 0;
+      gs.nodeFlagsShadow[i] = 0;
       const attrBase = i * NODE_ATTR_FLOATS;
       for (let k = 0; k < NODE_ATTR_FLOATS; k++) gs.nodeAttributes[attrBase + k] = 0;
     }
@@ -2513,8 +2512,6 @@ export class GraphMother {
     // Restore metadata maps with new slot indices
     gs.nodeTypes = survivingNodeTypes;
     gs.nodeMetadata = survivingNodeMeta;
-    gs.nodeHiddenRadii = survivingHiddenRadii;
-    gs.nodeHiddenSlots = survivingHiddenSlots;
 
     // 5. Remap edge source/target to use new compact node slot indices
     // Safe: edge compaction already removed edges touching dead nodes,
@@ -2534,7 +2531,8 @@ export class GraphMother {
     }
 
     // Remap pinned slots — removed nodes drop their pin, survivors may have
-    // moved. Must happen before the flag flush below writes pinned bits.
+    // moved. The pin bits themselves moved with the flag shadow above; this
+    // keeps the CPU-side set (isNodePinned / getPinnedNodes) in agreement.
     const remappedPinned = new Set<NodeId>();
     for (const slot of this.pinnedNodes) {
       const newSlot = nodeSlotRemap.get(slot);
@@ -2923,26 +2921,49 @@ export class GraphMother {
   }
 
   /**
-   * Update one slot's GPU liveness data: the dead-slot flag in nodeFlags and
-   * the collision radius. Pass the node's radius to mark the slot live, or
+   * Upload one slot's flag word from the CPU shadow.
+   */
+  private flushNodeFlagSlot(slot: number): void {
+    if (!this.graphState || !this.simBuffers) return;
+    this.gpuContext.device.queue.writeBuffer(
+      this.simBuffers.nodeFlags,
+      slot * 4,
+      toArrayBuffer(this.graphState.nodeFlagsShadow.subarray(slot, slot + 1)),
+    );
+  }
+
+  /**
+   * Upload the flag words for slots [lo, hi) from the CPU shadow in a single
+   * queue write. Callers that touch a scattered set of slots should still use
+   * one range spanning them all: the buffer is u32-per-slot, so even the whole
+   * high-water range is one small write, where per-slot writes are one queue
+   * operation each.
+   */
+  private flushNodeFlagRange(lo: number, hi: number): void {
+    if (!this.graphState || !this.simBuffers || hi <= lo) return;
+    this.gpuContext.device.queue.writeBuffer(
+      this.simBuffers.nodeFlags,
+      lo * 4,
+      toArrayBuffer(this.graphState.nodeFlagsShadow.subarray(lo, hi)),
+    );
+  }
+
+  /**
+   * Update one slot's liveness: the dead-slot flag in nodeFlags and the
+   * collision radius. Pass the node's radius to mark the slot live, or
    * undefined to mark it dead (skipped by simulation and collision shaders).
    *
-   * Both call sites (re)assign the slot to a fresh or removed node, so any
-   * pin held by the slot's previous occupant is dropped.
+   * Both call sites (re)assign the slot to a fresh or removed node, so the
+   * whole flag word is reset — any pin or hidden state held by the slot's
+   * previous occupant belongs to a node that no longer exists.
    */
   private writeNodeSlotLiveness(slot: number, radius: number | undefined): void {
     const { device } = this.gpuContext;
     const dead = radius === undefined;
 
     this.pinnedNodes.delete(slot);
-
-    if (this.simBuffers) {
-      device.queue.writeBuffer(
-        this.simBuffers.nodeFlags,
-        slot * 4,
-        new Uint32Array([dead ? NODE_FLAG_DEAD : 0]),
-      );
-    }
+    this.graphState?.resetNodeFlags(slot, dead ? NODE_FLAG_DEAD : 0);
+    this.flushNodeFlagSlot(slot);
 
     if (this.collisionBuffers) {
       device.queue.writeBuffer(
@@ -2960,6 +2981,10 @@ export class GraphMother {
    * Rewrite all per-slot liveness data ([0, nodeHighWater)) from graph state.
    * Used after batch mutations and buffer reallocation, where slots may have
    * moved (compaction) or the GPU buffers were recreated.
+   *
+   * The flag words come straight from the CPU shadow rather than being
+   * recomposed from nodeFreeSet and pinnedNodes: recomposition can only carry
+   * the bits it knows about, and would silently drop the rest.
    */
   private flushNodeSlotFlagsToGPU(): void {
     if (!this.graphState || !this.simBuffers) return;
@@ -2968,14 +2993,7 @@ export class GraphMother {
     const { device } = this.gpuContext;
     const hw = gs.nodeHighWater;
 
-    const flags = new Uint32Array(hw);
-    for (const slot of gs.nodeFreeSet) {
-      if (slot < hw) flags[slot] = NODE_FLAG_DEAD;
-    }
-    for (const slot of this.pinnedNodes) {
-      if (slot < hw && flags[slot] === 0) flags[slot] = NODE_FLAG_PINNED;
-    }
-    device.queue.writeBuffer(this.simBuffers.nodeFlags, 0, flags);
+    this.flushNodeFlagRange(0, hw);
 
     if (this.collisionBuffers) {
       const sizes = new Float32Array(hw);
@@ -3366,7 +3384,14 @@ export class GraphMother {
       const nodePipeline = this.nodePipeline;
       const nodeAttributes = this.buffers.nodeAttributes;
       this.nodeBindGroupSlot.rebuild(
-        (view) => createNodeBindGroup(device, nodePipeline, view.positions, nodeAttributes),
+        (view) =>
+          createNodeBindGroup(
+            device,
+            nodePipeline,
+            view.positions,
+            nodeAttributes,
+            view.nodeFlags,
+          ),
       );
     }
 
@@ -5502,10 +5527,14 @@ export class GraphMother {
   /**
    * Show or hide nodes by ID.
    *
-   * Hidden nodes have their radius zeroed in the GPU buffer (making them invisible
-   * to the shader). Their original radius is preserved so they can be restored.
-   * Edges connected to hidden nodes are effectively invisible since both endpoints
-   * are clipped behind the near plane.
+   * Visibility is a bit in the shared nodeFlags buffer (NODE_FLAG_HIDDEN_LOD):
+   * the node render pipeline drops hidden instances, and nothing else about the
+   * node changes — radius, color and simulated position are untouched, so a
+   * hidden node keeps its place in the layout and reappears exactly where it
+   * was. Freed slots are left alone; they are already invisible.
+   *
+   * Edges are unaffected: the edge pipeline reads positions only, so an edge
+   * with a hidden endpoint still draws.
    *
    * @param ids - Node IDs to show or hide
    * @param visible - `true` to show, `false` to hide
@@ -5519,78 +5548,25 @@ export class GraphMother {
    * ```
    */
   setNodeVisibility(ids: (string | number)[], visible: boolean): void {
-    if (!this.buffers || !this.state.parsedGraph || !this.graphState) return;
-
     const gs = this.graphState;
-    const parsed = this.state.parsedGraph;
-    const { device } = this.gpuContext;
+    if (!gs) return;
 
-    // Prepare a scratch buffer for per-node writes (8 floats = 32 bytes)
-    const scratch = new Float32Array(NODE_ATTR_FLOATS);
+    // One contiguous range write covering every slot that actually changed,
+    // rather than one queue write per node.
+    let lo = gs.nodeHighWater;
+    let hi = 0;
 
     for (const id of ids) {
       const slot = typeof id === "number" && id < gs.nodeHighWater ? id : gs.nodeIdMap.get(id);
-      if (slot === undefined) continue;
+      if (slot === undefined || slot >= gs.nodeHighWater) continue;
+      if ((gs.nodeFlagsShadow[slot] & NODE_FLAG_DEAD) !== 0) continue;
+      if (!gs.setNodeFlagBits(slot, NODE_FLAG_HIDDEN_LOD, !visible)) continue;
 
-      const baseOffset = slot * NODE_ATTR_FLOATS;
-
-      if (!visible) {
-        // Hide: save original radius, zero the slot
-        if (gs.nodeHiddenSlots.has(slot)) continue; // already hidden
-
-        const currentRadius = parsed.nodeAttributes[baseOffset];
-        if (currentRadius === 0) continue; // freed slot, nothing to hide
-
-        gs.nodeHiddenRadii.set(slot, currentRadius);
-        gs.nodeHiddenSlots.add(slot);
-
-        // Zero all visual attributes (radius, r, g, b) — preserve selected/hovered and slots 6-7
-        scratch[0] = 0; // radius
-        scratch[1] = 0; // r
-        scratch[2] = 0; // g
-        scratch[3] = 0; // b
-        scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
-        scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
-        scratch[6] = parsed.nodeAttributes[baseOffset + 6]; // birth_time
-        scratch[7] = parsed.nodeAttributes[baseOffset + 7]; // tex_index
-
-        device.queue.writeBuffer(
-          this.buffers.nodeAttributes,
-          baseOffset * 4,
-          scratch.buffer,
-          0,
-          NODE_ATTR_BYTES,
-        );
-      } else {
-        // Show: restore original radius and re-apply type style
-        if (!gs.nodeHiddenSlots.has(slot)) continue; // not hidden
-
-        const savedRadius = gs.nodeHiddenRadii.get(slot) ?? 0;
-        gs.nodeHiddenRadii.delete(slot);
-        gs.nodeHiddenSlots.delete(slot);
-
-        // Resolve the type style for this node to get color + size multiplier
-        const nodeType = parsed.nodeTypes?.[slot];
-        const style = this.typeStyleManager.resolveNodeStyle(nodeType);
-
-        scratch[0] = savedRadius * style.size; // radius × style multiplier
-        scratch[1] = style.color[0]; // r
-        scratch[2] = style.color[1]; // g
-        scratch[3] = style.color[2]; // b
-        scratch[4] = parsed.nodeAttributes[baseOffset + 4]; // selected
-        scratch[5] = parsed.nodeAttributes[baseOffset + 5]; // hovered
-        scratch[6] = parsed.nodeAttributes[baseOffset + 6]; // birth_time
-        scratch[7] = parsed.nodeAttributes[baseOffset + 7]; // tex_index
-
-        device.queue.writeBuffer(
-          this.buffers.nodeAttributes,
-          baseOffset * 4,
-          scratch.buffer,
-          0,
-          NODE_ATTR_BYTES,
-        );
-      }
+      if (slot < lo) lo = slot;
+      if (slot >= hi) hi = slot + 1;
     }
+
+    this.flushNodeFlagRange(lo, hi);
   }
 
   /**
@@ -5603,9 +5579,6 @@ export class GraphMother {
     const parsed = this.state.parsedGraph;
     const { device } = this.gpuContext;
 
-    // Hidden slots set — skip these when applying styles so they stay invisible
-    const hiddenSlots = this.graphState?.nodeHiddenSlots;
-
     // Update node attributes buffer with type-based colors and sizes
     if (this.buffers && this.typeStyleManager.hasNodeStyles()) {
       // Use parsed.nodeCount (= nodeHighWater) to cover all slots including gaps from removals
@@ -5617,13 +5590,9 @@ export class GraphMother {
         const baseOffset = i * NODE_ATTR_FLOATS;
         const originalRadius = parsed.nodeAttributes[baseOffset];
 
-        // Skip freed slots (radius 0)
+        // Skip freed slots (radius 0). Hidden slots need no special case:
+        // visibility lives in nodeFlags, not in the attributes rewritten here.
         if (originalRadius === 0) {
-          continue;
-        }
-
-        // Skip hidden slots — they stay zeroed (invisible)
-        if (hiddenSlots?.has(i)) {
           continue;
         }
 
@@ -5996,19 +5965,17 @@ export class GraphMother {
       this.pinnedNodes.delete(slot);
     }
 
-    if (!this.simBuffers) return;
-    const hw = this.graphState?.nodeHighWater ?? this.state.nodeCount;
-    if (slot < 0 || slot >= hw) return;
+    const gs = this.graphState;
+    if (!gs || !this.simBuffers) return;
+    if (slot < 0 || slot >= gs.nodeHighWater) return;
 
-    // Preserve the dead bit — pinning a freed slot must not resurrect it
-    const dead = this.graphState?.nodeFreeSet.has(slot) ?? false;
-    const flags = (dead ? NODE_FLAG_DEAD : 0) |
-      (pinned && !dead ? NODE_FLAG_PINNED : 0);
-    this.gpuContext.device.queue.writeBuffer(
-      this.simBuffers.nodeFlags,
-      slot * 4,
-      new Uint32Array([flags]),
-    );
+    // A freed slot is not a node: pinning it must not resurrect it. Every
+    // other bit in the word (dead, hidden) belongs to someone else and is
+    // left exactly as it was.
+    const dead = (gs.nodeFlagsShadow[slot] & NODE_FLAG_DEAD) !== 0;
+    if (gs.setNodeFlagBits(slot, NODE_FLAG_PINNED, pinned && !dead)) {
+      this.flushNodeFlagSlot(slot);
+    }
   }
 
   /**

@@ -102,6 +102,18 @@ export const NODE_FLAG_DEAD = 1;
 export const NODE_FLAG_PINNED = 2;
 
 /**
+ * nodeFlags bit 2: the node is hidden (setNodeVisibility, and later the
+ * semantic-LOD cut). The node render pipeline drops the instance; the
+ * simulation is deliberately unaffected, so a hidden node keeps its place in
+ * the layout and reappears where it belongs.
+ *
+ * Distinct from {@link NODE_FLAG_DEAD} because a hidden node is still a live
+ * slot: reusing the dead bit would corrupt the free-list bookkeeping that
+ * nodeFreeList/nodeFreeSet and the WASM engine keep in lockstep.
+ */
+export const NODE_FLAG_HIDDEN_LOD = 4;
+
+/**
  * Sentinel written into the collision node_sizes buffer for dead slots.
  * Collision shaders treat any negative radius as "slot does not exist"
  * (0 means "use default radius", so it cannot mark dead slots).
@@ -169,8 +181,8 @@ export interface SimulationBuffers {
   repulsionUniforms: GPUBuffer;
   springUniforms: GPUBuffer;
   integrationUniforms: GPUBuffer;
-  // Node state flags (u32 per node, bit 0 = dead slot, bit 1 = pinned;
-  // see NODE_FLAG_DEAD / NODE_FLAG_PINNED)
+  // Node state flags (u32 per node, bit 0 = dead slot, bit 1 = pinned,
+  // bit 2 = hidden; see NODE_FLAG_DEAD / NODE_FLAG_PINNED / NODE_FLAG_HIDDEN_LOD)
   nodeFlags: GPUBuffer;
   // Node depth from root (f32 per node) for hierarchical settling
   nodeDepth: GPUBuffer;

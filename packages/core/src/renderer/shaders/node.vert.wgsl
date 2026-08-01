@@ -33,6 +33,12 @@ struct NodeAttributes {
 // Node attributes buffer
 @group(1) @binding(1) var<storage, read> node_attrs: array<f32>;
 
+// Node state flags (the simulation's nodeFlags buffer)
+@group(1) @binding(2) var<storage, read> node_flags: array<u32>;
+
+// Mirrors NODE_FLAG_HIDDEN_LOD in simulation/pipeline.ts.
+const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
+
 // Vertex output to fragment shader
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -76,6 +82,13 @@ fn vs_main(
     @builtin(instance_index) instance_idx: u32,
 ) -> VertexOutput {
     var output: VertexOutput;
+
+    // Hidden nodes are culled here rather than discarded per fragment: the
+    // whole quad collapses behind the near plane, so no fragment shader runs.
+    if ((node_flags[instance_idx] & NODE_FLAG_HIDDEN_LOD) != 0u) {
+        output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+        return output;
+    }
 
     // Get node position from vec2 buffer
     let node_pos = positions[instance_idx];

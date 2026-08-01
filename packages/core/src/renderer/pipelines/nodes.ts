@@ -87,6 +87,7 @@ export function createNodeRenderPipeline(
   // Node data bind group layout (group 1)
   // - binding 0: positions (vec2 storage buffer)
   // - binding 1: node_attrs (storage buffer)
+  // - binding 2: node_flags (u32 storage buffer; the simulation's nodeFlags)
   const nodeBindGroupLayout = device.createBindGroupLayout({
     label: "Node Pipeline - Node Data",
     entries: [
@@ -97,6 +98,11 @@ export function createNodeRenderPipeline(
       },
       {
         binding: 1,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 2,
         visibility: GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
@@ -179,6 +185,8 @@ export function createNodeRenderPipeline(
  * @param pipeline - Node render pipeline
  * @param positions - Position buffer (vec2 per node)
  * @param nodeAttrs - Node attributes buffer
+ * @param nodeFlags - Node state flags buffer (u32 per node; the simulation's
+ *   nodeFlags, so the render path sees the same word the compute passes do)
  * @returns Bind group for node data
  */
 export function createNodeBindGroup(
@@ -186,6 +194,7 @@ export function createNodeBindGroup(
   pipeline: NodeRenderPipeline,
   positions: GPUBuffer,
   nodeAttrs: GPUBuffer,
+  nodeFlags: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: "Node Data Bind Group",
@@ -193,6 +202,7 @@ export function createNodeBindGroup(
     entries: [
       { binding: 0, resource: { buffer: positions } },
       { binding: 1, resource: { buffer: nodeAttrs } },
+      { binding: 2, resource: { buffer: nodeFlags } },
     ],
   });
 }

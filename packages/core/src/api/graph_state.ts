@@ -50,6 +50,16 @@ export class MutableGraphState {
   positionsY: Float32Array;
   /** 8 floats per slot: radius, r, g, b, selected, hovered, birth_time, tex_index */
   nodeAttributes: Float32Array;
+  /**
+   * Per-slot node state flags (NODE_FLAG_* bits from simulation/pipeline.ts).
+   *
+   * The single CPU-side authority for the GPU nodeFlags buffer. Liveness,
+   * pinning and visibility are independent bits owned by different callers, so
+   * every writer edits only its own bits here ({@link setNodeFlagBits}) and the
+   * GPU write is a copy of this array — no writer ever recomposes the word from
+   * the others' state, which is how a bit used to get dropped.
+   */
+  nodeFlagsShadow: Uint32Array;
   /** Dense edge source indices */
   edgeSources: Uint32Array;
   /** Dense edge target indices */
@@ -67,12 +77,6 @@ export class MutableGraphState {
   /** nodeSlotIndex → set of edge slot indices */
   nodeEdges: Map<number, Set<number>>;
 
-  // Hidden node tracking for visibility filtering
-  /** Original radius values for hidden nodes (slot → radius) */
-  nodeHiddenRadii: Map<number, number>;
-  /** Set of currently hidden node slot indices */
-  nodeHiddenSlots: Set<number>;
-
   private constructor() {
     this.nodeCount = 0;
     this.nodeCapacity = 0;
@@ -86,6 +90,7 @@ export class MutableGraphState {
     this.positionsX = new Float32Array(0);
     this.positionsY = new Float32Array(0);
     this.nodeAttributes = new Float32Array(0);
+    this.nodeFlagsShadow = new Uint32Array(0);
     this.edgeSources = new Uint32Array(0);
     this.edgeTargets = new Uint32Array(0);
     this.edgeAttributes = new Float32Array(0);
@@ -94,8 +99,6 @@ export class MutableGraphState {
     this.nodeTypes = [];
     this.edgeTypes = [];
     this.nodeEdges = new Map();
-    this.nodeHiddenRadii = new Map();
-    this.nodeHiddenSlots = new Set();
   }
 
   /**
@@ -120,6 +123,9 @@ export class MutableGraphState {
     state.positionsX = new Float32Array(state.nodeCapacity);
     state.positionsY = new Float32Array(state.nodeCapacity);
     state.nodeAttributes = new Float32Array(state.nodeCapacity * NODE_ATTR_FLOATS);
+    // Zero = every slot live, unpinned and visible, matching the freshly
+    // created (zero-filled) GPU nodeFlags buffer.
+    state.nodeFlagsShadow = new Uint32Array(state.nodeCapacity);
     state.edgeSources = new Uint32Array(state.edgeCapacity);
     state.edgeTargets = new Uint32Array(state.edgeCapacity);
     state.edgeAttributes = new Float32Array(state.edgeCapacity * 8);
@@ -198,10 +204,28 @@ export class MutableGraphState {
 
     // Clean up adjacency
     this.nodeEdges.delete(index);
+  }
 
-    // Clean up hidden state
-    this.nodeHiddenRadii.delete(index);
-    this.nodeHiddenSlots.delete(index);
+  /**
+   * Set or clear `mask` in one slot's flag word, leaving every other bit
+   * untouched. Returns whether the word actually changed, so callers can skip
+   * the GPU write for a no-op.
+   */
+  setNodeFlagBits(slot: number, mask: number, enabled: boolean): boolean {
+    const before = this.nodeFlagsShadow[slot];
+    const after = enabled ? before | mask : before & ~mask;
+    if (after === before) return false;
+    this.nodeFlagsShadow[slot] = after;
+    return true;
+  }
+
+  /**
+   * Replace one slot's flag word outright. Only for slot (re)assignment, where
+   * the previous occupant's pin and visibility are gone by definition; every
+   * other writer must go through {@link setNodeFlagBits}.
+   */
+  resetNodeFlags(slot: number, flags: number): void {
+    this.nodeFlagsShadow[slot] = flags;
   }
 
   /**
@@ -222,14 +246,17 @@ export class MutableGraphState {
     const oldPosX = this.positionsX;
     const oldPosY = this.positionsY;
     const oldAttrs = this.nodeAttributes;
+    const oldFlags = this.nodeFlagsShadow;
 
     this.positionsX = new Float32Array(newCapacity);
     this.positionsY = new Float32Array(newCapacity);
     this.nodeAttributes = new Float32Array(newCapacity * NODE_ATTR_FLOATS);
+    this.nodeFlagsShadow = new Uint32Array(newCapacity);
 
     this.positionsX.set(oldPosX);
     this.positionsY.set(oldPosY);
     this.nodeAttributes.set(oldAttrs);
+    this.nodeFlagsShadow.set(oldFlags);
 
     this.nodeCapacity = newCapacity;
   }

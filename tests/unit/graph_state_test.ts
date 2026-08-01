@@ -1,16 +1,22 @@
 /**
- * MutableGraphState slot allocation invariants.
+ * MutableGraphState slot allocation and node-flag invariants.
  *
  * Node slot reuse must be pure LIFO with no tail pruning so it stays in
  * lockstep with two other allocators fed the same add/remove sequence:
  * - the IdMap adopting slots via set(id, slot) (single free-list owner)
  * - petgraph StableGraph's vacancy list in the WASM engine (NodeId == slot)
+ *
+ * nodeFlagsShadow is the single CPU-side authority for the GPU nodeFlags
+ * buffer. Its three bits (dead / pinned / hidden) have independent owners, so
+ * every write must be a masked edit of the existing word — the recomposition
+ * pattern it replaced dropped whichever bits the writer did not know about.
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
 import { MutableGraphState, NODE_ATTR_FLOATS } from "../../packages/core/src/api/graph_state.ts";
 import { createIdMap, type IdLike } from "../../packages/core/src/graph/id_map.ts";
 import type { ParsedGraph } from "../../packages/core/src/graph/parser.ts";
+import { NODE_FLAG_DEAD, NODE_FLAG_HIDDEN_LOD, NODE_FLAG_PINNED } from "../helpers/gpu.ts";
 
 function makeParsed(nodeCount: number): ParsedGraph {
   const nodeIdMap = createIdMap<IdLike>();
@@ -98,4 +104,78 @@ Deno.test("MutableGraphState: ID map stays aligned with slot allocation across r
     seen.add(index);
   }
   assertEquals(seen.size, gs.nodeCount);
+});
+
+Deno.test("MutableGraphState: a fresh state is all-live, all-visible, unpinned", () => {
+  const gs = MutableGraphState.fromParsedGraph(makeParsed(4));
+
+  // Must match the zero-filled GPU nodeFlags buffer created alongside it
+  assertEquals(gs.nodeFlagsShadow.length, gs.nodeCapacity);
+  for (let i = 0; i < gs.nodeHighWater; i++) assertEquals(gs.nodeFlagsShadow[i], 0);
+});
+
+Deno.test("MutableGraphState: each flag write preserves the bits it does not own", () => {
+  const gs = MutableGraphState.fromParsedGraph(makeParsed(4));
+
+  // A liveness write preserves the pin bit
+  gs.setNodeFlagBits(0, NODE_FLAG_PINNED, true);
+  gs.setNodeFlagBits(0, NODE_FLAG_DEAD, true);
+  assertEquals(gs.nodeFlagsShadow[0], NODE_FLAG_DEAD | NODE_FLAG_PINNED);
+
+  // A pin write preserves the hide bit
+  gs.setNodeFlagBits(1, NODE_FLAG_HIDDEN_LOD, true);
+  gs.setNodeFlagBits(1, NODE_FLAG_PINNED, true);
+  assertEquals(gs.nodeFlagsShadow[1], NODE_FLAG_HIDDEN_LOD | NODE_FLAG_PINNED);
+
+  // A hide write preserves both the dead and the pin bit
+  gs.setNodeFlagBits(2, NODE_FLAG_DEAD, true);
+  gs.setNodeFlagBits(2, NODE_FLAG_PINNED, true);
+  gs.setNodeFlagBits(2, NODE_FLAG_HIDDEN_LOD, true);
+  assertEquals(
+    gs.nodeFlagsShadow[2],
+    NODE_FLAG_DEAD | NODE_FLAG_PINNED | NODE_FLAG_HIDDEN_LOD,
+  );
+
+  // Clearing is equally narrow: unhiding leaves dead and pinned standing
+  gs.setNodeFlagBits(2, NODE_FLAG_HIDDEN_LOD, false);
+  assertEquals(gs.nodeFlagsShadow[2], NODE_FLAG_DEAD | NODE_FLAG_PINNED);
+
+  // Neighbours are untouched throughout
+  assertEquals(gs.nodeFlagsShadow[3], 0);
+});
+
+Deno.test("MutableGraphState: setNodeFlagBits reports whether the word changed", () => {
+  const gs = MutableGraphState.fromParsedGraph(makeParsed(2));
+
+  // The return value is what lets callers skip a redundant GPU write
+  assert(gs.setNodeFlagBits(0, NODE_FLAG_HIDDEN_LOD, true), "first hide must report a change");
+  assert(!gs.setNodeFlagBits(0, NODE_FLAG_HIDDEN_LOD, true), "re-hiding must report no change");
+  assert(gs.setNodeFlagBits(0, NODE_FLAG_HIDDEN_LOD, false), "unhide must report a change");
+  assert(!gs.setNodeFlagBits(0, NODE_FLAG_HIDDEN_LOD, false), "re-showing must report no change");
+});
+
+Deno.test("MutableGraphState: resetNodeFlags drops the previous occupant's state", () => {
+  const gs = MutableGraphState.fromParsedGraph(makeParsed(2));
+
+  // Slot reassignment (graph.ts writeNodeSlotLiveness) is the one write that
+  // must NOT preserve bits: pin and visibility belonged to a node that is gone.
+  gs.setNodeFlagBits(0, NODE_FLAG_PINNED | NODE_FLAG_HIDDEN_LOD, true);
+  gs.resetNodeFlags(0, NODE_FLAG_DEAD);
+  assertEquals(gs.nodeFlagsShadow[0], NODE_FLAG_DEAD);
+
+  gs.resetNodeFlags(0, 0);
+  assertEquals(gs.nodeFlagsShadow[0], 0);
+});
+
+Deno.test("MutableGraphState: growNodeCapacity carries the flag shadow across", () => {
+  const gs = MutableGraphState.fromParsedGraph(makeParsed(4));
+  gs.setNodeFlagBits(1, NODE_FLAG_PINNED, true);
+  gs.setNodeFlagBits(3, NODE_FLAG_HIDDEN_LOD, true);
+
+  gs.growNodeCapacity(gs.nodeCapacity * 2);
+
+  assertEquals(gs.nodeFlagsShadow.length, gs.nodeCapacity);
+  assertEquals(gs.nodeFlagsShadow[1], NODE_FLAG_PINNED);
+  assertEquals(gs.nodeFlagsShadow[3], NODE_FLAG_HIDDEN_LOD);
+  assertEquals(gs.nodeFlagsShadow[gs.nodeCapacity - 1], 0);
 });
