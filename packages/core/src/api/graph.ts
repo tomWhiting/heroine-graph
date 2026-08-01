@@ -180,13 +180,25 @@ import {
   type NodeTypeStyleMap,
   type TypeStyleManager,
 } from "../styling/mod.ts";
-import { externalIdForSlot, slotForExternalId } from "../overlay/mod.ts";
+import {
+  type CardNodeSource,
+  type CardProvider,
+  type CardSyncEntry,
+  DomCardOverlay,
+  type DomOverlayConfig,
+  externalIdForSlot,
+  slotForExternalId,
+} from "../overlay/mod.ts";
 import type { IdLike } from "../graph/id_map.ts";
 import { growCapacity, initialCapacity } from "./buffer_capacity.ts";
 import { MutableGraphState, NODE_ATTR_BYTES, NODE_ATTR_FLOATS } from "./graph_state.ts";
 
 // Default well radius for non-bubble mode (matches density field default splat in grid cells)
 const DEFAULT_WELL_RADIUS = 0.0;
+
+// Where a DOM card sits when its node has no position left to read — the slot
+// was freed under it, and the overlay releases the card on the same frame.
+const CARD_ORIGIN: Vec2 = { x: 0, y: 0 };
 
 /**
  * WASM engine interface for graph structure and layout.
@@ -565,6 +577,15 @@ export class GraphMother {
   // Layer system
   private layerManager: LayerManager;
 
+  /**
+   * DOM card overlay — a peer of the layer manager rather than a Layer, since
+   * a Layer renders into a GPUCommandEncoder and this renders into the DOM.
+   * Created by the first {@link GraphMother.setDomOverlay} call and driven
+   * from the same two signals the labels layer is: viewport changes and the
+   * per-frame tick.
+   */
+  private domOverlay: DomCardOverlay | null = null;
+
   // Value stream system
   private streamManager: StreamManager;
 
@@ -610,6 +631,8 @@ export class GraphMother {
       onViewportChange: (state) => {
         this.updateViewportUniforms();
         this.markRenderDirty();
+        // Viewport has no gesture-end signal; the overlay debounces here.
+        this.domOverlay?.viewportChanged();
         this.events.emit({
           type: "viewport:change",
           timestamp: Date.now(),
@@ -1320,6 +1343,11 @@ export class GraphMother {
     if (needsCompute) {
       this.advanceFrameParity();
     }
+
+    // DOM cards are not GPU work, so they run once the frame is submitted:
+    // one camera transform write plus one placement per card, both no-ops
+    // when neither the camera nor the positions moved.
+    this.domOverlay?.syncFrame();
   }
 
   /**
@@ -1422,6 +1450,9 @@ export class GraphMother {
     this.selectedNodes.clear();
     this.selectedEdges.clear();
     this.hover.reset();
+    // Cards are keyed by slot, so every one of them refers to a node of the
+    // outgoing graph; the release runs while their DOM is still valid.
+    this.domOverlay?.releaseAll();
     this.streamColorBackups.clear();
     this.prevSyncPositionsX = null;
     this.prevSyncPositionsY = null;
@@ -4753,6 +4784,110 @@ export class GraphMother {
   }
 
   // ==========================================================================
+  // Public API - DOM Card Overlay
+  // ==========================================================================
+
+  /**
+   * Configure the DOM card overlay.
+   *
+   * The overlay promotes nodes to real DOM elements — selectable text, working
+   * links, find-in-page — and keeps them on the pixel the GPU would have drawn
+   * the sprite on, by carrying the same camera as a CSS transform.
+   *
+   * Cards are created inside a container appended to `config.host`, defaulting
+   * to the canvas's parent element, so the factory signature stays a canvas
+   * and core still creates no DOM until asked. The host must be a positioned
+   * element that the canvas fills, which is what an embedding adapter already
+   * owns.
+   *
+   * @param config - Settings to change; anything omitted keeps its value
+   * @throws if enabling with no host and no `canvas.parentElement`
+   */
+  setDomOverlay(config: Partial<DomOverlayConfig>): void {
+    this.ensureDomOverlay().setConfig(config);
+  }
+
+  /**
+   * Register the renderer for card content, or `null` for the built-in one.
+   *
+   * Core owns where a card is and how big it is; everything inside it belongs
+   * to the provider. Swapping providers releases every mounted card first, so
+   * the outgoing provider tears down its own state.
+   */
+  setCardProvider(provider: CardProvider | null): void {
+    this.ensureDomOverlay().setProvider(provider);
+  }
+
+  /**
+   * Declare which nodes should currently be carded.
+   *
+   * Imperative for now: the semantic-LOD controller becomes the caller once it
+   * lands, and this is the interface it will drive. The overlay applies its own
+   * budget and anti-flicker floor to the set, so a caller may ask for more
+   * cards than `maxCards` and get the highest-priority ones.
+   *
+   * No-op until {@link GraphMother.setDomOverlay} has enabled the overlay.
+   */
+  syncDomCards(entries: readonly CardSyncEntry[]): void {
+    this.domOverlay?.syncCards(entries);
+  }
+
+  /** Create the overlay on first use; it holds no GPU resources. */
+  private ensureDomOverlay(): DomCardOverlay {
+    if (this.domOverlay === null) {
+      this.domOverlay = new DomCardOverlay({
+        canvas: this.canvas,
+        viewport: () => this.viewport.state,
+        nodes: this.createCardNodeSource(),
+      });
+    }
+    return this.domOverlay;
+  }
+
+  /**
+   * The per-node readings cards are a live view of.
+   *
+   * Closed over `this` rather than over the current graph, so cards follow a
+   * reload and a mutation instead of snapshotting whatever was loaded when the
+   * overlay was enabled. `tag`, `weight` and `depth` are the semantic and
+   * hierarchy columns the LOD packages introduce; until those land every node
+   * reports the neutral value, which is what a card then displays.
+   */
+  private createCardNodeSource(): CardNodeSource {
+    const metadataText = (nodeId: NodeId, key: string): string | undefined => {
+      const value = this.state.parsedGraph?.nodeMetadata.get(nodeId)?.[key];
+      return typeof value === "string" ? value : undefined;
+    };
+
+    return {
+      externalId: (nodeId) => this.getExternalId(nodeId),
+      label: (nodeId) => metadataText(nodeId, "label"),
+      tag: () => 0,
+      weight: () => 0,
+      depth: () => 0,
+      contentRef: (nodeId) => metadataText(nodeId, "contentRef"),
+      // The CPU position shadow, bounded by the slot space rather than by
+      // nodeCount: after a removal a live node can sit in a slot above the
+      // count, and a card on it must still track its node.
+      position: (nodeId) => {
+        const parsed = this.state.parsedGraph;
+        if (parsed === null || nodeId < 0 || nodeId >= parsed.positionsX.length) {
+          return CARD_ORIGIN;
+        }
+        return { x: parsed.positionsX[nodeId], y: parsed.positionsY[nodeId] };
+      },
+      isPinned: (nodeId) => this.isNodePinned(nodeId),
+      setPinned: (nodeId, pinned) => {
+        if (pinned) {
+          this.pinNode(nodeId);
+        } else {
+          this.unpinNode(nodeId);
+        }
+      },
+    };
+  }
+
+  // ==========================================================================
   // Public API - Edge Flow Animation
   // ==========================================================================
 
@@ -6635,6 +6770,10 @@ export class GraphMother {
 
     // Dispose pointer manager
     this.pointerManager?.dispose();
+
+    // Release every card and detach the overlay container from the host
+    this.domOverlay?.dispose();
+    this.domOverlay = null;
 
     // Drop any hover evaluation still waiting on a frame callback
     this.hover.reset();

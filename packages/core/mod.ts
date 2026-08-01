@@ -556,24 +556,40 @@ export { CrossfadeScheduler, NODE_ALPHA_OPAQUE, NODE_ALPHA_TRANSPARENT } from ".
 // =============================================================================
 
 export {
+  CardContainerPool,
   CardDriver,
+  cardPlacementAt,
   createDefaultCardProvider,
+  DEFAULT_CARD_SIZE,
   DEFAULT_DOM_OVERLAY_CONFIG,
+  DEFAULT_GESTURE_IDLE_MS,
+  DEFAULT_MAX_CARDS,
+  DEFAULT_MAX_IDLE_CONTAINERS,
+  DEFAULT_MIN_CARD_LIFETIME_MS,
+  DomCardOverlay,
   externalIdForSlot,
+  formatCssMatrix,
+  overlayMatrix,
+  projectByMatrix,
   slotForExternalId,
 } from "./src/overlay/mod.ts";
 export type {
   CardChange,
   CardDriverOptions,
   CardNode,
+  CardNodeSource,
   CardPlacement,
   CardPlacementChange,
   CardProvider,
   CardSize,
   CardStateChange,
+  CardSyncEntry,
+  CssMatrix,
   DefaultCardState,
+  DomCardOverlayOptions,
   DomOverlayConfig,
   NodeIdentitySource,
+  OverlayTimers,
 } from "./src/overlay/mod.ts";
 
 // =============================================================================
