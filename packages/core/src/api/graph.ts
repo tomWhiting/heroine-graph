@@ -88,6 +88,7 @@ import {
   type SimulationPipeline,
   startSettlingTelemetry,
   updateSimulationUniforms,
+  writeOpaqueNodeAlpha,
 } from "../simulation/pipeline.ts";
 import {
   type CollisionBindGroup,
@@ -3173,6 +3174,7 @@ export class GraphMother {
     this.simBuffers.forces.destroy();
     this.simBuffers.prevForces.destroy();
     this.simBuffers.nodeFlags.destroy();
+    this.simBuffers.nodeAlpha.destroy();
     this.simBuffers.nodeDepth.destroy();
     this.simBuffers.readback.destroy();
 
@@ -3215,6 +3217,15 @@ export class GraphMother {
       size: nodeFlagBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // A capacity change is not an LOD operation, so nothing is mid-crossfade
+    // that this must preserve: the buffer comes back fully opaque, and a
+    // scheduler driving it re-flushes its shadow after resizing.
+    this.simBuffers.nodeAlpha = device.createBuffer({
+      label: "Sim Node Alpha",
+      size: nodeFlagBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    writeOpaqueNodeAlpha(device, this.simBuffers.nodeAlpha, newCapacity);
     this.simBuffers.nodeDepth = device.createBuffer({
       label: "Sim Node Depth",
       size: nodeFlagBytes,
@@ -3393,6 +3404,7 @@ export class GraphMother {
             view.positions,
             nodeAttributes,
             view.nodeFlags,
+            view.nodeAlpha,
           ),
       );
     }
@@ -6633,6 +6645,7 @@ export class GraphMother {
       this.simBuffers.forces.destroy();
       this.simBuffers.prevForces.destroy();
       this.simBuffers.nodeFlags.destroy();
+      this.simBuffers.nodeAlpha.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
       this.simBuffers.clearUniforms.destroy();

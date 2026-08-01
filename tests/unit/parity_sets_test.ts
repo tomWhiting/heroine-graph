@@ -40,6 +40,7 @@ const BUFFER_FIELDS = [
   "springUniforms",
   "integrationUniforms",
   "nodeFlags",
+  "nodeAlpha",
   "nodeDepth",
   "readback",
 ] as const;

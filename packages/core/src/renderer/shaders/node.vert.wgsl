@@ -36,6 +36,10 @@ struct NodeAttributes {
 // Node state flags (the simulation's nodeFlags buffer)
 @group(1) @binding(2) var<storage, read> node_flags: array<u32>;
 
+// Per-node render alpha (the simulation's nodeAlpha buffer). 1.0 = opaque; the
+// crossfade scheduler (lod/crossfade.ts) is its only writer.
+@group(1) @binding(3) var<storage, read> node_alpha: array<f32>;
+
 // Mirrors NODE_FLAG_HIDDEN_LOD in simulation/pipeline.ts.
 const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
 
@@ -48,6 +52,7 @@ struct VertexOutput {
     @location(3) state: vec2<f32>,         // (selected, hovered)
     @location(4) dpr: f32,                 // Device pixel ratio for AA
     @location(5) pulse_factor: f32,        // Birth pulse animation factor
+    @location(6) alpha: f32,               // Per-node crossfade alpha (1 = opaque)
 }
 
 // Quad vertices for instanced rendering
@@ -174,6 +179,9 @@ fn vs_main(
 
     // Pass DPR for fragment shader AA
     output.dpr = viewport.dpr;
+
+    // Pass the crossfade alpha; the fragment shader scales its output alpha by it
+    output.alpha = node_alpha[instance_idx];
 
     // Pass birth pulse factor for brightness flash in fragment shader.
     // Sign encodes loop mode: negative = looping (use session color in fragment).

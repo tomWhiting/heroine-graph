@@ -66,6 +66,7 @@ interface NodesModule {
     positions: GPUBuffer,
     nodeAttrs: GPUBuffer,
     nodeFlags: GPUBuffer,
+    nodeAlpha: GPUBuffer,
   ): GPUBindGroup;
   createViewportBindGroup(
     device: GPUDevice,
@@ -253,6 +254,15 @@ function createNodeRenderFrame(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Per-node crossfade alpha, all opaque: the steady-state render path, with
+  // no LOD transition in flight.
+  const nodeAlpha = device.createBuffer({
+    label: "Bench Node Alpha",
+    size: nodeCount * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(nodeAlpha, 0, new Float32Array(nodeCount).fill(1));
+
   // ViewportUniforms (node.vert.wgsl): 3 vec4 transform columns, screen_size,
   // scale (px per graph unit), inv_scale, dpr, padding. The transform maps
   // graph units straight to clip space, so each axis carries the aspect ratio.
@@ -288,6 +298,7 @@ function createNodeRenderFrame(
     positions,
     nodeAttrs,
     nodeFlags,
+    nodeAlpha,
   );
   const renderConfigBindGroup = nodesModule.createRenderConfigBindGroup(
     device,
@@ -323,6 +334,7 @@ function createNodeRenderFrame(
       positions.destroy();
       nodeAttrs.destroy();
       nodeFlags.destroy();
+      nodeAlpha.destroy();
       viewportUniforms.destroy();
       renderConfig.destroy();
     },

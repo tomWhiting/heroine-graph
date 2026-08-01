@@ -14,6 +14,7 @@ import type { GPUContext } from "../webgpu/context.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { calculateWorkgroups } from "../renderer/commands.ts";
 import { toArrayBuffer } from "../webgpu/buffer_utils.ts";
+import { NODE_ALPHA_OPAQUE } from "../lod/crossfade.ts";
 import { DEFAULT_FORCE_CONFIG, type FullForceConfig } from "./config.ts";
 
 // --- Settling telemetry (temporary, for tuning decay curves) ---
@@ -184,6 +185,10 @@ export interface SimulationBuffers {
   // Node state flags (u32 per node, bit 0 = dead slot, bit 1 = pinned,
   // bit 2 = hidden; see NODE_FLAG_DEAD / NODE_FLAG_PINNED / NODE_FLAG_HIDDEN_LOD)
   nodeFlags: GPUBuffer;
+  // Per-node render alpha (f32 per node, 1.0 = opaque). Written only by the
+  // crossfade scheduler (lod/crossfade.ts) and read only by the node render
+  // pipeline; the simulation never touches it. See NODE_ALPHA_OPAQUE.
+  nodeAlpha: GPUBuffer;
   // Node depth from root (f32 per node) for hierarchical settling
   nodeDepth: GPUBuffer;
   // Readback buffer for syncing positions to CPU - vec2<f32> per node
@@ -467,6 +472,23 @@ export function createSimulationBindGroups(
 }
 
 /**
+ * Fill a node-alpha buffer with {@link NODE_ALPHA_OPAQUE} over `[0, nodeCount)`.
+ *
+ * Every path that creates or grows the alpha buffer must run this: a fresh GPU
+ * buffer is zero-filled, and zero alpha renders nothing.
+ */
+export function writeOpaqueNodeAlpha(
+  device: GPUDevice,
+  nodeAlpha: GPUBuffer,
+  nodeCount: number,
+): void {
+  // Deno's WebGPU backend panics on a zero-length write.
+  if (nodeCount <= 0) return;
+  const opaque = new Float32Array(nodeCount).fill(NODE_ALPHA_OPAQUE);
+  device.queue.writeBuffer(nodeAlpha, 0, toArrayBuffer(opaque));
+}
+
+/**
  * Create simulation buffers
  *
  * All position, velocity, force, and readback buffers use vec2<f32> layout
@@ -578,6 +600,20 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // Per-node render alpha, read only by the node render pipeline. A fresh GPU
+  // buffer is zero-filled, which would render nothing, so it is explicitly
+  // initialized to fully opaque: with no crossfade in flight the multiply in
+  // node.frag.wgsl is bit-exactly the identity. COPY_SRC is not needed by the
+  // renderer — it exists so the contents can be read back and asserted on
+  // (tests/gpu/node_alpha_test.ts), the same allowance
+  // layers/stream_intensity.ts makes.
+  const nodeAlpha = device.createBuffer({
+    label: "Node Alpha",
+    size: nodeFlagBytes, // f32 per node = same size as flags
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  writeOpaqueNodeAlpha(device, nodeAlpha, effectiveNodeCap);
+
   // Node depth from root (f32 per node) for hierarchical settling.
   // Zero-initialized: non-hierarchical algorithms get depth=0 (no effect).
   const nodeDepth = device.createBuffer({
@@ -607,6 +643,7 @@ export function createSimulationBuffers(
     springUniforms,
     integrationUniforms,
     nodeFlags,
+    nodeAlpha,
     nodeDepth,
     readback,
     nodeCount,

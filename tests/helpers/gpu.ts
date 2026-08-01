@@ -55,6 +55,7 @@ interface SimulationBuffers {
   springUniforms: GPUBuffer;
   integrationUniforms: GPUBuffer;
   nodeFlags: GPUBuffer;
+  nodeAlpha: GPUBuffer;
   nodeDepth: GPUBuffer;
   readback: GPUBuffer;
   nodeCount: number;
@@ -814,6 +815,7 @@ function destroySimulationBufferSet(buffers: SimulationBuffers): void {
       buffers.springUniforms,
       buffers.integrationUniforms,
       buffers.nodeFlags,
+      buffers.nodeAlpha,
       buffers.nodeDepth,
       buffers.readback,
     ]

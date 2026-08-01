@@ -35,6 +35,10 @@ struct FragmentInput {
     @location(3) state: vec2<f32>,  // (selected, hovered)
     @location(4) dpr: f32,          // Device pixel ratio for AA
     @location(5) pulse_factor: f32, // Birth pulse animation factor (0 = none)
+    // Per-node crossfade alpha from the LOD scheduler. Every alpha this shader
+    // returns is scaled by it; at 1.0 — the value every slot holds with no
+    // transition in flight — the multiply is bit-exactly the identity.
+    @location(6) alpha: f32,
 }
 
 // SDF circle: distance from edge (negative inside)
@@ -81,7 +85,11 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
         ring_alpha = aa_step(d_ring, aa_width * 3.0) * (1.0 - ring_progress);
     }
 
-    // Combined visibility: node circle OR splash ring
+    // Combined visibility: node circle OR splash ring. Deliberately not scaled
+    // by input.alpha — this test only skips fragments that would contribute
+    // nothing, and a faded-out fragment already contributes nothing (blending
+    // by zero is a no-op). Fully invisible nodes are culled in the vertex stage
+    // by NODE_FLAG_HIDDEN_LOD instead.
     let visible_alpha = max(circle_alpha, ring_alpha);
     if (visible_alpha < 0.01) {
         discard;
@@ -128,7 +136,10 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
 
         // Extend overall alpha for the selection ring and splash ring
         let extended_alpha = aa_step(d_outer, aa_width);
-        return vec4<f32>(final_color, max(max(circle_alpha, extended_alpha * sel_ring_alpha), ring_alpha));
+        return vec4<f32>(
+            final_color,
+            max(max(circle_alpha, extended_alpha * sel_ring_alpha), ring_alpha) * input.alpha
+        );
     }
 
     // === Composite node body + splash ring ===
@@ -141,8 +152,8 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
         // Blend: inside circle = node color, outside circle = ring color
         let mix_t = clamp(circle_alpha, 0.0, 1.0);
         let pixel_color = mix(ring_color, final_color, mix_t);
-        return vec4<f32>(pixel_color, max(circle_alpha, ring_alpha));
+        return vec4<f32>(pixel_color, max(circle_alpha, ring_alpha) * input.alpha);
     }
 
-    return vec4<f32>(final_color, circle_alpha);
+    return vec4<f32>(final_color, circle_alpha * input.alpha);
 }

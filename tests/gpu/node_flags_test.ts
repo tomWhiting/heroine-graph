@@ -326,6 +326,7 @@ interface NodesModule {
     positions: GPUBuffer,
     nodeAttrs: GPUBuffer,
     nodeFlags: GPUBuffer,
+    nodeAlpha: GPUBuffer,
   ): GPUBindGroup;
   createViewportBindGroup(
     device: GPUDevice,
@@ -396,6 +397,14 @@ async function renderTwoNodes(
   });
   device.queue.writeBuffer(nodeFlags, 0, flags.slice().buffer);
 
+  // Crossfade alpha, all opaque: this test is about the hide flag, so every
+  // node renders at full strength or not at all.
+  const nodeAlpha = device.createBuffer({
+    size: flags.length * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(nodeAlpha, 0, new Float32Array(flags.length).fill(1));
+
   // ViewportUniforms: identity graph->clip transform, so the positions above
   // are already clip coordinates.
   const viewportData = new Float32Array(20);
@@ -443,7 +452,7 @@ async function renderTwoNodes(
     pass,
     pipeline,
     mod.createViewportBindGroup(device, pipeline, viewportUniforms),
-    mod.createNodeBindGroup(device, pipeline, positions, nodeAttrs, nodeFlags),
+    mod.createNodeBindGroup(device, pipeline, positions, nodeAttrs, nodeFlags, nodeAlpha),
     mod.createRenderConfigBindGroup(device, pipeline, renderConfig),
     2,
   );
@@ -474,6 +483,7 @@ async function renderTwoNodes(
   positions.destroy();
   nodeAttrs.destroy();
   nodeFlags.destroy();
+  nodeAlpha.destroy();
   viewportUniforms.destroy();
   renderConfig.destroy();
   target.destroy();
