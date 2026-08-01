@@ -32,10 +32,33 @@ export const NODE_FLAG_HIDDEN_LOD = 4;
 /** Collision node_sizes sentinel for dead slots, mirroring pipeline.ts. */
 export const DEAD_SLOT_RADIUS = -1;
 
-/** Opaque handle: SimulationPipeline from pipeline.ts */
-type SimulationPipeline = { readonly __brand?: "SimulationPipeline" };
-/** Opaque handle: SimulationBindGroups from pipeline.ts */
-type SimulationBindGroups = { readonly __brand?: "SimulationBindGroups" };
+/**
+ * Structural subset of pipeline.ts's SimulationPipeline.
+ *
+ * The stage pipelines are named rather than opaque so a test can swap one for
+ * a variant built from edited WGSL and still drive the *shipped* record
+ * function — which is what makes a "the shader minus this change" baseline a
+ * real baseline rather than a second implementation of the tick.
+ */
+interface SimulationPipeline {
+  pipelines: {
+    clearForces: GPUComputePipeline;
+    repulsion: GPUComputePipeline;
+    springs: GPUComputePipeline;
+    springsBundled: GPUComputePipeline;
+    integrate: GPUComputePipeline;
+  };
+  config: { workgroupSize: number };
+}
+
+/** Structural subset of pipeline.ts's SimulationBindGroups; see above. */
+interface SimulationBindGroups {
+  clearForces: GPUBindGroup;
+  repulsion: GPUBindGroup;
+  springs: GPUBindGroup;
+  springsBundled: GPUBindGroup;
+  integration: GPUBindGroup;
+}
 
 /**
  * Structural subset of pipeline.ts's SimulationBuffers: the GPU buffers
@@ -59,9 +82,13 @@ interface SimulationBuffers {
   nodeMass: GPUBuffer;
   nodeDepth: GPUBuffer;
   liveIndices: GPUBuffer;
+  liveEdgeIndices: GPUBuffer;
+  edgeBundles: GPUBuffer;
   readback: GPUBuffer;
   nodeCount: number;
   activeCount: number;
+  activeEdgeCount: number;
+  bundleCount: number;
   nodeCapacity: number;
 }
 
@@ -147,6 +174,14 @@ interface PipelineModule {
     buffers: SimulationBuffers,
     indices: Uint32Array,
   ): void;
+  uploadEdgeBundles(
+    device: GPUDevice,
+    buffers: SimulationBuffers,
+    liveEdges: Uint32Array,
+    bundles: Uint32Array,
+  ): void;
+  releaseEdgeBundles(buffers: SimulationBuffers): void;
+  lodEdgeDispatchCount(buffers: SimulationBuffers): number | undefined;
   recordSimulationStepWithOptions(
     encoder: GPUCommandEncoder,
     pipeline: SimulationPipeline,
@@ -157,6 +192,7 @@ interface PipelineModule {
       recordRepulsionPass?: ((encoder: GPUCommandEncoder) => void) | undefined;
       skipSprings?: boolean;
       activeCount?: number | undefined;
+      lodEdgeCount?: number | undefined;
     },
   ): void;
   swapSimulationBuffers(buffers: SimulationBuffers): void;
@@ -699,6 +735,24 @@ export interface SimHarness {
    */
   readonly liveIndicesBuffer: GPUBuffer;
   readonly activeCount: number;
+  /**
+   * The live LOD edge aggregation buffers and their counts. Exposed for the
+   * same reason as the node-side pair: a band transition must move the counts
+   * without ever changing a buffer identity.
+   */
+  readonly liveEdgeIndicesBuffer: GPUBuffer;
+  readonly edgeBundlesBuffer: GPUBuffer;
+  readonly activeEdgeCount: number;
+  readonly bundleCount: number;
+  /**
+   * Declare the aggregated edge set mid-run, the way a band transition does:
+   * `liveEdges` names source edges, `bundles` is `[source, target, weight]`
+   * triples. Springs then dispatch over those two lists instead of over every
+   * edge.
+   */
+  setEdgeBundles(liveEdges: Uint32Array, bundles: Uint32Array): void;
+  /** Return springs to the whole source edge list, the way an expand does. */
+  clearEdgeBundles(): void;
   /** Advance the simulation by `steps` ticks */
   tick(steps: number): Promise<void>;
   /**
@@ -781,6 +835,9 @@ export async function createSimHarness(
     maxEdges: edgeCount,
   });
 
+  /** The aggregation a transition declared, so a reallocation can restore it. */
+  let currentBundles: { liveEdges: Uint32Array; bundles: Uint32Array } | null = null;
+
   /**
    * Upload per-slot flags and re-derive the active-index list from them.
    *
@@ -816,6 +873,10 @@ export async function createSimHarness(
     // currentFlags, not graph.flags: a reallocation must carry whatever an
     // LOD transition set mid-run, not revert to the fixture's opening state.
     applyFlags(fresh, currentFlags);
+    // Same rule for the aggregated edge set, and for the same reason.
+    if (currentBundles) {
+      mod.uploadEdgeBundles(device, fresh, currentBundles.liveEdges, currentBundles.bundles);
+    }
     return fresh;
   };
 
@@ -866,6 +927,28 @@ export async function createSimHarness(
     get activeCount() {
       return buffers.activeCount;
     },
+    get liveEdgeIndicesBuffer() {
+      return buffers.liveEdgeIndices;
+    },
+    get edgeBundlesBuffer() {
+      return buffers.edgeBundles;
+    },
+    get activeEdgeCount() {
+      return buffers.activeEdgeCount;
+    },
+    get bundleCount() {
+      return buffers.bundleCount;
+    },
+
+    setEdgeBundles(liveEdges: Uint32Array, bundles: Uint32Array): void {
+      currentBundles = { liveEdges, bundles };
+      mod.uploadEdgeBundles(device, buffers, liveEdges, bundles);
+    },
+
+    clearEdgeBundles(): void {
+      currentBundles = null;
+      mod.releaseEdgeBundles(buffers);
+    },
 
     setNodeMass(mass: Float32Array): void {
       device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
@@ -898,13 +981,19 @@ export async function createSimHarness(
           adaptiveSpeedOverride,
         );
         const encoder = device.createCommandEncoder();
-        mod.recordSimulationStep(
+        mod.recordSimulationStepWithOptions(
           encoder,
           pipeline,
           currentBindGroups(),
           nodeCount,
           edgeCount,
-          buffers.activeCount,
+          {
+            activeCount: buffers.activeCount,
+            // Undefined unless setEdgeBundles declared an aggregation, in
+            // which case springs run over it instead of over every edge —
+            // the same one field GraphMother reads.
+            lodEdgeCount: mod.lodEdgeDispatchCount(buffers),
+          },
         );
         device.queue.submit([encoder.finish()]);
         paritySets.advance();
@@ -947,6 +1036,8 @@ function destroySimulationBufferSet(buffers: SimulationBuffers): void {
       buffers.prevForces,
       buffers.edgeSources,
       buffers.edgeTargets,
+      buffers.liveEdgeIndices,
+      buffers.edgeBundles,
       buffers.clearUniforms,
       buffers.repulsionUniforms,
       buffers.springUniforms,
@@ -1058,6 +1149,9 @@ export async function createAlgorithmSimHarness(
   const edgeCount = graph.edgeSources.length;
   const forceConfig = validateForceConfig(config);
 
+  /** The aggregation a transition declared, so a reallocation can restore it. */
+  let currentBundles: { liveEdges: Uint32Array; bundles: Uint32Array } | null = null;
+
   const computeBounds = (
     xs: Float32Array,
     ys: Float32Array,
@@ -1128,6 +1222,10 @@ export async function createAlgorithmSimHarness(
     // currentFlags, not graph.flags: a reallocation must carry whatever an
     // LOD transition set mid-run, not revert to the fixture's opening state.
     applyFlags(fresh, currentFlags);
+    // Same rule for the aggregated edge set, and for the same reason.
+    if (currentBundles) {
+      mod.uploadEdgeBundles(device, fresh, currentBundles.liveEdges, currentBundles.bundles);
+    }
     return fresh;
   };
 
@@ -1212,6 +1310,28 @@ export async function createAlgorithmSimHarness(
     get activeCount() {
       return buffers.activeCount;
     },
+    get liveEdgeIndicesBuffer() {
+      return buffers.liveEdgeIndices;
+    },
+    get edgeBundlesBuffer() {
+      return buffers.edgeBundles;
+    },
+    get activeEdgeCount() {
+      return buffers.activeEdgeCount;
+    },
+    get bundleCount() {
+      return buffers.bundleCount;
+    },
+
+    setEdgeBundles(liveEdges: Uint32Array, bundles: Uint32Array): void {
+      currentBundles = { liveEdges, bundles };
+      mod.uploadEdgeBundles(device, buffers, liveEdges, bundles);
+    },
+
+    clearEdgeBundles(): void {
+      currentBundles = null;
+      mod.releaseEdgeBundles(buffers);
+    },
 
     setNodeMass(mass: Float32Array): void {
       device.queue.writeBuffer(buffers.nodeMass, 0, mass.slice().buffer);
@@ -1280,6 +1400,7 @@ export async function createAlgorithmSimHarness(
             },
             skipSprings: algorithm.handlesSprings ?? false,
             activeCount: buffers.activeCount,
+            lodEdgeCount: mod.lodEdgeDispatchCount(buffers),
           },
         );
         device.queue.submit([encoder.finish()]);

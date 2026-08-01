@@ -183,6 +183,11 @@ function createRig(harness: SimHarness, hierarchy: RetainedHierarchy): FixupRig 
     uploadNodeAlpha: () => {},
     uploadNodeMass: (mass) => harness.setNodeMass(mass),
     setCollapsedProxies: () => {},
+    // This rig asserts the expand fix-up, which is a position write; the
+    // aggregated edge set has no bearing on it and is exercised in
+    // tests/gpu/lod_edge_bundle_test.ts.
+    aggregateEdges: () => {},
+    releaseEdgeAggregation: () => {},
     translateNodeRange: (lo, hi, dx, dy) => {
       for (let slot = lo; slot < hi; slot++) {
         x[slot] += dx;

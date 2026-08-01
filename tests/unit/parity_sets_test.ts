@@ -44,16 +44,30 @@ const BUFFER_FIELDS = [
   "nodeMass",
   "nodeDepth",
   "liveIndices",
+  "liveEdgeIndices",
+  "edgeBundles",
   "readback",
 ] as const;
 
 type FakeBuffers =
   & Record<(typeof BUFFER_FIELDS)[number], GPUBuffer>
-  & { nodeCount: number; activeCount: number; nodeCapacity: number };
+  & {
+    nodeCount: number;
+    activeCount: number;
+    activeEdgeCount: number;
+    bundleCount: number;
+    nodeCapacity: number;
+  };
 
 /** A fresh fake buffer set; `generation` distinguishes reallocations. */
 function fakeBuffers(generation: string): FakeBuffers {
-  const set = { nodeCount: 4, activeCount: 4, nodeCapacity: 4 } as FakeBuffers;
+  const set = {
+    nodeCount: 4,
+    activeCount: 4,
+    activeEdgeCount: 0,
+    bundleCount: 0,
+    nodeCapacity: 4,
+  } as FakeBuffers;
   for (const field of BUFFER_FIELDS) set[field] = fakeBuffer(`${generation}.${field}`);
   return set;
 }

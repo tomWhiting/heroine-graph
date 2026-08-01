@@ -160,6 +160,26 @@ export interface LodHost {
    */
   setCollapsedProxies(proxies: Uint32Array, radii: Float32Array): void;
   /**
+   * Aggregate the edge set against the cut.
+   *
+   * `visible[slot]` is 1 for a slot in the cut. Cross-boundary edges are
+   * bundled onto the lowest visible ancestor of each endpoint so that a
+   * collapsed subtree keeps pulling on what it depends on — without this the
+   * spring pass simply drops those edges, and the collapsed layout differs
+   * structurally from the expanded one.
+   *
+   * Keyed off the *cut* rather than off the flags the crossfade lands later:
+   * the aggregated set replaces the source edge list wholesale, so an edge is
+   * covered by exactly one of the two at every instant and a node on its way
+   * out never carries its own spring and its bundle at once.
+   *
+   * The array is the controller's, reused across transitions and valid only
+   * for the duration of the call: a host that keeps it must copy.
+   */
+  aggregateEdges(visible: Uint8Array): void;
+  /** Return the spring pass and the edge render to the source edge list. */
+  releaseEdgeAggregation(): void;
+  /**
    * Translate the positions of slots `[lo, hi)` by `(dx, dy)`.
    *
    * The expand fix-up, issued once per contiguous run of a subtree that is
@@ -1007,7 +1027,15 @@ export class LODController {
     // Ahead of the reveal below: an expanding subtree has to be translated
     // under its proxy *before* it is unflagged, or it is drawn for one frame
     // wherever it was left when the proxy took over.
+    const wasStale = this.#proxiesStale;
     this.#onCollapsedSetChanged(entered, left);
+
+    // Same transition boundary, its own trigger: the cut can change without
+    // the collapsed set changing — a node turning pass-through leaves the cut
+    // without ever becoming a proxy — and the aggregation is keyed on the cut.
+    if (wasStale || shown.length > 0 || hidden.length > 0) {
+      this.#host.aggregateEdges(this.#visibleMask);
+    }
 
     if (shown.length === 0 && hidden.length === 0 && entered.length === 0 && left.length === 0) {
       this.#syncCards(nowMs);
@@ -1261,6 +1289,7 @@ export class LODController {
       this.#host.uploadNodeMass(this.#mass);
     }
     this.#host.setCollapsedProxies(EMPTY_U32, EMPTY_F32);
+    this.#host.releaseEdgeAggregation();
     this.#proxiesStale = true;
 
     this.#visibleMask.fill(1);

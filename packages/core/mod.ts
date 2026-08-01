@@ -577,6 +577,24 @@ export type {
 } from "./src/lod/mod.ts";
 export { commitNodeMass, NODE_MASS_HIDDEN, NODE_MASS_UNIT, rollUpMass } from "./src/lod/mod.ts";
 export type { MassDirtyRange } from "./src/lod/mod.ts";
+export {
+  aggregateEdges,
+  buildBundleInstances,
+  BUNDLE_MAX_WIDTH_SCALE,
+  decodeEdgeAggregation,
+  EDGE_AGGREGATION_HEADER,
+  EDGE_BUNDLE_STRIDE,
+  EDGE_OPACITY_HIDDEN,
+  EdgeOpacityMask,
+} from "./src/lod/mod.ts";
+export type {
+  BundleInstances,
+  BundleInstanceScratch,
+  BundleStyle,
+  EdgeAggregation,
+  EdgeAggregator,
+  EdgeOpacityHost,
+} from "./src/lod/mod.ts";
 
 // =============================================================================
 // DOM Card Overlay

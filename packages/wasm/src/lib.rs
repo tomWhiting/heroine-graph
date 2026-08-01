@@ -737,6 +737,46 @@ impl GraphMotherWasm {
 
         self.compute_bubble_data_from_edges(&edges, u32::MAX, base_radius, padding)
     }
+
+    /// Aggregate the edge set against a semantic-LOD visible cut.
+    ///
+    /// Collapsing a subtree hides its nodes, and the spring pass skips any
+    /// edge with a hidden endpoint — which deletes a collapsed module's
+    /// cross-cutting attractions instead of transferring them to the proxy
+    /// standing in for it. This maps every endpoint to its lowest visible
+    /// ancestor, drops the edges that end up inside one collapsed subtree, and
+    /// deduplicates the rest into weighted bundles between visible slots. The
+    /// source edge arrays are read, never written: expanding is undone by
+    /// discarding the result.
+    ///
+    /// The whole result is one `Uint32Array`:
+    /// `[liveCount, bundleCount, liveEdges…, (source, target, weight)…]`, for
+    /// one allocation and one copy across the boundary. The bundles are
+    /// interleaved because that is the layout the spring shader reads, so a
+    /// transition uploads the tail of this array as it stands.
+    ///
+    /// `liveEdges` holds the indices of the source edges whose endpoints are
+    /// both visible, ascending; the bundle columns are ascending by
+    /// `(source, target)` with `source < target`, since spring attraction is
+    /// symmetric and a direction-keyed bundle would split one force in two.
+    ///
+    /// # Arguments
+    ///
+    /// * `edge_sources`, `edge_targets` - The graph's edge arrays, slot-indexed
+    /// * `parent` - Containment parent per slot; `0xFFFFFFFF` marks a root
+    /// * `visible` - `1` per slot in the cut, `0` per slot the cut hides.
+    ///   Describes the same slot space as `parent`; the shorter of the two
+    ///   bounds it, and endpoints outside it are dropped.
+    #[wasm_bindgen(js_name = aggregateLodEdges)]
+    pub fn aggregate_lod_edges(
+        &self,
+        edge_sources: &[u32],
+        edge_targets: &[u32],
+        parent: &[u32],
+        visible: &[u8],
+    ) -> Vec<u32> {
+        layout::edge_aggregation::aggregate_edge_data(edge_sources, edge_targets, parent, visible)
+    }
 }
 
 impl Default for GraphMotherWasm {

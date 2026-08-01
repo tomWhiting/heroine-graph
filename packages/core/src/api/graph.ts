@@ -42,6 +42,14 @@ import {
   selectContainmentEdges,
 } from "../graph/hierarchy.ts";
 import { commitNodeMass, NODE_MASS_UNIT } from "../lod/mass.ts";
+import {
+  aggregateEdges,
+  buildBundleInstances,
+  type BundleInstanceScratch,
+  type BundleStyle,
+  type EdgeAggregation,
+  EdgeOpacityMask,
+} from "../lod/edge_aggregation.ts";
 import { forEachSlotRun } from "../lod/runs.ts";
 import { type ProxyRadiusHost, ProxyRadiusTable } from "../lod/proxy_radius.ts";
 import type { CrossfadeScheduler } from "../lod/crossfade.ts";
@@ -98,16 +106,20 @@ import {
   createSimulationBuffers,
   createSimulationPipeline,
   DEAD_SLOT_RADIUS,
+  EDGE_BUNDLE_STRIDE,
+  lodEdgeDispatchCount,
   NODE_FLAG_DEAD,
   NODE_FLAG_HIDDEN_LOD,
   NODE_FLAG_PINNED,
   readbackPositions,
   recordSimulationStepWithOptions,
+  releaseEdgeBundles,
   type SimulationBindGroups,
   type SimulationBuffers,
   type SimulationPipeline,
   startSettlingTelemetry,
   updateSimulationUniforms,
+  uploadEdgeBundles,
   uploadLiveIndices,
   writeIdentityLiveIndices,
   writeOpaqueNodeAlpha,
@@ -290,6 +302,18 @@ interface WasmEngine {
     baseRadius: number,
     padding: number,
   ): Float32Array;
+  /**
+   * Aggregate the edge set against a semantic-LOD visible cut.
+   *
+   * Returns `[liveCount, bundleCount, liveEdges…, (source, target, weight)…]`;
+   * see `lod/edge_aggregation.ts` for the decode.
+   */
+  aggregateLodEdges(
+    edgeSources: Uint32Array,
+    edgeTargets: Uint32Array,
+    parent: Uint32Array,
+    visible: Uint8Array,
+  ): Uint32Array;
   /** Release the WASM-side engine and its linear-memory allocations */
   free(): void;
 }
@@ -337,6 +361,29 @@ interface GPUBuffers {
   /** Allocated edge capacity (may be > edgeCount for incremental mutations) */
   edgeCapacity: number;
 }
+
+/**
+ * Floats per edge in the render attribute buffer:
+ * width, r, g, b, selected, hovered, curvature, opacity.
+ */
+const EDGE_ATTR_FLOATS = 8;
+
+/** Index of the opacity channel within an edge's attribute row. */
+const EDGE_ATTR_OPACITY = 7;
+
+/**
+ * How a collapsed-edge bundle is drawn.
+ *
+ * One neutral style for every bundle: a bundle stands for a set of edges of
+ * possibly different types, so borrowing one member's colour would claim more
+ * than the aggregation knows. Width scales with the bundle count inside
+ * `buildBundleInstances`.
+ */
+const LOD_BUNDLE_STYLE: BundleStyle = {
+  width: 1.5,
+  color: [0.55, 0.6, 0.7],
+  opacity: 0.85,
+};
 
 /**
  * Compute bounding box from position arrays.
@@ -447,6 +494,31 @@ export class GraphMother {
   private activeIndexShadow: Uint32Array | null = null;
   /** Render radii borrowed by the current collapsed proxies. */
   private readonly lodProxies = new ProxyRadiusTable();
+  /** Opacities borrowed from the source edges the current cut hides. */
+  private readonly lodEdgeOpacity = new EdgeOpacityMask();
+  /** Reused instance rows for the bundle draw, so a transition allocates nothing. */
+  private readonly lodBundleScratch: BundleInstanceScratch = {
+    indices: new Uint32Array(0),
+    attributes: new Float32Array(0),
+  };
+  /**
+   * Buffers the collapsed-edge bundles are drawn from, or null before the
+   * first aggregation.
+   *
+   * Allocated at the render edge capacity and then only ever written: a bundle
+   * count can never exceed the source edge count — every bundle stands for at
+   * least one edge — so no band transition can outgrow them, and the bind group
+   * built against them survives every collapse and expand. They are created
+   * lazily because a graph that never collapses anything would otherwise carry
+   * 40 bytes per edge it never reads.
+   */
+  private lodEdgeRenderBuffers:
+    | { indices: GPUBuffer; attributes: GPUBuffer; capacity: number }
+    | null = null;
+  /** Bundle instances to draw this frame; 0 when no aggregation is live. */
+  private lodBundleDrawCount = 0;
+  /** Whether the "no WASM engine, no edge aggregation" warning has been issued. */
+  private edgeAggregationUnavailableWarned = false;
 
   // Components
   private viewport: Viewport;
@@ -518,6 +590,7 @@ export class GraphMother {
   private readonly simBindGroupSlot = this.paritySets.slot<SimulationBindGroups>("simulation");
   private readonly nodeBindGroupSlot = this.paritySets.slot<GPUBindGroup>("node render");
   private readonly edgeBindGroupSlot = this.paritySets.slot<GPUBindGroup>("edge render");
+  private readonly lodEdgeBindGroupSlot = this.paritySets.slot<GPUBindGroup>("lod edge render");
   private readonly algorithmBindGroupSlot = this.paritySets.slot<AlgorithmBindGroups>("algorithm");
   private readonly collisionBindGroupSlot = this.paritySets.slot<CollisionBindGroup>("collision");
   private readonly gridCollisionBindGroupSlot = this.paritySets.slot<GridCollisionBindGroups>(
@@ -1106,6 +1179,10 @@ export class GraphMother {
         // Kept in step with the uniform written above by both reading the
         // same field; the list itself is maintained by refreshActiveIndices.
         activeCount: this.simBuffers.activeCount,
+        // Undefined unless an LOD aggregation is uploaded, in which case the
+        // spring pass runs over the visible edges plus the bundles instead of
+        // over every edge. Same source as the two counts the uniform carries.
+        lodEdgeCount: lodEdgeDispatchCount(this.simBuffers),
       },
     );
 
@@ -1328,6 +1405,24 @@ export class GraphMother {
         this.viewportBindGroup,
         this.edgeBindGroup,
         this.state.edgeCount,
+      );
+    }
+
+    // Collapsed-edge bundles: the same pipeline over their own instance
+    // buffers, drawn after the source edges so a thick bundle sits above the
+    // edges it stands for rather than under them. The originals leading into
+    // hidden nodes are already at zero opacity, so nothing is drawn twice.
+    const lodEdgeBindGroup = this.lodEdgeBindGroupSlot.current;
+    if (
+      this.edgePipeline && this.viewportBindGroup && lodEdgeBindGroup &&
+      this.lodBundleDrawCount > 0
+    ) {
+      renderEdges(
+        renderPass,
+        this.edgePipeline,
+        this.viewportBindGroup,
+        lodEdgeBindGroup,
+        this.lodBundleDrawCount,
       );
     }
 
@@ -1908,6 +2003,7 @@ export class GraphMother {
     this.hierarchy = null;
     this.resetNodeMass();
     this.resetLodProxyRadii();
+    this.releaseLodEdgeAggregation();
 
     if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
@@ -2074,6 +2170,10 @@ export class GraphMother {
 
     this.nodeBindGroupSlot.clear();
     this.edgeBindGroupSlot.clear();
+    // The bundle instances describe the edge set going away, and their bind
+    // group holds the pipeline these buffers belonged to.
+    this.destroyLodEdgeRenderBuffers();
+    this.lodEdgeOpacity.release(null);
   }
 
   // ==========================================================================
@@ -3256,6 +3356,210 @@ export class GraphMother {
     this.flushNodeAttributeRows(this.lodProxies.release(this.proxyRadiusHost()));
   }
 
+  /**
+   * Aggregate the edge set against the LOD cut and hand it to both consumers.
+   *
+   * The walk is WASM's: mapping every endpoint to its lowest visible ancestor
+   * is the one genuinely O(E) step of a transition, and the design's budget for
+   * the whole transition is 4 ms. There is deliberately no TypeScript
+   * derivation — the same no-fallback rule the containment hierarchy follows,
+   * and for the same reason: a second implementation is a second answer.
+   *
+   * Nothing here touches simulation alpha: an LOD transition must never reheat
+   * the simulation.
+   */
+  private aggregateLodEdges(visible: Uint8Array): void {
+    const gs = this.graphState;
+    if (!gs || !this.simBuffers) return;
+    const hierarchy = this.getHierarchy();
+    if (!hierarchy) return;
+
+    if (!this.wasmEngine) {
+      if (!this.edgeAggregationUnavailableWarned) {
+        this.edgeAggregationUnavailableWarned = true;
+        console.warn(
+          "[GraphMother] no WASM engine; LOD edge aggregation is unavailable. Collapsing a " +
+            "subtree will drop its cross-cutting dependency attractions rather than " +
+            "transferring them to the proxy, so the collapsed layout will differ from the " +
+            "expanded one.",
+        );
+      }
+      return;
+    }
+
+    const edgeCount = gs.edgeCount;
+    const aggregation = aggregateEdges(
+      this.wasmEngine,
+      gs.edgeSources.subarray(0, edgeCount),
+      gs.edgeTargets.subarray(0, edgeCount),
+      hierarchy.columns.parent,
+      visible,
+    );
+
+    uploadEdgeBundles(
+      this.gpuContext.device,
+      this.simBuffers,
+      aggregation.liveEdges,
+      aggregation.bundles,
+    );
+    this.uploadBundleInstances(aggregation);
+    this.flushEdgeAttributeRows(
+      this.lodEdgeOpacity.apply(aggregation.liveEdges, edgeCount, this.edgeOpacityHost()),
+    );
+  }
+
+  /**
+   * Return the spring pass and the edge render to the source edge list.
+   *
+   * Called when the cut is released, and on any topology change: an
+   * aggregation names slots and edge indices of the graph it was computed
+   * against, and both move underneath it.
+   */
+  private releaseLodEdgeAggregation(): void {
+    if (this.simBuffers) releaseEdgeBundles(this.simBuffers);
+    this.lodBundleDrawCount = 0;
+    if (this.lodEdgeOpacity.size > 0) {
+      this.flushEdgeAttributeRows(this.lodEdgeOpacity.release(this.edgeOpacityHost()));
+    }
+    this.markRenderDirty();
+  }
+
+  /**
+   * The two edge-attribute operations the opacity mask drives.
+   *
+   * Edges are identified by index and nothing else — unlike a node, an edge has
+   * no producer id to follow — so an index past the live edge count names an
+   * edge a mutation has already removed and is dropped. That is the one case
+   * where a restore is lost: swap-remove moves edges, so a saved opacity can
+   * only be given back to whatever now holds its index. Leaving an edge
+   * permanently invisible would be worse, and the value in question is the
+   * default for every edge the consumer has not restyled.
+   */
+  private edgeOpacityHost() {
+    const gs = this.graphState!;
+    return {
+      opacityOf: (edge: number) => gs.edgeAttributes[edge * EDGE_ATTR_FLOATS + EDGE_ATTR_OPACITY],
+      setOpacity: (edge: number, opacity: number) => {
+        if (edge < 0 || edge >= gs.edgeCount) return false;
+        const index = edge * EDGE_ATTR_FLOATS + EDGE_ATTR_OPACITY;
+        if (gs.edgeAttributes[index] === opacity) return false;
+        gs.edgeAttributes[index] = opacity;
+        return true;
+      },
+    };
+  }
+
+  /**
+   * Upload the attribute rows of `edges` as one write per contiguous run.
+   *
+   * The edge twin of {@link flushNodeAttributeRows}, and safe for the same
+   * reason: `gs.edgeAttributes` is the CPU-side authority for the render
+   * buffer, so a run may span edges the caller never touched.
+   */
+  private flushEdgeAttributeRows(edges: number[]): void {
+    const gs = this.graphState;
+    if (!gs || !this.buffers || edges.length === 0) return;
+
+    const { device } = this.gpuContext;
+    const buffer = this.buffers.edgeAttributes;
+    forEachSlotRun(edges, edges.length, (lo, hi) => {
+      device.queue.writeBuffer(
+        buffer,
+        lo * EDGE_ATTR_FLOATS * 4,
+        toArrayBuffer(gs.edgeAttributes.subarray(lo * EDGE_ATTR_FLOATS, hi * EDGE_ATTR_FLOATS)),
+      );
+    });
+    this.markRenderDirty();
+  }
+
+  /**
+   * Write the bundle instances the edge pipeline draws this frame.
+   *
+   * Bundles go through the ordinary edge pipeline — same shader, same vertex
+   * layout, a second bind group over their own index and attribute buffers —
+   * so a collapsed dependency looks like the edges it replaces, only thicker.
+   */
+  private uploadBundleInstances(aggregation: EdgeAggregation): void {
+    this.lodBundleDrawCount = 0;
+    if (!this.buffers || aggregation.bundleCount === 0) {
+      this.markRenderDirty();
+      return;
+    }
+
+    const instances = buildBundleInstances(
+      aggregation.bundles,
+      aggregation.bundleCount,
+      LOD_BUNDLE_STYLE,
+      EDGE_ATTR_FLOATS,
+      this.lodBundleScratch,
+    );
+
+    const buffers = this.ensureLodEdgeRenderBuffers();
+    const { device } = this.gpuContext;
+    device.queue.writeBuffer(buffers.indices, 0, toArrayBuffer(instances.indices));
+    device.queue.writeBuffer(buffers.attributes, 0, toArrayBuffer(instances.attributes));
+    this.lodBundleDrawCount = instances.count;
+    this.markRenderDirty();
+  }
+
+  /** Allocate the bundle render buffers at edge capacity on first use. */
+  private ensureLodEdgeRenderBuffers(): { indices: GPUBuffer; attributes: GPUBuffer } {
+    const capacity = Math.max(this.buffers!.edgeCapacity, 1);
+    const existing = this.lodEdgeRenderBuffers;
+    if (existing && existing.capacity >= capacity) return existing;
+
+    this.destroyLodEdgeRenderBuffers();
+    const { device } = this.gpuContext;
+    const created = {
+      indices: device.createBuffer({
+        label: "LOD Bundle Indices",
+        size: capacity * 2 * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      }),
+      attributes: device.createBuffer({
+        label: "LOD Bundle Attributes",
+        size: capacity * EDGE_ATTR_FLOATS * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      }),
+      capacity,
+    };
+    this.lodEdgeRenderBuffers = created;
+    this.rebuildLodEdgeBindGroup();
+    return created;
+  }
+
+  /** Drop the bundle render buffers and the bind group built against them. */
+  private destroyLodEdgeRenderBuffers(): void {
+    const existing = this.lodEdgeRenderBuffers;
+    if (!existing) return;
+    existing.indices.destroy();
+    existing.attributes.destroy();
+    this.lodEdgeRenderBuffers = null;
+    this.lodBundleDrawCount = 0;
+    this.lodEdgeBindGroupSlot.clear();
+  }
+
+  /** Rebuild the bundle draw's bind group for both ping-pong parities. */
+  private rebuildLodEdgeBindGroup(): void {
+    const buffers = this.lodEdgeRenderBuffers;
+    if (!buffers || !this.edgePipeline) {
+      this.lodEdgeBindGroupSlot.clear();
+      return;
+    }
+    const { device } = this.gpuContext;
+    const edgePipeline = this.edgePipeline;
+    this.lodEdgeBindGroupSlot.rebuild(
+      (view) =>
+        createEdgeBindGroup(
+          device,
+          edgePipeline,
+          view.positions,
+          buffers.indices,
+          buffers.attributes,
+        ),
+    );
+  }
+
   /** The per-slot readings and radius write the proxy table drives. */
   private proxyRadiusHost(): ProxyRadiusHost {
     const gs = this.graphState!;
@@ -3734,9 +4038,15 @@ export class GraphMother {
       );
     }
 
+    // The bundle render buffers are sized to the edge capacity; the next
+    // aggregation reallocates them against the new one.
+    this.destroyLodEdgeRenderBuffers();
+
     // === Simulation edge buffers ===
     this.simBuffers.edgeSources.destroy();
     this.simBuffers.edgeTargets.destroy();
+    this.simBuffers.liveEdgeIndices.destroy();
+    this.simBuffers.edgeBundles.destroy();
 
     const edgeBytes = Math.max(newCapacity * 4, 4);
     this.simBuffers.edgeSources = device.createBuffer({
@@ -3749,6 +4059,20 @@ export class GraphMother {
       size: edgeBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // Not an LOD operation: the aggregation named the edge set that just
+    // changed, so it is released rather than carried, and the next band
+    // transition recomputes it against the new one.
+    this.simBuffers.liveEdgeIndices = device.createBuffer({
+      label: "Sim Live Edge Indices",
+      size: edgeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    this.simBuffers.edgeBundles = device.createBuffer({
+      label: "Sim Edge Bundles",
+      size: edgeBytes * EDGE_BUNDLE_STRIDE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    releaseEdgeBundles(this.simBuffers);
     this.simBuffers.edgeCapacity = newCapacity;
 
     // Upload edge source/target data
@@ -3830,6 +4154,10 @@ export class GraphMother {
           createEdgeBindGroup(device, edgePipeline, view.positions, edgeIndices, edgeAttributes),
       );
     }
+
+    // Bundles read the same ping-pong positions buffer as the source edges, so
+    // their bind group has to be rebuilt on exactly the same occasions.
+    this.rebuildLodEdgeBindGroup();
   }
 
   /**
@@ -5334,6 +5662,8 @@ export class GraphMother {
       uploadNodeAlpha: (scheduler) => this.uploadNodeAlpha(scheduler),
       uploadNodeMass: (mass) => this.uploadNodeMass(mass),
       setCollapsedProxies: (proxies, radii) => this.setCollapsedProxies(proxies, radii),
+      aggregateEdges: (visible) => this.aggregateLodEdges(visible),
+      releaseEdgeAggregation: () => this.releaseLodEdgeAggregation(),
       translateNodeRange: (lo, hi, dx, dy) => this.translateNodeRange(lo, hi, dx, dy),
       syncCards: (entries) => this.syncDomCards(entries),
       emit: (event) => this.events.emit(event),
@@ -7331,6 +7661,8 @@ export class GraphMother {
       this.simBuffers.nodeMass.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
+      this.simBuffers.liveEdgeIndices.destroy();
+      this.simBuffers.edgeBundles.destroy();
       this.simBuffers.clearUniforms.destroy();
       this.simBuffers.repulsionUniforms.destroy();
       this.simBuffers.springUniforms.destroy();
@@ -7342,6 +7674,10 @@ export class GraphMother {
     }
     this.nodeMassShadow = null;
     this.activeIndexShadow = null;
+    // The bundle draw reads the destroyed position buffers through its own
+    // bind group, and its instance buffers describe the edge set going away.
+    this.destroyLodEdgeRenderBuffers();
+    this.lodEdgeOpacity.release(null);
     // Every parity-indexed bind group references at least one buffer destroyed
     // above — including the node/edge render sets, which read the simulation
     // position buffers directly. rebuildAllBindGroups recreates them once

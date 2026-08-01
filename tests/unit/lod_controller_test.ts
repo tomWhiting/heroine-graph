@@ -138,6 +138,8 @@ const HOST_SURFACE: readonly string[] = [
   "uploadNodeAlpha",
   "uploadNodeMass",
   "setCollapsedProxies",
+  "aggregateEdges",
+  "releaseEdgeAggregation",
   "translateNodeRange",
   "syncCards",
   "emit",
@@ -161,6 +163,10 @@ interface Recorder {
   mass: Float32Array[];
   massIdentities: Float32Array[];
   proxies: ProxyWrite[];
+  /** Every visible mask handed to `aggregateEdges`, copied. */
+  aggregations: Uint8Array[];
+  /** How many times the aggregation was released. */
+  aggregationReleases: number;
   translations: TranslateWrite[];
   /** Host method names in call order, for claims about relative ordering. */
   calls: string[];
@@ -189,6 +195,8 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     mass: [],
     massIdentities: [],
     proxies: [],
+    aggregations: [],
+    aggregationReleases: 0,
     translations: [],
     calls: [],
   };
@@ -216,9 +224,18 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     uploadNodeMass: (mass: Float32Array) => {
       state.mass.push(mass.slice());
       state.massIdentities.push(mass);
+      state.calls.push("uploadNodeMass");
     },
     setCollapsedProxies: (proxies: Uint32Array, radii: Float32Array) => {
       state.proxies.push({ slots: Array.from(proxies), radii: Array.from(radii) });
+    },
+    aggregateEdges: (visible: Uint8Array) => {
+      state.aggregations.push(visible.slice());
+      state.calls.push("aggregateEdges");
+    },
+    releaseEdgeAggregation: () => {
+      state.aggregationReleases++;
+      state.calls.push("releaseEdgeAggregation");
     },
     translateNodeRange: (lo: number, hi: number, dx: number, dy: number) => {
       state.translations.push({ lo, hi, dx, dy });
@@ -882,6 +899,78 @@ Deno.test("proxies: a capacity change re-declares the live collapsed set", () =>
   controller.handleNodeCapacityChange(64, 16);
   assert(log.mass.length > uploads);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+});
+
+// =============================================================================
+// Edge aggregation — the seam, and when it fires
+// =============================================================================
+
+Deno.test("edges: the first cut aggregates against the visible mask", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // Node 1 stands for its subtree, so 3 and 4 are off the cut and every edge
+  // touching them has to be bundled onto it.
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0]);
+  assertNoReheat(log);
+});
+
+Deno.test("edges: aggregation runs on the same transition boundary as mass", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  const before = log.aggregations.length;
+
+  controller.expandNode(1, 16);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
+  // Ordering is load-bearing: mass has to be uploaded before the aggregation
+  // is, or a bundle arrives at a proxy the shaders still think weighs one node.
+  const tail = log.calls.slice(log.calls.lastIndexOf("uploadNodeMass"));
+  assertEquals(tail.includes("aggregateEdges"), true);
+  assert(log.aggregations.length > before, "an expand must re-aggregate");
+});
+
+Deno.test("edges: a transition that changes nothing costs no aggregation", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.expandNode(1, 16);
+  const before = log.aggregations.length;
+
+  // An imperative expand always rebuilds the cut, but this one asks for a
+  // state the cut is already in: nothing enters, nothing leaves, and there is
+  // nothing to re-walk 253 000 edges for.
+  controller.expandNode(1, 32);
+  assertEquals(log.aggregations.length, before);
+});
+
+Deno.test("edges: disabling LOD releases the aggregation", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(log.aggregationReleases, 0);
+
+  controller.setConfig({ enabled: false });
+  assertEquals(log.aggregationReleases, 1, "springs must go back to the source edge list");
+  assertNoReheat(log);
+});
+
+Deno.test("edges: a node-capacity change leaves the aggregation alone", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  const before = log.aggregations.length;
+
+  // Growing the node buffers reallocates mass and alpha, so those are
+  // re-declared — but not the edge buffers, and the aggregation names slots
+  // and edge indices that a capacity change preserves. Re-walking the edge
+  // array here would be the transition budget spent on nothing.
+  controller.handleNodeCapacityChange(64, 16);
+
+  assertEquals(log.aggregations.length, before);
+  assertEquals(log.aggregationReleases, 0);
+  assertNoReheat(log);
 });
 
 Deno.test("lifecycle: no hierarchy means no cut and no host writes", () => {

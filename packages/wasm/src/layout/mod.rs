@@ -6,6 +6,7 @@
 
 pub mod bubble;
 pub mod codebase;
+pub mod edge_aggregation;
 pub mod community;
 pub mod tidy_tree;
 

@@ -10,6 +10,24 @@
 export { CrossfadeScheduler, NODE_ALPHA_OPAQUE, NODE_ALPHA_TRANSPARENT } from "./crossfade.ts";
 export { commitNodeMass, NODE_MASS_HIDDEN, NODE_MASS_UNIT, rollUpMass } from "./mass.ts";
 export type { MassDirtyRange } from "./mass.ts";
+export {
+  aggregateEdges,
+  buildBundleInstances,
+  BUNDLE_MAX_WIDTH_SCALE,
+  decodeEdgeAggregation,
+  EDGE_AGGREGATION_HEADER,
+  EDGE_BUNDLE_STRIDE,
+  EDGE_OPACITY_HIDDEN,
+  EdgeOpacityMask,
+} from "./edge_aggregation.ts";
+export type {
+  BundleInstances,
+  BundleInstanceScratch,
+  BundleStyle,
+  EdgeAggregation,
+  EdgeAggregator,
+  EdgeOpacityHost,
+} from "./edge_aggregation.ts";
 export { DEFAULT_LOD_CONFIG, resolveLodConfig } from "./config.ts";
 export type { LodConfig } from "./config.ts";
 export { defaultLodPolicy } from "./policy.ts";

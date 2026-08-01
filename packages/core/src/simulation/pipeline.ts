@@ -165,6 +165,15 @@ export interface SimulationPipeline {
     clearForces: GPUComputePipeline;
     repulsion: GPUComputePipeline;
     springs: GPUComputePipeline;
+    /**
+     * Spring pass under a live LOD cut: dispatches over the visible source
+     * edges plus the aggregated bundles instead of over every edge.
+     *
+     * A second entry point rather than a branch in the first, so that with no
+     * cut the pipeline, its bind group and its arithmetic are the ones that
+     * shipped before edge aggregation existed (SC-005).
+     */
+    springsBundled: GPUComputePipeline;
     integrate: GPUComputePipeline;
   };
   /** Pipeline configuration */
@@ -191,6 +200,16 @@ export interface SimulationBuffers {
   // Edge data
   edgeSources: GPUBuffer;
   edgeTargets: GPUBuffer;
+  // Active-edge list (u32 per edge): liveEdgeIndices[0, activeEdgeCount) are
+  // the source edges with both endpoints in the LOD cut, ascending. The twin
+  // of liveIndices on the node side, and allocated at edgeCapacity for the
+  // same reason: a transition is a contents write, never a reallocation.
+  liveEdgeIndices: GPUBuffer;
+  // Aggregated cross-boundary edges, three u32 per bundle
+  // ([source, target, weight]) over bundleCount entries. A bundle count can
+  // never exceed the source edge count — every bundle stands for at least one
+  // edge — so edgeCapacity bundles is a hard bound, not a heuristic.
+  edgeBundles: GPUBuffer;
   // Uniform buffers for each stage
   clearUniforms: GPUBuffer;
   repulsionUniforms: GPUBuffer;
@@ -225,6 +244,16 @@ export interface SimulationBuffers {
   // the dispatch size and the shaders' `active_count` uniform must come from
   // this one field, or the two disagree and threads read past the list.
   activeCount: number;
+  // Whether an LOD edge aggregation is uploaded. Distinct from the two counts
+  // below being zero, which is a legal aggregation — a cut can leave every
+  // edge inside a collapsed subtree, and that must dispatch nothing rather
+  // than fall back to springing every edge in the graph.
+  lodEdgesActive: boolean;
+  // Entries of liveEdgeIndices and edgeBundles the bundled spring pass covers,
+  // meaningful only while lodEdgesActive.
+  // See uploadEdgeBundles / releaseEdgeBundles / lodEdgeDispatchCount.
+  activeEdgeCount: number;
+  bundleCount: number;
   // Allocated capacity (may be larger than count for incremental mutations)
   nodeCapacity: number;
   edgeCapacity: number;
@@ -286,6 +315,15 @@ export function createSimulationPipeline(
     },
   });
 
+  const springsBundledPipeline = device.createComputePipeline({
+    label: "Springs Pipeline (LOD bundles)",
+    layout: "auto",
+    compute: {
+      module: springsModule,
+      entryPoint: "main_bundled",
+    },
+  });
+
   const integratePipeline = device.createComputePipeline({
     label: "Integration Pipeline",
     layout: "auto",
@@ -300,6 +338,7 @@ export function createSimulationPipeline(
       clearForces: clearForcesPipeline,
       repulsion: repulsionPipeline,
       springs: springsPipeline,
+      springsBundled: springsBundledPipeline,
       integrate: integratePipeline,
     },
     config: finalConfig,
@@ -348,6 +387,17 @@ export interface RecordSimulationOptions {
    * both must come from that one field.
    */
   activeCount?: number | undefined;
+  /**
+   * Threads for the bundled spring pass — pass {@link lodEdgeDispatchCount},
+   * whose two components {@link updateSimulationUniforms} writes into the
+   * shader's `active_edge_count` and `bundle_count`.
+   *
+   * `undefined` runs the un-bundled pass over every edge, which is the shipped
+   * behaviour when no LOD cut is live. Zero is a live aggregation covering
+   * nothing — every edge is inside a collapsed subtree — and dispatches no
+   * spring pass at all.
+   */
+  lodEdgeCount?: number | undefined;
 }
 
 /**
@@ -396,13 +446,30 @@ export function recordSimulationStepWithOptions(
     repulsionPass.end();
   }
 
-  // Stage 3: Compute spring forces (skip for algorithms that handle their own positioning)
-  if (edgeCount > 0 && !options.skipSprings) {
-    const springsPass = encoder.beginComputePass({ label: "Springs" });
-    springsPass.setPipeline(pipeline.pipelines.springs);
-    springsPass.setBindGroup(0, bindGroups.springs);
-    springsPass.dispatchWorkgroups(edgeWorkgroups);
-    springsPass.end();
+  // Stage 3: Compute spring forces (skip for algorithms that handle their own
+  // positioning). Under a live LOD cut the pass runs over the aggregated edge
+  // set instead — the visible source edges plus the bundles standing in for
+  // everything that crosses a collapse boundary. Every source edge is covered
+  // by exactly one of the two, so an edge is never sprung twice and a
+  // collapsed subtree's cross-cutting attraction is transferred rather than
+  // dropped.
+  const lodEdgeCount = options.lodEdgeCount;
+  if (!options.skipSprings) {
+    if (lodEdgeCount !== undefined) {
+      if (lodEdgeCount > 0) {
+        const springsPass = encoder.beginComputePass({ label: "Springs (LOD bundles)" });
+        springsPass.setPipeline(pipeline.pipelines.springsBundled);
+        springsPass.setBindGroup(0, bindGroups.springsBundled);
+        springsPass.dispatchWorkgroups(calculateWorkgroups(lodEdgeCount, workgroupSize));
+        springsPass.end();
+      }
+    } else if (edgeCount > 0) {
+      const springsPass = encoder.beginComputePass({ label: "Springs" });
+      springsPass.setPipeline(pipeline.pipelines.springs);
+      springsPass.setBindGroup(0, bindGroups.springs);
+      springsPass.dispatchWorkgroups(edgeWorkgroups);
+      springsPass.end();
+    }
   }
 
   // Stage 4: Integration — over ALL slots. See the kernel's own note: the
@@ -422,6 +489,8 @@ export interface SimulationBindGroups {
   clearForces: GPUBindGroup;
   repulsion: GPUBindGroup;
   springs: GPUBindGroup;
+  /** Springs over the LOD active-edge list and bundles; see `springsBundled`. */
+  springsBundled: GPUBindGroup;
   integration: GPUBindGroup;
 }
 
@@ -474,6 +543,25 @@ export function createSimulationBindGroups(
     ],
   });
 
+  // Springs bind group under a live cut (bindings 0-8): the un-cut bindings
+  // plus the active-edge list, the bundle table and the per-node mass each
+  // arriving spring is divided by.
+  const springsBundled = device.createBindGroup({
+    label: "Springs Bind Group (LOD bundles)",
+    layout: pipeline.pipelines.springsBundled.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: buffers.springUniforms } },
+      { binding: 1, resource: { buffer: buffers.positions } },
+      { binding: 2, resource: { buffer: buffers.forces } },
+      { binding: 3, resource: { buffer: buffers.edgeSources } },
+      { binding: 4, resource: { buffer: buffers.edgeTargets } },
+      { binding: 5, resource: { buffer: buffers.nodeFlags } },
+      { binding: 6, resource: { buffer: buffers.liveEdgeIndices } },
+      { binding: 7, resource: { buffer: buffers.edgeBundles } },
+      { binding: 8, resource: { buffer: buffers.nodeMass } },
+    ],
+  });
+
   // Integration bind group (bindings 0-7)
   const integration = device.createBindGroup({
     label: "Integration Bind Group",
@@ -491,7 +579,7 @@ export function createSimulationBindGroups(
     ],
   });
 
-  return { clearForces, repulsion, springs, integration };
+  return { clearForces, repulsion, springs, springsBundled, integration };
 }
 
 /**
@@ -584,6 +672,87 @@ export function uploadLiveIndices(
 }
 
 /**
+ * `u32`s per bundle in {@link SimulationBuffers.edgeBundles}: source, target,
+ * weight. Mirrors `BUNDLE_STRIDE` in springs_simple.comp.wgsl — WGSL has no
+ * preprocessor, so the constant is stated on both sides.
+ */
+export const EDGE_BUNDLE_STRIDE = 3;
+
+/**
+ * Replace the LOD active-edge list and bundle table, and set the two counts
+ * the bundled spring pass dispatches over.
+ *
+ * Contents only: both buffers are allocated at edge capacity, so a transition
+ * never changes a buffer identity and never invalidates a bind group. The
+ * counts move with the contents, in one call, so a caller cannot leave the
+ * dispatch covering entries it did not write.
+ *
+ * `liveEdges` holds source edge indices, ascending. `bundles` is
+ * `[source, target, weight]` per bundle. Entries naming a slot that is flagged
+ * inert are tolerated and skipped by the shader's mask, so a list that has not
+ * caught up with a flag change costs a wasted thread rather than a wrong force.
+ *
+ * @throws GraphMotherError if either list exceeds the allocated capacity.
+ */
+export function uploadEdgeBundles(
+  device: GPUDevice,
+  buffers: SimulationBuffers,
+  liveEdges: Uint32Array,
+  bundles: Uint32Array,
+): void {
+  const bundleCount = Math.floor(bundles.length / EDGE_BUNDLE_STRIDE);
+  if (liveEdges.length > buffers.edgeCapacity || bundleCount > buffers.edgeCapacity) {
+    throw new GraphMotherError(
+      ErrorCode.INVALID_GRAPH_DATA,
+      `LOD edge aggregation of ${liveEdges.length} live edges and ${bundleCount} bundles ` +
+        `exceeds the allocated capacity of ${buffers.edgeCapacity} edges`,
+      { liveEdges: liveEdges.length, bundleCount, edgeCapacity: buffers.edgeCapacity },
+      "Both lists are bounded by the source edge count, so this means the aggregation " +
+        "was computed against a larger edge set than the buffers were allocated for.",
+    );
+  }
+
+  buffers.lodEdgesActive = true;
+  buffers.activeEdgeCount = liveEdges.length;
+  buffers.bundleCount = bundleCount;
+  if (liveEdges.length > 0) {
+    device.queue.writeBuffer(buffers.liveEdgeIndices, 0, toArrayBuffer(liveEdges));
+  }
+  if (bundleCount > 0) {
+    device.queue.writeBuffer(
+      buffers.edgeBundles,
+      0,
+      toArrayBuffer(bundles.subarray(0, bundleCount * EDGE_BUNDLE_STRIDE)),
+    );
+  }
+}
+
+/**
+ * Return the spring pass to the whole source edge list.
+ *
+ * Clearing the flag is the whole release: the un-bundled entry point binds
+ * neither list, so their contents become unreachable rather than merely unused.
+ */
+export function releaseEdgeBundles(buffers: SimulationBuffers): void {
+  buffers.lodEdgesActive = false;
+  buffers.activeEdgeCount = 0;
+  buffers.bundleCount = 0;
+}
+
+/**
+ * Threads the bundled spring pass needs — the active-edge list followed by the
+ * bundles — or `undefined` when no aggregation is live and springs should run
+ * over every edge.
+ *
+ * The dispatch size and the shader's two counts must both come from these
+ * fields, or threads read past one list into the other.
+ */
+export function lodEdgeDispatchCount(buffers: SimulationBuffers): number | undefined {
+  if (!buffers.lodEdgesActive) return undefined;
+  return buffers.activeEdgeCount + buffers.bundleCount;
+}
+
+/**
  * Create simulation buffers
  *
  * All position, velocity, force, and readback buffers use vec2<f32> layout
@@ -657,6 +826,23 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  // LOD edge aggregation, allocated at edge capacity so that a band transition
+  // is a contents write and never a reallocation — a reallocation would
+  // invalidate every prebuilt ping-pong bind group. Both bounds are exact
+  // rather than generous: the active-edge list is a subset of the source edges,
+  // and every bundle stands for at least one source edge.
+  // COPY_SRC is for test readback only, the same allowance nodeAlpha makes.
+  const liveEdgeIndices = device.createBuffer({
+    label: "Sim Live Edge Indices",
+    size: edgeBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  const edgeBundles = device.createBuffer({
+    label: "Sim Edge Bundles",
+    size: edgeBytes * EDGE_BUNDLE_STRIDE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+
   // Uniform buffers (aligned to 16 bytes)
   // ClearUniforms: 16 bytes (node_count u32 + padding)
   const clearUniforms = device.createBuffer({
@@ -672,10 +858,10 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // SpringUniforms: 16 bytes (edge_count + 2 f32 + padding)
+  // SpringUniforms: 32 bytes (edge_count + 2 f32 + the two LOD counts + padding)
   const springUniforms = device.createBuffer({
     label: "Spring Uniforms",
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -757,6 +943,8 @@ export function createSimulationBuffers(
     prevForces,
     edgeSources,
     edgeTargets,
+    liveEdgeIndices,
+    edgeBundles,
     clearUniforms,
     repulsionUniforms,
     springUniforms,
@@ -769,6 +957,9 @@ export function createSimulationBuffers(
     readback,
     nodeCount,
     activeCount: nodeCount,
+    lodEdgesActive: false,
+    activeEdgeCount: 0,
+    bundleCount: 0,
     nodeCapacity: effectiveNodeCap,
     edgeCapacity: effectiveEdgeCap,
   };
@@ -816,13 +1007,18 @@ export function updateSimulationUniforms(
   repulsionView.setUint32(16, buffers.activeCount, true);
   device.queue.writeBuffer(buffers.repulsionUniforms, 0, repulsionData);
 
-  // SpringUniforms: { edge_count, spring_strength, rest_length, _padding }
-  const springData = new ArrayBuffer(16);
+  // SpringUniforms:
+  //   { edge_count, spring_strength, rest_length, active_edge_count,
+  //     bundle_count, 3 x padding }
+  // The last two are read only by the bundled entry point and are 0 unless an
+  // LOD aggregation has been uploaded.
+  const springData = new ArrayBuffer(32);
   const springView = new DataView(springData);
   springView.setUint32(0, edgeCount, true);
   springView.setFloat32(4, forceConfig.springStrength, true);
   springView.setFloat32(8, forceConfig.springLength, true);
-  springView.setUint32(12, 0, true); // padding
+  springView.setUint32(12, buffers.activeEdgeCount, true);
+  springView.setUint32(16, buffers.bundleCount, true);
   device.queue.writeBuffer(buffers.springUniforms, 0, springData);
 
   // IntegrationUniforms: full 48-byte struct
