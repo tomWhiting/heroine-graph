@@ -1228,6 +1228,7 @@ export class GraphMother {
             this.forceConfig,
             this.frameBounds,
             this.maxNodeRadius,
+            this.simBuffers.activeCount,
           );
           recordGridCollisionPass(
             encoder,
@@ -1236,10 +1237,17 @@ export class GraphMother {
             this.gridCollisionBuffers!,
             nodeCount,
             this.forceConfig.collisionIterations,
+            this.simBuffers.activeCount,
           );
         } else {
           // Bounds unavailable — fall back to tiled collision
-          updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+          updateCollisionUniforms(
+            device,
+            this.collisionBuffers,
+            nodeCount,
+            this.forceConfig,
+            this.simBuffers.activeCount,
+          );
           recordCollisionPass(
             encoder,
             this.collisionPipeline,
@@ -1247,11 +1255,20 @@ export class GraphMother {
             nodeCount,
             this.forceConfig.collisionIterations,
             true,
+            this.simBuffers.activeCount,
           );
         }
       } else {
-        // Tiled/simple collision: O(n^2) for small graphs (<=5000 nodes)
-        updateCollisionUniforms(device, this.collisionBuffers, nodeCount, this.forceConfig);
+        // Tiled/simple collision: O(n^2) for small graphs (<=5000 nodes).
+        // The resolve dispatch tracks the LOD cut; the same field feeds the
+        // uniform, so the two can never disagree.
+        updateCollisionUniforms(
+          device,
+          this.collisionBuffers,
+          nodeCount,
+          this.forceConfig,
+          this.simBuffers.activeCount,
+        );
         recordCollisionPass(
           encoder,
           this.collisionPipeline,
@@ -1259,6 +1276,7 @@ export class GraphMother {
           nodeCount,
           this.forceConfig.collisionIterations,
           nodeCount > 1000,
+          this.simBuffers.activeCount,
         );
       }
     }
@@ -4231,7 +4249,14 @@ export class GraphMother {
       const buffers = this.collisionBuffers;
       this.collisionBindGroupSlot.rebuild(
         (view) =>
-          createCollisionBindGroup(device, pipeline, buffers, view.positionsOut, view.nodeFlags),
+          createCollisionBindGroup(
+            device,
+            pipeline,
+            buffers,
+            view.positionsOut,
+            view.nodeFlags,
+            view.liveIndices,
+          ),
       );
     }
 
@@ -4249,6 +4274,7 @@ export class GraphMother {
             displacements,
             view.positionsOut,
             view.nodeFlags,
+            view.liveIndices,
           ),
       );
     }
@@ -4305,6 +4331,18 @@ export class GraphMother {
       edgeTargetsData: this.graphState?.edgeTargets.subarray(0, edgeCount),
       nodeFlags: view.nodeFlags,
       nodeMass: view.nodeMass,
+      // The LOD state, from the same fields the core pipeline reads, so a
+      // plugin's passes are cut the same way the built-in ones are. The
+      // buffers are stable for the buffer set's lifetime; the counts are
+      // per-frame and are consumed by updateUniforms, never captured in a
+      // bind group (see ForceAlgorithm.createBindGroups).
+      liveIndices: view.liveIndices,
+      activeCount: view.activeCount,
+      lodEdgesActive: view.lodEdgesActive,
+      liveEdgeIndices: view.liveEdgeIndices,
+      edgeBundles: view.edgeBundles,
+      activeEdgeCount: view.activeEdgeCount,
+      bundleCount: view.bundleCount,
     };
   }
 

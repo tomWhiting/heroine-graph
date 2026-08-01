@@ -14,9 +14,11 @@
 import { assertAlmostEquals, assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import {
   commitNodeMass,
+  createRollUpMassScratch,
   NODE_MASS_HIDDEN,
   NODE_MASS_UNIT,
   rollUpMass,
+  type RollUpMassScratch,
 } from "../../packages/core/src/lod/mass.ts";
 import {
   buildChildrenCsr,
@@ -194,6 +196,108 @@ Deno.test("rollUpMass: a longer output array is filled only over the slot space"
   rollUpMass(parent, children, [1], out);
   assertEquals(Array.from(out.subarray(0, 7)), [1, 3, 1, 0, 0, 1, 1]);
   assertEquals(Array.from(out.subarray(7)), [-1, -1, -1], "padding must be left alone");
+});
+
+/**
+ * Counts typed-array allocations made inside `run`.
+ *
+ * The three constructors rollUpMass can reach are swapped for counting
+ * subclasses for the duration of the call. Subclass instances still satisfy
+ * `instanceof` and behave identically, so the code under test cannot tell —
+ * which is what makes "allocation-free" a measurement rather than a claim.
+ */
+function countTypedArrayAllocations(run: () => void): number {
+  let count = 0;
+  const originals = {
+    Uint8Array: globalThis.Uint8Array,
+    Uint32Array: globalThis.Uint32Array,
+    Float32Array: globalThis.Float32Array,
+  };
+  for (const name of Object.keys(originals) as (keyof typeof originals)[]) {
+    const Original = originals[name];
+    // deno-lint-ignore no-explicit-any
+    (globalThis as any)[name] = class extends (Original as any) {
+      // deno-lint-ignore no-explicit-any
+      constructor(...args: any[]) {
+        super(...args);
+        count++;
+      }
+    };
+  }
+  try {
+    run();
+  } finally {
+    for (const name of Object.keys(originals) as (keyof typeof originals)[]) {
+      // deno-lint-ignore no-explicit-any
+      (globalThis as any)[name] = originals[name];
+    }
+  }
+  return count;
+}
+
+Deno.test("rollUpMass: a supplied scratch set makes the walk allocation-free", () => {
+  const { parent, children } = tree(SAMPLE);
+  const out = new Float32Array(parent.length);
+  const scratch = createRollUpMassScratch(parent.length);
+
+  // Warm: the probe below must measure the walk, not a first-call cache fill.
+  rollUpMass(parent, children, [1], out, scratch);
+
+  const withScratch = countTypedArrayAllocations(() => {
+    rollUpMass(parent, children, [1], out, scratch);
+    rollUpMass(parent, children, [2], out, scratch);
+  });
+  assertEquals(withScratch, 0, "a transition must allocate nothing");
+
+  // Non-vacuous: without the scratch the same two calls allocate the three
+  // nodeCount-sized working arrays each time. (The `out` array is separate and
+  // already reusable, so it is supplied in both cases.)
+  const withoutScratch = countTypedArrayAllocations(() => {
+    rollUpMass(parent, children, [1], out);
+    rollUpMass(parent, children, [2], out);
+  });
+  assertEquals(withoutScratch, 6, "the probe must see the allocations it exists to count");
+});
+
+Deno.test("rollUpMass: a reused scratch set does not leak the previous collapse", () => {
+  const { parent, children } = tree(SAMPLE);
+  const scratch = createRollUpMassScratch(parent.length);
+
+  // Node 1 collapsed: it carries 3 and 4.
+  assertEquals(
+    Array.from(rollUpMass(parent, children, [1], undefined, scratch)),
+    [1, 3, 1, 0, 0, 1, 1],
+  );
+  // Now node 2 instead. If the scratch's collapsed-set bytes survived, slot 1
+  // would still be a proxy and its children would still be hidden.
+  assertEquals(
+    Array.from(rollUpMass(parent, children, [2], undefined, scratch)),
+    [1, 1, 3, 1, 1, 0, 0],
+  );
+  // And an empty collapse set through the same scratch returns unit mass.
+  assertEquals(
+    Array.from(rollUpMass(parent, children, [], undefined, scratch)),
+    [1, 1, 1, 1, 1, 1, 1],
+  );
+});
+
+Deno.test("rollUpMass: a scratch set the walk would overrun is rejected", () => {
+  const { parent, children } = tree(SAMPLE);
+  const full = createRollUpMassScratch(parent.length);
+
+  for (
+    const [field, short] of [
+      ["collapsed", { ...full, collapsed: new Uint8Array(parent.length - 1) }],
+      ["stackSlot", { ...full, stackSlot: new Uint32Array(parent.length - 1) }],
+      ["stackCarrier", { ...full, stackCarrier: new Uint32Array(parent.length - 1) }],
+    ] as ReadonlyArray<readonly [string, RollUpMassScratch]>
+  ) {
+    assertThrows(
+      () => rollUpMass(parent, children, [1], undefined, short),
+      GraphMotherError,
+      `mass scratch ${field}`,
+    );
+  }
 });
 
 Deno.test("rollUpMass: malformed input throws instead of producing wrong masses", () => {

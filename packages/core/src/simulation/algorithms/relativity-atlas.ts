@@ -29,6 +29,15 @@ import type {
   ForceAlgorithmInfo,
   ForceAlgorithmType,
 } from "./types.ts";
+import {
+  type AlgorithmLodFallbacks,
+  createAlgorithmLodFallbacks,
+  lodEdgeBundles,
+  type LodEdgeDispatch,
+  lodEdgeDispatch,
+  lodLiveEdgeIndices,
+  lodNodeMass,
+} from "./lod_bindings.ts";
 
 // Import shader sources
 import DEGREES_WGSL from "../shaders/relativity_degrees.comp.wgsl";
@@ -109,6 +118,13 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
 
   // Linear attraction (F = d, no rest length — replaces Hooke's law springs)
   attraction: GPUComputePipeline;
+  /**
+   * The same attraction over the LOD active-edge list plus the aggregated
+   * bundles. A second entry point rather than a branch in the first, so that
+   * with no cut the pipeline, its bind group and its arithmetic are the ones
+   * that shipped before edge aggregation existed.
+   */
+  attractionBundled: GPUComputePipeline;
 
   // Density field (global repulsion)
   densityClearGrid: GPUComputePipeline;
@@ -121,12 +137,16 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   siblingLayout: GPUBindGroupLayout;
   gravityLayout: GPUBindGroupLayout;
   attractionLayout: GPUBindGroupLayout;
+  attractionBundledLayout: GPUBindGroupLayout;
   densityLayout: GPUBindGroupLayout;
 }
 
 /**
  * Relativity Atlas algorithm-specific buffers
  */
+/** Byte size of FA2AttractionUniforms in fa2_attraction.comp.wgsl. */
+const RA_ATTRACTION_UNIFORM_BYTES = 32;
+
 export class RelativityAtlasBuffers implements AlgorithmBuffers {
   constructor(
     // Uniform buffers
@@ -169,6 +189,8 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
      * simulation nodeFlags buffer for dead-slot masking.
      */
     public fallbackNodeFlags: GPUBuffer,
+    /** Identity list / unit mass / empty LOD edge lists for a context supplying none */
+    public lodFallbacks: AlgorithmLodFallbacks,
     // Capacities
     public maxNodes: number,
     public maxEdges: number,
@@ -199,6 +221,7 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
     this.wellRadius.destroy();
     this.nodeDepth.destroy();
     this.fallbackNodeFlags.destroy();
+    this.lodFallbacks.destroy();
   }
 }
 
@@ -212,6 +235,7 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
   sibling: GPUBindGroup;
   gravity: GPUBindGroup;
   attraction: GPUBindGroup; // Linear edge attraction (F=d, no rest length)
+  attractionBundled: GPUBindGroup; // Same, over the LOD active-edge list + bundles
   density: GPUBindGroup | null; // null when bounds unavailable
   // repulsion from base is used for main force pass
 }
@@ -232,6 +256,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
   private massInitialized = false;
   private lastNodeCount = 0;
   private currentEdgeCount = 0;
+  /** The aggregated edge set the last updateUniforms saw, or null for no cut. */
+  private lastLodEdges: LodEdgeDispatch | null = null;
 
   /**
    * Reset mass state when graph changes
@@ -357,22 +383,43 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       code: FA2_ATTRACTION_WGSL,
     });
 
+    const attractionEntries: GPUBindGroupLayoutEntry[] = [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
+    ];
+
     const attractionLayout = device.createBindGroupLayout({
       label: "RA Attraction Layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
-      ],
+      entries: attractionEntries,
     });
 
     const attractionPipelineLayout = device.createPipelineLayout({
       label: "RA Attraction Pipeline Layout",
       bindGroupLayouts: [attractionLayout],
+    });
+
+    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
+    // the bundle table and the per-node mass each arriving pull is divided by.
+    // Nine storage buffers in one stage — exactly the limit the sibling pass
+    // already forces this algorithm to declare.
+    const attractionBundledLayout = device.createBindGroupLayout({
+      label: "RA Attraction Layout (LOD bundles)",
+      entries: [
+        ...attractionEntries,
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    const attractionBundledPipelineLayout = device.createPipelineLayout({
+      label: "RA Attraction Pipeline Layout (LOD bundles)",
+      bindGroupLayouts: [attractionBundledLayout],
     });
 
     // === Density Field Layout ===
@@ -442,6 +489,13 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         compute: { module: attractionModule, entryPoint: "main" },
       }),
 
+      // Same law over the LOD active-edge list plus the aggregated bundles
+      attractionBundled: device.createComputePipeline({
+        label: "RA Attraction (LOD bundles)",
+        layout: attractionBundledPipelineLayout,
+        compute: { module: attractionModule, entryPoint: "main_bundled" },
+      }),
+
       // Density field pipelines (global repulsion)
       densityClearGrid: device.createComputePipeline({
         label: "RA Density Clear Grid",
@@ -464,6 +518,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       siblingLayout,
       gravityLayout,
       attractionLayout,
+      attractionBundledLayout,
       densityLayout,
     };
 
@@ -586,10 +641,12 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    // Linear attraction uniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
+    // Linear attraction uniforms (RA_ATTRACTION_UNIFORM_BYTES):
+    // { edge_count, edge_weight_influence, flags, active_edge_count,
+    //   bundle_count, 3 x padding }
     const attractionUniforms = device.createBuffer({
       label: "RA Attraction Uniforms",
-      size: 16,
+      size: RA_ATTRACTION_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -644,6 +701,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       wellRadius,
       nodeDepth,
       fallbackNodeFlags,
+      createAlgorithmLodFallbacks(device, safeMaxNodes, "RA"),
       safeMaxNodes,
       maxEdges,
     );
@@ -765,17 +823,33 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       );
     }
 
+    const attractionEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: b.attractionUniforms } },
+      { binding: 1, resource: { buffer: context.positions } },
+      { binding: 2, resource: { buffer: context.forces } },
+      { binding: 3, resource: { buffer: context.edgeSources } },
+      { binding: 4, resource: { buffer: context.edgeTargets } },
+      { binding: 5, resource: { buffer: b.edgeWeightsBuffer } },
+      { binding: 6, resource: { buffer: nodeFlags } },
+    ];
+
     const attraction = device.createBindGroup({
       label: "RA Attraction Bind Group",
       layout: p.attractionLayout,
+      entries: attractionEntries,
+    });
+
+    // Built unconditionally, dispatched only under a cut: whether an
+    // aggregation is live is per-frame state, and createBindGroups is
+    // contractually forbidden from capturing any of that.
+    const attractionBundled = device.createBindGroup({
+      label: "RA Attraction Bind Group (LOD bundles)",
+      layout: p.attractionBundledLayout,
       entries: [
-        { binding: 0, resource: { buffer: b.attractionUniforms } },
-        { binding: 1, resource: { buffer: context.positions } },
-        { binding: 2, resource: { buffer: context.forces } },
-        { binding: 3, resource: { buffer: context.edgeSources } },
-        { binding: 4, resource: { buffer: context.edgeTargets } },
-        { binding: 5, resource: { buffer: b.edgeWeightsBuffer } },
-        { binding: 6, resource: { buffer: nodeFlags } },
+        ...attractionEntries,
+        { binding: 7, resource: { buffer: lodLiveEdgeIndices(context, b.lodFallbacks) } },
+        { binding: 8, resource: { buffer: lodEdgeBundles(context, b.lodFallbacks) } },
+        { binding: 9, resource: { buffer: lodNodeMass(context, b.lodFallbacks) } },
       ],
     });
 
@@ -801,6 +875,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       sibling,
       gravity,
       attraction,
+      attractionBundled,
       density,
       repulsion: sibling, // Use sibling as main repulsion
     };
@@ -907,7 +982,9 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     // Cache edge count for attraction pass workgroup dispatch
     this.currentEdgeCount = edgeCount;
 
-    // Attraction uniforms (16 bytes): { edge_count, edge_weight_influence, flags, _padding }
+    // Attraction uniforms (RA_ATTRACTION_UNIFORM_BYTES):
+    // { edge_count, edge_weight_influence, flags, active_edge_count,
+    //   bundle_count, 3 x padding }
     //
     // flags bit 0 = LinLog mode: F = log(1 + d) instead of F = d. The raw
     // linear pull is unbounded (a child 500 units out received force 500,
@@ -916,12 +993,19 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     // equilibrated at roughly half the configured orbit radius. log(1 + d)
     // keeps the always-pulling/no-rest-length design while capping
     // long-range magnitude (~6 at d = 500, ~3 at the default orbit radius).
-    const attractData = new ArrayBuffer(16);
+    this.lastLodEdges = lodEdgeDispatch(context);
+
+    const attractData = new ArrayBuffer(RA_ATTRACTION_UNIFORM_BYTES);
     const attractView = new DataView(attractData);
     attractView.setUint32(0, edgeCount, true);
     attractView.setFloat32(4, 1.0, true); // edge_weight_influence
     attractView.setUint32(8, 1, true); // flags (bit 0: linlog attraction)
-    attractView.setUint32(12, 0, true);
+    // Zero with no cut, which is what keeps `main` reading nothing new.
+    attractView.setUint32(12, this.lastLodEdges?.activeEdgeCount ?? 0, true);
+    attractView.setUint32(16, this.lastLodEdges?.bundleCount ?? 0, true);
+    attractView.setUint32(20, 0, true);
+    attractView.setUint32(24, 0, true);
+    attractView.setUint32(28, 0, true);
     device.queue.writeBuffer(b.attractionUniforms, 0, attractData);
 
     // Upload edge weights (all 1.0 for unweighted graphs)
@@ -1075,7 +1159,26 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     // equilibrium. Replaces Hooke's law springs which created grid/lattice
     // patterns; bounded magnitude (unlike F = d) so distant children cannot
     // saturate the velocity cap and oscillate. See updateUniforms flags.
-    if (this.currentEdgeCount > 0) {
+    //
+    // Under a live LOD cut it runs over the aggregated edge set instead: the
+    // visible source edges plus the bundles standing in for everything that
+    // crosses a collapse boundary. Every source edge is covered by exactly one
+    // of the two, so an edge is never pulled twice and a collapsed subtree's
+    // cross-cutting orbit spring is transferred rather than dropped — this is
+    // the pass that holds a child to its parent, so dropping it under a
+    // collapse let the visible frontier drift free. Zero threads is a legal
+    // aggregation and must dispatch nothing rather than fall back to the whole
+    // edge array.
+    const lodEdges = this.lastLodEdges;
+    if (lodEdges !== null) {
+      if (lodEdges.total > 0) {
+        const pass = encoder.beginComputePass({ label: "RA Linear Attraction (LOD bundles)" });
+        pass.setPipeline(p.attractionBundled);
+        pass.setBindGroup(0, bg.attractionBundled);
+        pass.dispatchWorkgroups(calculateWorkgroups(lodEdges.total, WORKGROUP_SIZE));
+        pass.end();
+      }
+    } else if (this.currentEdgeCount > 0) {
       const edgeWorkgroups = calculateWorkgroups(this.currentEdgeCount, WORKGROUP_SIZE);
       const pass = encoder.beginComputePass({ label: "RA Linear Attraction" });
       pass.setPipeline(p.attraction);
@@ -1087,6 +1190,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
 
   destroy(): void {
     // Buffers are destroyed via AlgorithmBuffers.destroy()
+    this.lastLodEdges = null;
   }
 }
 

@@ -54,6 +54,7 @@ type FakeBuffers =
   & {
     nodeCount: number;
     activeCount: number;
+    lodEdgesActive: boolean;
     activeEdgeCount: number;
     bundleCount: number;
     nodeCapacity: number;
@@ -64,6 +65,7 @@ function fakeBuffers(generation: string): FakeBuffers {
   const set = {
     nodeCount: 4,
     activeCount: 4,
+    lodEdgesActive: false,
     activeEdgeCount: 0,
     bundleCount: 0,
     nodeCapacity: 4,

@@ -69,6 +69,14 @@ export interface CollisionBuffers {
    * so collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
    */
   fallbackNodeFlags: GPUBuffer;
+  /**
+   * Identity list `[0, maxNodes)` for the `live_idx` binding, used when the
+   * caller passes no active-index list. It describes the whole graph in slot
+   * order, which is exactly what the resolve passes swept before the list
+   * existed. Never zero-filled: a zeroed list is every thread colliding slot 0
+   * with itself.
+   */
+  fallbackLiveIndices: GPUBuffer;
   /** Maximum nodes this buffer set supports */
   maxNodes: number;
 }
@@ -97,12 +105,14 @@ function createApplyPipeline(
     code: COLLISION_APPLY_WGSL,
   });
 
-  // Bindings: positions (vec2, read-write), displacements (vec2, read-only)
+  // Bindings: positions (vec2, read-write), displacements (vec2, read-only),
+  // node_flags
   const applyLayout = device.createBindGroupLayout({
     label: "Collision Apply Bind Group Layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ],
   });
 
@@ -152,6 +162,7 @@ function createApplyBindGroup(
   applyLayout: GPUBindGroupLayout,
   positions: GPUBuffer,
   displacements: GPUBuffer,
+  nodeFlags: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: "Collision Apply Bind Group",
@@ -159,6 +170,7 @@ function createApplyBindGroup(
     entries: [
       { binding: 0, resource: { buffer: positions } },
       { binding: 1, resource: { buffer: displacements } },
+      { binding: 2, resource: { buffer: nodeFlags } },
     ],
   });
 }
@@ -188,6 +200,7 @@ export function createCollisionPipeline(context: GPUContext): CollisionPipeline 
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ],
   });
 
@@ -263,13 +276,37 @@ export function createCollisionBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
+  const fallbackLiveIndices = createIdentityLiveIndices(
+    device,
+    safeMaxNodes,
+    "Collision Fallback Live Indices",
+  );
+
   return {
     uniforms,
     nodeSizes,
     displacements,
     fallbackNodeFlags,
+    fallbackLiveIndices,
     maxNodes: safeMaxNodes,
   };
+}
+
+/** Allocate and fill an ascending identity list `[0, slotCount)`. */
+function createIdentityLiveIndices(
+  device: GPUDevice,
+  slotCount: number,
+  label: string,
+): GPUBuffer {
+  const buffer = device.createBuffer({
+    label,
+    size: Math.max(slotCount, 1) * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const identity = new Uint32Array(Math.max(slotCount, 1));
+  for (let i = 0; i < identity.length; i++) identity[i] = i;
+  device.queue.writeBuffer(buffer, 0, identity);
+  return buffer;
 }
 
 /**
@@ -294,7 +331,9 @@ export function createCollisionBindGroup(
   collisionBuffers: CollisionBuffers,
   positions: GPUBuffer,
   nodeFlags?: GPUBuffer,
+  liveIndices?: GPUBuffer,
 ): CollisionBindGroup {
+  const flags = nodeFlags ?? collisionBuffers.fallbackNodeFlags;
   const bindGroup = device.createBindGroup({
     label: "Collision Bind Group",
     layout: pipeline.bindGroupLayout,
@@ -302,8 +341,9 @@ export function createCollisionBindGroup(
       { binding: 0, resource: { buffer: collisionBuffers.uniforms } },
       { binding: 1, resource: { buffer: positions } },
       { binding: 2, resource: { buffer: collisionBuffers.nodeSizes } },
-      { binding: 3, resource: { buffer: nodeFlags ?? collisionBuffers.fallbackNodeFlags } },
+      { binding: 3, resource: { buffer: flags } },
       { binding: 4, resource: { buffer: collisionBuffers.displacements } },
+      { binding: 5, resource: { buffer: liveIndices ?? collisionBuffers.fallbackLiveIndices } },
     ],
   });
 
@@ -312,6 +352,7 @@ export function createCollisionBindGroup(
     pipeline.applyLayout,
     positions,
     collisionBuffers.displacements,
+    flags,
   );
 
   return { bindGroup, applyBindGroup };
@@ -324,12 +365,17 @@ export function createCollisionBindGroup(
  * @param collisionBuffers - Collision buffers
  * @param nodeCount - Number of nodes
  * @param forceConfig - Force configuration
+ * @param activeCount - Entries of the active-index list bound to the resolve
+ *   pass. Defaults to `nodeCount`, which is what the identity fallback list
+ *   describes. It must come from the same field as the dispatch size passed to
+ *   {@link recordCollisionPass}, or threads sweep past the end of the list.
  */
 export function updateCollisionUniforms(
   device: GPUDevice,
   collisionBuffers: CollisionBuffers,
   nodeCount: number,
   forceConfig: FullForceConfig,
+  activeCount?: number,
 ): void {
   // CollisionUniforms struct (32 bytes):
   // node_count: u32, collision_strength: f32, radius_multiplier: f32,
@@ -347,7 +393,9 @@ export function updateCollisionUniforms(
   view.setFloat32(8, forceConfig.collisionRadiusMultiplier, true);
   view.setUint32(12, 0, true); // _pad_iterations
   view.setFloat32(16, DEFAULT_RADIUS, true);
-  view.setFloat32(20, 0.0, true); // _pad0
+  // The dispatch and both sweep bounds come from this one number. Defaulting
+  // to nodeCount is what the identity fallback list describes.
+  view.setUint32(20, activeCount ?? nodeCount, true); // active_count
   view.setFloat32(24, 0.0, true); // _pad1
   view.setFloat32(28, 0.0, true); // _pad2
   device.queue.writeBuffer(collisionBuffers.uniforms, 0, data);
@@ -385,6 +433,9 @@ export function uploadNodeSizes(
  * @param nodeCount - Number of nodes
  * @param iterations - Number of collision resolution iterations
  * @param useTiled - Use tiled version for large graphs (>5000 nodes)
+ * @param activeCount - Entries of the active-index list, sizing the resolve
+ *   dispatch. Must be the same number given to
+ *   {@link updateCollisionUniforms}. Defaults to `nodeCount`.
  */
 export function recordCollisionPass(
   encoder: GPUCommandEncoder,
@@ -393,8 +444,15 @@ export function recordCollisionPass(
   nodeCount: number,
   iterations: number = 1,
   useTiled: boolean = false,
+  activeCount?: number,
 ): void {
-  const workgroups = calculateWorkgroups(nodeCount, WORKGROUP_SIZE);
+  // The resolve pass is indexed by ACTIVE-LIST ENTRY and shrinks with the cut;
+  // the apply pass stays indexed by SLOT, because its body is a load, a
+  // compare and an add and it is what makes the shortened resolve dispatch
+  // safe (it drops every IMMOVABLE slot on the flags rather than trusting the
+  // list).
+  const resolveWorkgroups = calculateWorkgroups(activeCount ?? nodeCount, WORKGROUP_SIZE);
+  const applyWorkgroups = calculateWorkgroups(nodeCount, WORKGROUP_SIZE);
   const selectedPipeline = useTiled ? pipeline.resolveTiled : pipeline.resolve;
 
   for (let i = 0; i < iterations; i++) {
@@ -404,7 +462,7 @@ export function recordCollisionPass(
       });
       pass.setPipeline(selectedPipeline);
       pass.setBindGroup(0, bindGroup.bindGroup);
-      pass.dispatchWorkgroups(workgroups);
+      pass.dispatchWorkgroups(resolveWorkgroups);
       pass.end();
     }
     {
@@ -413,7 +471,7 @@ export function recordCollisionPass(
       });
       pass.setPipeline(pipeline.apply);
       pass.setBindGroup(0, bindGroup.applyBindGroup);
-      pass.dispatchWorkgroups(workgroups);
+      pass.dispatchWorkgroups(applyWorkgroups);
       pass.end();
     }
   }
@@ -429,6 +487,7 @@ export function destroyCollisionBuffers(buffers: CollisionBuffers): void {
   buffers.nodeSizes.destroy();
   buffers.displacements.destroy();
   buffers.fallbackNodeFlags.destroy();
+  buffers.fallbackLiveIndices.destroy();
 }
 
 // ============================================================================
@@ -475,6 +534,11 @@ export interface GridCollisionBuffers {
    * collision respects NODE_FLAG_DEAD / NODE_FLAG_PINNED.
    */
   fallbackNodeFlags: GPUBuffer;
+  /**
+   * Identity list `[0, maxNodes)` for the `live_idx` binding, used when the
+   * caller passes no active-index list. See CollisionBuffers.fallbackLiveIndices.
+   */
+  fallbackLiveIndices: GPUBuffer;
   /** Maximum node count this buffer set supports */
   maxNodes: number;
   /** Maximum cell count (MAX_GRID_DIM^2) */
@@ -485,7 +549,7 @@ export interface GridCollisionBuffers {
  * Grid collision bind groups.
  */
 export interface GridCollisionBindGroups {
-  /** Single bind group for the 3 grid entry points (8 bindings) */
+  /** Single bind group for the 3 grid entry points (9 bindings) */
   grid: GPUBindGroup;
   /** Bind group for the apply pass (positions + displacements) */
   apply: GPUBindGroup;
@@ -507,7 +571,7 @@ export function createGridCollisionPipeline(
     code: COLLISION_GRID_WGSL,
   });
 
-  // All 3 grid entry points share this layout (8 bindings).
+  // All 3 grid entry points share this layout (9 bindings).
   const gridLayout = device.createBindGroupLayout({
     label: "Grid Collision Layout",
     entries: [
@@ -519,6 +583,7 @@ export function createGridCollisionPipeline(
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // node_cell (rw)
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // displacements (rw)
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // live_idx
     ],
   });
 
@@ -611,6 +676,11 @@ export function createGridCollisionBuffers(
     nodeNext,
     nodeCell,
     fallbackNodeFlags,
+    fallbackLiveIndices: createIdentityLiveIndices(
+      device,
+      safeMaxNodes,
+      "Grid Collision Fallback Live Indices",
+    ),
     maxNodes: safeMaxNodes,
     maxCells,
   };
@@ -640,7 +710,9 @@ export function createGridCollisionBindGroups(
   displacements: GPUBuffer,
   positions: GPUBuffer,
   nodeFlags?: GPUBuffer,
+  liveIndices?: GPUBuffer,
 ): GridCollisionBindGroups {
+  const flags = nodeFlags ?? gridBuffers.fallbackNodeFlags;
   const grid = device.createBindGroup({
     label: "Grid Collision Bind Group",
     layout: pipeline.gridLayout,
@@ -651,8 +723,9 @@ export function createGridCollisionBindGroups(
       { binding: 3, resource: { buffer: gridBuffers.cellHead } },
       { binding: 4, resource: { buffer: gridBuffers.nodeNext } },
       { binding: 5, resource: { buffer: gridBuffers.nodeCell } },
-      { binding: 6, resource: { buffer: nodeFlags ?? gridBuffers.fallbackNodeFlags } },
+      { binding: 6, resource: { buffer: flags } },
       { binding: 7, resource: { buffer: displacements } },
+      { binding: 8, resource: { buffer: liveIndices ?? gridBuffers.fallbackLiveIndices } },
     ],
   });
 
@@ -661,6 +734,7 @@ export function createGridCollisionBindGroups(
     pipeline.applyLayout,
     positions,
     displacements,
+    flags,
   );
 
   return { grid, apply };
@@ -706,6 +780,10 @@ function computeGridDimensions(
  * @param forceConfig - Force configuration
  * @param bounds - Current graph bounding box
  * @param maxRadius - Maximum node radius (for cell size computation)
+ * @param activeCount - Entries of the active-index list bound to the grid
+ *   passes. Defaults to `nodeCount`, which is what the identity fallback list
+ *   describes. It must come from the same field as the dispatch size passed to
+ *   {@link recordGridCollisionPass}, or threads read past the end of the list.
  */
 export function updateGridCollisionUniforms(
   device: GPUDevice,
@@ -714,6 +792,7 @@ export function updateGridCollisionUniforms(
   forceConfig: FullForceConfig,
   bounds: BoundingBox,
   maxRadius: number,
+  activeCount?: number,
 ): void {
   if (nodeCount > gridBuffers.maxNodes) {
     throw new Error(
@@ -741,7 +820,7 @@ export function updateGridCollisionUniforms(
   view.setFloat32(28, forceConfig.collisionRadiusMultiplier, true); // radius_multiplier
   view.setFloat32(32, DEFAULT_RADIUS, true); // default_radius
   view.setUint32(36, totalCells, true); // total_cells
-  view.setUint32(40, 0, true); // _pad0
+  view.setUint32(40, activeCount ?? nodeCount, true); // active_count
   view.setUint32(44, 0, true); // _pad1
   device.queue.writeBuffer(gridBuffers.gridUniforms, 0, data);
 }
@@ -762,6 +841,9 @@ export function updateGridCollisionUniforms(
  * @param gridBuffers - Grid collision buffers (for maxCells dispatch sizing)
  * @param nodeCount - Number of nodes
  * @param iterations - Number of collision resolution iterations
+ * @param activeCount - Entries of the active-index list, sizing the build and
+ *   resolve dispatches. Must be the same number given to
+ *   {@link updateGridCollisionUniforms}. Defaults to `nodeCount`.
  */
 export function recordGridCollisionPass(
   encoder: GPUCommandEncoder,
@@ -770,11 +852,15 @@ export function recordGridCollisionPass(
   gridBuffers: GridCollisionBuffers,
   nodeCount: number,
   iterations: number = 1,
+  activeCount?: number,
 ): void {
   if (nodeCount < 2) {
     return;
   }
 
+  // Build and resolve are indexed by ACTIVE-LIST ENTRY and shrink with the
+  // cut; apply stays indexed by SLOT (see recordCollisionPass).
+  const activeWorkgroups = calculateWorkgroups(activeCount ?? nodeCount, WORKGROUP_SIZE);
   const nodeWorkgroups = calculateWorkgroups(nodeCount, WORKGROUP_SIZE);
   // Clear all cells each iteration even if some are unused — over-clearing
   // with EMPTY sentinels is harmless and avoids tracking exact grid dimensions.
@@ -800,7 +886,7 @@ export function recordGridCollisionPass(
       });
       pass.setPipeline(pipeline.buildLists);
       pass.setBindGroup(0, bindGroups.grid);
-      pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.dispatchWorkgroups(activeWorkgroups);
       pass.end();
     }
 
@@ -811,12 +897,13 @@ export function recordGridCollisionPass(
       });
       pass.setPipeline(pipeline.resolveGrid);
       pass.setBindGroup(0, bindGroups.grid);
-      pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.dispatchWorkgroups(activeWorkgroups);
       pass.end();
     }
 
-    // Phase 4: Fold the displacements into the positions. Same thread
-    // coverage as phase 3, so every displacement written is consumed here.
+    // Phase 4: Fold the displacements into the positions. Slot-indexed and
+    // wider than phase 3 on purpose: it drops every IMMOVABLE slot on the
+    // flags, which is what makes the shortened resolve dispatch safe.
     {
       const pass = encoder.beginComputePass({
         label: `GridCollision Apply ${iter + 1}/${iterations}`,
@@ -842,4 +929,5 @@ export function destroyGridCollisionBuffers(
   buffers.nodeNext.destroy();
   buffers.nodeCell.destroy();
   buffers.fallbackNodeFlags.destroy();
+  buffers.fallbackLiveIndices.destroy();
 }

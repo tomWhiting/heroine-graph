@@ -50,7 +50,12 @@ import { HIERARCHY_ROOT, type RetainedHierarchy } from "../graph/hierarchy.ts";
 import type { CardSyncEntry } from "../overlay/overlay.ts";
 import { CrossfadeScheduler } from "./crossfade.ts";
 import { DEFAULT_LOD_CONFIG, type LodConfig, resolveLodConfig } from "./config.ts";
-import { NODE_MASS_UNIT, rollUpMass } from "./mass.ts";
+import {
+  createRollUpMassScratch,
+  NODE_MASS_UNIT,
+  rollUpMass,
+  type RollUpMassScratch,
+} from "./mass.ts";
 import { forEachSlotRun } from "./runs.ts";
 import type { LodCandidate, LodContext, LodDecision, LodPolicy } from "./policy.ts";
 
@@ -263,6 +268,12 @@ export class LODController {
   // ---- Proxy state, all reused across transitions ----
   /** Per-slot mass, rebuilt in place on every collapsed-set change. */
   #mass = EMPTY_F32;
+  /**
+   * The roll-up's working arrays, held for the hierarchy's lifetime so a
+   * transition allocates nothing: a zoom step is on the interaction path, and
+   * three nodeCount-sized arrays per step is 1.9 MB of garbage at 220K nodes.
+   */
+  #massScratch: RollUpMassScratch = createRollUpMassScratch(0);
   /** The collapsed set as an ascending slot list, and its well radii. */
   #proxies = EMPTY_U32;
   #proxyRadii = EMPTY_F32;
@@ -607,6 +618,7 @@ export class LODController {
     this.#cardedSince.clear();
 
     this.#mass = new Float32Array(n);
+    this.#massScratch = createRollUpMassScratch(n);
     this.#proxies = new Uint32Array(n);
     this.#proxyRadii = new Float32Array(n);
     // Anchors from the previous hierarchy name slots the mutation may have
@@ -1118,7 +1130,7 @@ export class LODController {
     const { wellRadius } = h.columns;
     for (let k = 0; k < count; k++) this.#proxyRadii[k] = wellRadius[proxies[k]];
 
-    rollUpMass(h.columns.parent, h.children, proxies, this.#mass);
+    rollUpMass(h.columns.parent, h.children, proxies, this.#mass, this.#massScratch);
     this.#host.uploadNodeMass(this.#mass);
     this.#host.setCollapsedProxies(proxies, this.#proxyRadii.subarray(0, count));
 

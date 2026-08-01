@@ -20,8 +20,13 @@ struct ForceUniforms {
     min_distance: f32,         // Minimum distance to prevent singularities
     leaf_size: f32,            // Approximate size of leaf nodes
     max_distance: f32,         // Maximum repulsion distance (0 = no limit)
-    _pad2: f32,
-    _pad3: f32,
+    // Entries of the active-index list this pass dispatches over. The tree
+    // itself is still built over every particle — hidden particles enter it
+    // with the maximum Morton code and zero leaf mass, exactly as dead slots
+    // do — so the gather shortens only the traversal, which is where the cost
+    // is.
+    active_count: u32,
+    _pad3: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: ForceUniforms;
@@ -48,6 +53,11 @@ struct ForceUniforms {
 // seeds the tree from. Read here only to know how much of the coincident mass
 // is this particle's own leaf.
 @group(0) @binding(9) var<storage, read> particle_mass: array<f32>;
+
+// Active-index list: the first active_count entries are the slots taking part
+// in this tick, ascending. `active` is a reserved WGSL identifier, hence the
+// name.
+@group(0) @binding(10) var<storage, read> live_idx: array<u32>;
 
 // Stack depth for tree traversal. For a binary tree with N nodes, the maximum
 // stack depth needed is log₂(N). For 131K nodes (current limit), ~17 levels suffice.
@@ -98,12 +108,29 @@ fn is_leaf_child(child: i32) -> bool {
     return child < 0;
 }
 
-// Main force computation using binary tree traversal
+// Main force computation using binary tree traversal.
+//
+// One thread per ENTRY of the active-index list rather than per particle: a
+// traversal is the expensive part of this algorithm, and a hidden particle's
+// traversal produces nothing (every inert leaf carries zero mass), so under a
+// cut those traversals are work that is simply not done.
+//
+// The flag mask is kept on top of the gather. A stale list can only
+// over-include, and masking makes that a wasted traversal rather than a wrong
+// force, so a host whose list was never refreshed (the identity list the
+// fallback writes) stays correct, just slower — and with the identity list the
+// per-particle results are unchanged, because the traversal reads the tree and
+// never the list.
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let particle_idx = global_id.x;
+    let entry = global_id.x;
     let n = uniforms.particle_count;
 
+    if (entry >= uniforms.active_count) {
+        return;
+    }
+
+    let particle_idx = live_idx[entry];
     if (particle_idx >= n) {
         return;
     }

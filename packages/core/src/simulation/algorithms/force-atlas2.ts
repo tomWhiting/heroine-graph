@@ -19,14 +19,26 @@
 
 import type { GPUContext } from "../../webgpu/context.ts";
 import { calculateWorkgroups } from "../../renderer/commands.ts";
-import type {
-  AlgorithmBindGroups,
-  AlgorithmBuffers,
-  AlgorithmPipelines,
-  AlgorithmRenderContext,
-  ForceAlgorithm,
-  ForceAlgorithmInfo,
+import {
+  type AlgorithmBindGroups,
+  type AlgorithmBuffers,
+  type AlgorithmPipelines,
+  type AlgorithmRenderContext,
+  assertAlgorithmSupportedOnDevice,
+  type ForceAlgorithm,
+  type ForceAlgorithmInfo,
 } from "./types.ts";
+import {
+  type AlgorithmLodFallbacks,
+  createAlgorithmLodFallbacks,
+  lodActiveCount,
+  lodEdgeBundles,
+  type LodEdgeDispatch,
+  lodEdgeDispatch,
+  lodLiveEdgeIndices,
+  lodLiveIndices,
+  lodNodeMass,
+} from "./lod_bindings.ts";
 
 // Import shader sources (separate files due to different bind group layouts)
 import FORCE_ATLAS2_WGSL from "../shaders/force_atlas2.comp.wgsl";
@@ -43,7 +55,19 @@ const FORCE_ATLAS2_ALGORITHM_INFO: ForceAlgorithmInfo = {
   minNodes: 0,
   maxNodes: 50000,
   complexity: "O(n²)",
+  // The bundled attraction pass binds nine storage buffers in one stage: the
+  // six the un-cut pass uses, plus the LOD active-edge list, the bundle table
+  // and per-node mass. Without them a collapse DELETES a module's cross-cutting
+  // imports rather than transferring them to the proxy, so this is the price of
+  // the layout being the same layout at every zoom level, not an optimisation.
+  minStorageBuffersPerShaderStage: 9,
 };
+
+/** Byte size of ForceAtlas2Uniforms in force_atlas2.comp.wgsl. */
+const FA2_UNIFORM_BYTES = 32;
+
+/** Byte size of FA2AttractionUniforms in fa2_attraction.comp.wgsl. */
+const FA2_ATTRACTION_UNIFORM_BYTES = 32;
 
 /**
  * Extended pipeline type for FA2 (repulsion + attraction passes)
@@ -51,6 +75,15 @@ const FORCE_ATLAS2_ALGORITHM_INFO: ForceAlgorithmInfo = {
 interface FA2Pipelines extends AlgorithmPipelines {
   attraction: GPUComputePipeline;
   attractionLayout: GPUBindGroupLayout;
+  /**
+   * Attraction over the LOD active-edge list plus the aggregated bundles.
+   *
+   * A second entry point rather than a branch in the first, so that with no cut
+   * the pipeline, its bind group and its arithmetic are the ones that shipped
+   * before edge aggregation existed.
+   */
+  attractionBundled: GPUComputePipeline;
+  attractionBundledLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -58,6 +91,7 @@ interface FA2Pipelines extends AlgorithmPipelines {
  */
 interface FA2BindGroups extends AlgorithmBindGroups {
   attraction: GPUBindGroup;
+  attractionBundled: GPUBindGroup;
 }
 
 /**
@@ -69,6 +103,8 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
     public attractionUniforms: GPUBuffer,
     public degreesBuffer: GPUBuffer,
     public edgeWeightsBuffer: GPUBuffer,
+    /** Identity list / unit mass / all-live flags for a context supplying none */
+    public fallbacks: AlgorithmLodFallbacks,
     /** Maximum node count this buffer set supports */
     public maxNodes: number,
     /** Maximum edge count this buffer set supports */
@@ -80,6 +116,7 @@ class ForceAtlas2Buffers implements AlgorithmBuffers {
     this.attractionUniforms.destroy();
     this.degreesBuffer.destroy();
     this.edgeWeightsBuffer.destroy();
+    this.fallbacks.destroy();
   }
 }
 
@@ -103,9 +140,14 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
 
   /** Cached edge count from last updateUniforms for attraction dispatch sizing */
   private lastEdgeCount = 0;
+  /** Entries of the active-index list the last updateUniforms sized the pass for. */
+  private lastActiveCount: number | null = null;
+  /** The aggregated edge set the last updateUniforms saw, or null for no cut. */
+  private lastLodEdges: LodEdgeDispatch | null = null;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
+    assertAlgorithmSupportedOnDevice(FORCE_ATLAS2_ALGORITHM_INFO, device);
 
     // Repulsion + gravity shader
     const repulsionShader = device.createShaderModule({
@@ -131,17 +173,19 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
 
     // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets,
     // edge_weights, node_flags
+    const attractionEntries: GPUBindGroupLayoutEntry[] = [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+    ];
+
     const attractionLayout = device.createBindGroupLayout({
       label: "ForceAtlas2 Attraction Layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      ],
+      entries: attractionEntries,
     });
 
     const attraction = device.createComputePipeline({
@@ -153,26 +197,53 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       },
     });
 
+    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
+    // the bundle table and the per-node mass each arriving pull is divided by.
+    const attractionBundledLayout = device.createBindGroupLayout({
+      label: "ForceAtlas2 Attraction Layout (LOD bundles)",
+      entries: [
+        ...attractionEntries,
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    const attractionBundled = device.createComputePipeline({
+      label: "ForceAtlas2 Attraction Pipeline (LOD bundles)",
+      layout: device.createPipelineLayout({ bindGroupLayouts: [attractionBundledLayout] }),
+      compute: {
+        module: attractionShader,
+        entryPoint: "main_bundled",
+      },
+    });
+
     const pipelines: FA2Pipelines = {
       repulsion,
       attraction,
       attractionLayout,
+      attractionBundled,
+      attractionBundledLayout,
     };
     return pipelines;
   }
 
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
-    // ForceAtlas2Uniforms: 48 bytes (due to vec3 alignment)
+    // ForceAtlas2Uniforms: 32 bytes
+    // { node_count, scaling, gravity, edge_weight_influence, flags,
+    //   active_count, 2 x padding }
     const uniformBuffer = device.createBuffer({
       label: "ForceAtlas2 Uniforms",
-      size: 48,
+      size: FA2_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // FA2AttractionUniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
+    // FA2AttractionUniforms: 32 bytes
+    // { edge_count, edge_weight_influence, flags, active_edge_count,
+    //   bundle_count, 3 x padding }
     const attractionUniforms = device.createBuffer({
       label: "ForceAtlas2 Attraction Uniforms",
-      size: 16,
+      size: FA2_ATTRACTION_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -196,6 +267,7 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       attractionUniforms,
       degreesBuffer,
       edgeWeightsBuffer,
+      createAlgorithmLodFallbacks(device, maxNodes, "ForceAtlas2"),
       maxNodes,
       maxEdges,
     );
@@ -217,7 +289,8 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       );
     }
 
-    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags
+    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags,
+    // active-index list, per-node mass
     const repulsion = device.createBindGroup({
       label: "ForceAtlas2 Repulsion Bind Group",
       layout: pipelines.repulsion.getBindGroupLayout(0),
@@ -227,6 +300,8 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: buffers.degreesBuffer } },
         { binding: 4, resource: { buffer: context.nodeFlags } },
+        { binding: 5, resource: { buffer: lodLiveIndices(context, buffers.fallbacks) } },
+        { binding: 6, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 
@@ -239,21 +314,37 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       );
     }
 
+    const attractionEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: buffers.attractionUniforms } },
+      { binding: 1, resource: { buffer: context.positions } },
+      { binding: 2, resource: { buffer: context.forces } },
+      { binding: 3, resource: { buffer: context.edgeSources } },
+      { binding: 4, resource: { buffer: context.edgeTargets } },
+      { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
+      { binding: 6, resource: { buffer: context.nodeFlags } },
+    ];
+
     const attraction = device.createBindGroup({
       label: "ForceAtlas2 Attraction Bind Group",
       layout: fa2Pipelines.attractionLayout,
+      entries: attractionEntries,
+    });
+
+    // Built unconditionally, dispatched only under a cut: whether an
+    // aggregation is live is per-frame state, and createBindGroups is
+    // contractually forbidden from capturing any of that.
+    const attractionBundled = device.createBindGroup({
+      label: "ForceAtlas2 Attraction Bind Group (LOD bundles)",
+      layout: fa2Pipelines.attractionBundledLayout,
       entries: [
-        { binding: 0, resource: { buffer: buffers.attractionUniforms } },
-        { binding: 1, resource: { buffer: context.positions } },
-        { binding: 2, resource: { buffer: context.forces } },
-        { binding: 3, resource: { buffer: context.edgeSources } },
-        { binding: 4, resource: { buffer: context.edgeTargets } },
-        { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
-        { binding: 6, resource: { buffer: context.nodeFlags } },
+        ...attractionEntries,
+        { binding: 7, resource: { buffer: lodLiveEdgeIndices(context, buffers.fallbacks) } },
+        { binding: 8, resource: { buffer: lodEdgeBundles(context, buffers.fallbacks) } },
+        { binding: 9, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 
-    const bindGroups: FA2BindGroups = { repulsion, attraction };
+    const bindGroups: FA2BindGroups = { repulsion, attraction, attractionBundled };
     return bindGroups;
   }
 
@@ -299,8 +390,13 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
       flags |= 2; // FLAG_STRONG_GRAVITY
     }
 
-    // Repulsion uniforms: 48 bytes due to vec3 alignment requirements in WGSL
-    const data = new ArrayBuffer(48);
+    // The repulsion dispatch below and the shader's two loop bounds must all
+    // come from this one number, or threads read past the end of the list.
+    this.lastActiveCount = lodActiveCount(context);
+    this.lastLodEdges = lodEdgeDispatch(context);
+
+    // Repulsion uniforms (FA2_UNIFORM_BYTES)
+    const data = new ArrayBuffer(FA2_UNIFORM_BYTES);
     const view = new DataView(data);
 
     view.setUint32(0, context.nodeCount, true); // node_count
@@ -308,23 +404,24 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     view.setFloat32(8, gravity, true); // gravity (kg)
     view.setFloat32(12, 1.0, true); // edge_weight_influence
     view.setUint32(16, flags, true); // flags
-    view.setUint32(20, 0, true);
+    view.setUint32(20, this.lastActiveCount, true); // active_count
     view.setUint32(24, 0, true);
     view.setUint32(28, 0, true);
-    view.setUint32(32, 0, true);
-    view.setUint32(36, 0, true);
-    view.setUint32(40, 0, true);
-    view.setUint32(44, 0, true);
 
     device.queue.writeBuffer(buffers.uniformBuffer, 0, data);
 
-    // Attraction uniforms: 16 bytes { edge_count, edge_weight_influence, flags, _padding }
-    const attractData = new ArrayBuffer(16);
+    // Attraction uniforms (FA2_ATTRACTION_UNIFORM_BYTES). The two LOD counts
+    // are zero with no cut, which is what keeps `main` reading nothing new.
+    const attractData = new ArrayBuffer(FA2_ATTRACTION_UNIFORM_BYTES);
     const attractView = new DataView(attractData);
     attractView.setUint32(0, context.edgeCount, true);
     attractView.setFloat32(4, 1.0, true); // edge_weight_influence (delta)
     attractView.setUint32(8, flags & 1, true); // linlog flag only
-    attractView.setUint32(12, 0, true);
+    attractView.setUint32(12, this.lastLodEdges?.activeEdgeCount ?? 0, true);
+    attractView.setUint32(16, this.lastLodEdges?.bundleCount ?? 0, true);
+    attractView.setUint32(20, 0, true);
+    attractView.setUint32(24, 0, true);
+    attractView.setUint32(28, 0, true);
     device.queue.writeBuffer(buffers.attractionUniforms, 0, attractData);
 
     // Compute actual node degrees from CPU-side edge arrays.
@@ -367,9 +464,9 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
     const fa2Pipelines = pipelines as FA2Pipelines;
     const fa2BindGroups = bindGroups as FA2BindGroups;
 
-    // Pass 1: Repulsion + Gravity (combined in shader, N² over nodes)
+    // Pass 1: Repulsion + Gravity (combined in shader, N² over the active set)
     {
-      const workgroups = calculateWorkgroups(nodeCount, 256);
+      const workgroups = calculateWorkgroups(this.lastActiveCount ?? nodeCount, 256);
       const pass = encoder.beginComputePass({ label: "ForceAtlas2 Repulsion + Gravity" });
       pass.setPipeline(fa2Pipelines.repulsion);
       pass.setBindGroup(0, fa2BindGroups.repulsion);
@@ -379,7 +476,26 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
 
     // Pass 2: Native FA2 linear attraction (per-edge, F = w^delta * d).
     // Balances the FA2-calibrated 1/d repulsion — see class doc.
-    if (this.lastEdgeCount > 0) {
+    //
+    // Under a live LOD cut it runs over the aggregated edge set instead: the
+    // visible source edges plus the bundles standing in for everything that
+    // crosses a collapse boundary. Every source edge is covered by exactly one
+    // of the two, so an edge is never pulled twice and a collapsed subtree's
+    // cross-cutting attraction is transferred rather than dropped. Zero
+    // threads is a legal aggregation — every edge inside a collapsed subtree —
+    // and must dispatch nothing rather than fall back to the whole edge array.
+    const lodEdges = this.lastLodEdges;
+    if (lodEdges !== null) {
+      if (lodEdges.total > 0) {
+        const pass = encoder.beginComputePass({
+          label: "ForceAtlas2 Attraction (LOD bundles)",
+        });
+        pass.setPipeline(fa2Pipelines.attractionBundled);
+        pass.setBindGroup(0, fa2BindGroups.attractionBundled);
+        pass.dispatchWorkgroups(calculateWorkgroups(lodEdges.total, 256));
+        pass.end();
+      }
+    } else if (this.lastEdgeCount > 0) {
       const edgeWorkgroups = calculateWorkgroups(this.lastEdgeCount, 256);
       const pass = encoder.beginComputePass({ label: "ForceAtlas2 Attraction" });
       pass.setPipeline(fa2Pipelines.attraction);
@@ -392,6 +508,8 @@ export class ForceAtlas2Algorithm implements ForceAlgorithm {
   destroy(): void {
     // Buffers are destroyed via AlgorithmBuffers.destroy()
     this.lastEdgeCount = 0;
+    this.lastActiveCount = null;
+    this.lastLodEdges = null;
   }
 }
 

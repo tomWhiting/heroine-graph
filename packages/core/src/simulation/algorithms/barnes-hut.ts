@@ -29,6 +29,12 @@ import type {
   ForceAlgorithmInfo,
 } from "./types.ts";
 import {
+  type AlgorithmLodFallbacks,
+  createAlgorithmLodFallbacks,
+  lodActiveCount,
+  lodLiveIndices,
+} from "./lod_bindings.ts";
+import {
   createRadixSortBindGroups,
   createRadixSortBuffers,
   createRadixSortPipeline,
@@ -144,6 +150,8 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     public fallbackNodeFlags: GPUBuffer,
     // Unit-filled masses used when the context provides none
     public fallbackNodeMass: GPUBuffer,
+    // Identity active-index list used when the context provides none
+    public lodFallbacks: AlgorithmLodFallbacks,
     // Maximum node count this buffer set supports
     public maxNodes: number,
   ) {}
@@ -167,6 +175,7 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     this.visitCount.destroy();
     this.fallbackNodeFlags.destroy();
     this.fallbackNodeMass.destroy();
+    this.lodFallbacks.destroy();
   }
 }
 
@@ -197,6 +206,14 @@ interface BarnesHutBindGroups extends AlgorithmBindGroups {
 export class BarnesHutForceAlgorithm implements ForceAlgorithm {
   readonly info = BARNES_HUT_ALGORITHM_INFO;
   readonly handlesGravity = false;
+
+  /**
+   * Entries of the active-index list the last updateUniforms sized the
+   * traversal for. Only the traversal shrinks with the cut: the tree is built
+   * over every particle, because leaf indices are sorted-particle order and a
+   * compacted build would renumber leaves rather than remove them.
+   */
+  private lastActiveCount: number | null = null;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -288,6 +305,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -470,6 +488,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       visitCount,
       fallbackNodeFlags,
       fallbackNodeMass,
+      createAlgorithmLodFallbacks(device, safeMaxNodes, "BH"),
       safeMaxNodes,
     );
   }
@@ -581,6 +600,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 7, resource: { buffer: b.nodeSize } },
         { binding: 8, resource: { buffer: nodeFlags } },
         { binding: 9, resource: { buffer: nodeMass } },
+        { binding: 10, resource: { buffer: lodLiveIndices(context, b.lodFallbacks) } },
       ],
     });
 
@@ -683,8 +703,11 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // Traverse uniforms (32 bytes)
     // struct ForceUniforms { particle_count: u32, repulsion_strength: f32, theta: f32, min_distance: f32,
-    //                        leaf_size: f32, max_distance: f32, _pad2: f32, _pad3: f32 }
+    //                        leaf_size: f32, max_distance: f32, active_count: u32, _pad3: u32 }
     const leafSize = rootSize / 256.0; // Approximate leaf size
+    // The traversal dispatch and the shader's bound must both come from this
+    // one number, or threads read past the end of the list.
+    this.lastActiveCount = lodActiveCount(context);
     const traverseData = new ArrayBuffer(32);
     const traverseView = new DataView(traverseData);
     traverseView.setUint32(0, context.nodeCount, true);
@@ -693,8 +716,8 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     traverseView.setFloat32(12, context.forceConfig.repulsionDistanceMin, true);
     traverseView.setFloat32(16, leafSize, true);
     traverseView.setFloat32(20, context.forceConfig.repulsionDistanceMax, true);
-    traverseView.setFloat32(24, 0.0, true);
-    traverseView.setFloat32(28, 0.0, true);
+    traverseView.setUint32(24, this.lastActiveCount, true); // active_count
+    traverseView.setUint32(28, 0, true);
     device.queue.writeBuffer(b.traverseUniforms, 0, traverseData);
 
     // Radix sort uniforms (scan + per-pass staging)
@@ -816,7 +839,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       const pass = encoder.beginComputePass({ label: "BH Traversal" });
       pass.setPipeline(p.repulsion);
       pass.setBindGroup(0, bg.repulsion);
-      pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.dispatchWorkgroups(
+        calculateWorkgroups(this.lastActiveCount ?? nodeCount, WORKGROUP_SIZE),
+      );
       pass.end();
     }
   }

@@ -87,6 +87,7 @@ interface SimulationBuffers {
   readback: GPUBuffer;
   nodeCount: number;
   activeCount: number;
+  lodEdgesActive: boolean;
   activeEdgeCount: number;
   bundleCount: number;
   nodeCapacity: number;
@@ -238,12 +239,14 @@ interface CollisionModule {
     collisionBuffers: unknown,
     positions: GPUBuffer,
     nodeFlags?: GPUBuffer,
+    liveIndices?: GPUBuffer,
   ): { bindGroup: GPUBindGroup; applyBindGroup: GPUBindGroup };
   updateCollisionUniforms(
     device: GPUDevice,
     collisionBuffers: unknown,
     nodeCount: number,
     forceConfig: FullForceConfig,
+    activeCount?: number,
   ): void;
   uploadNodeSizes(
     device: GPUDevice,
@@ -257,6 +260,7 @@ interface CollisionModule {
     nodeCount: number,
     iterations?: number,
     useTiled?: boolean,
+    activeCount?: number,
   ): void;
   destroyCollisionBuffers(buffers: unknown): void;
   createGridCollisionPipeline(context: unknown): {
@@ -284,6 +288,7 @@ interface CollisionModule {
     displacements: GPUBuffer,
     positions: GPUBuffer,
     nodeFlags?: GPUBuffer,
+    liveIndices?: GPUBuffer,
   ): { grid: GPUBindGroup; apply: GPUBindGroup };
   updateGridCollisionUniforms(
     device: GPUDevice,
@@ -292,6 +297,7 @@ interface CollisionModule {
     forceConfig: FullForceConfig,
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     maxRadius: number,
+    activeCount?: number,
   ): void;
   recordGridCollisionPass(
     encoder: GPUCommandEncoder,
@@ -300,6 +306,7 @@ interface CollisionModule {
     gridBuffers: unknown,
     nodeCount: number,
     iterations?: number,
+    activeCount?: number,
   ): void;
   destroyGridCollisionBuffers(buffers: unknown): void;
 }
@@ -397,6 +404,23 @@ export interface CollisionRunInput {
    * bounding box of `positions`.
    */
   bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+  /**
+   * Active-index list the resolve pass dispatches over, ascending. Defaults to
+   * the identity list the collision buffers allocate, which is every slot in
+   * slot order — the sweep the passes did before the list existed.
+   */
+  liveIndices?: Uint32Array;
+  /**
+   * A second recorded phase against the SAME buffers: the frame after an LOD
+   * transition, where the displacement buffer still holds what the previous
+   * cut left in it. Flags and list are re-uploaded; anything omitted carries
+   * over from the first phase.
+   */
+  then?: {
+    flags?: Uint32Array;
+    liveIndices?: Uint32Array;
+    iterations?: number;
+  };
 }
 
 /**
@@ -412,8 +436,6 @@ export async function runCollision(
   const mod = await loadCollisionModule();
   const { positions, sizes, variant } = input;
   const nodeCount = sizes.length;
-  const iterations = input.iterations ?? 1;
-  const flags = input.flags ?? new Uint32Array(nodeCount);
   const forceConfig = validateForceConfig(input.config ?? {});
 
   const positionBuffer = device.createBuffer({
@@ -423,7 +445,15 @@ export async function runCollision(
   });
   const flagsBuffer = device.createBuffer({
     label: "Collision Run Node Flags",
-    size: flags.byteLength,
+    size: nodeCount * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  // Allocated at nodeCount and written by contents, exactly as the simulation's
+  // own list is: a transition never changes the buffer identity, so a second
+  // phase reuses the bind groups the first one was recorded with.
+  const liveIndicesBuffer = device.createBuffer({
+    label: "Collision Run Live Indices",
+    size: Math.max(nodeCount, 1) * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   const readback = device.createBuffer({
@@ -432,14 +462,16 @@ export async function runCollision(
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   device.queue.writeBuffer(positionBuffer, 0, positions.slice().buffer);
-  device.queue.writeBuffer(flagsBuffer, 0, flags.slice().buffer);
+
+  const identity = new Uint32Array(Math.max(nodeCount, 1));
+  for (let i = 0; i < identity.length; i++) identity[i] = i;
 
   // The grid path reuses the O(n^2) module's nodeSizes and displacements
   // buffers, exactly as graph.ts does.
   const buffers = mod.createCollisionBuffers(device, nodeCount);
   mod.uploadNodeSizes(device, buffers, sizes);
 
-  const encoder = device.createCommandEncoder();
+  let recordPhase: (activeCount: number, iterations: number) => void;
   let disposeVariant: () => void;
 
   if (variant === "grid") {
@@ -453,49 +485,84 @@ export async function runCollision(
       buffers.displacements,
       positionBuffer,
       flagsBuffer,
+      liveIndicesBuffer,
     );
     let maxRadius = 0;
     for (const size of sizes) {
       if (size > maxRadius) maxRadius = size;
     }
-    mod.updateGridCollisionUniforms(
-      device,
-      gridBuffers,
-      nodeCount,
-      forceConfig,
-      input.bounds ?? boundsOf(positions),
-      maxRadius,
-    );
-    mod.recordGridCollisionPass(
-      encoder,
-      pipeline,
-      bindGroups,
-      gridBuffers,
-      nodeCount,
-      iterations,
-    );
+    recordPhase = (activeCount, iterations) => {
+      mod.updateGridCollisionUniforms(
+        device,
+        gridBuffers,
+        nodeCount,
+        forceConfig,
+        input.bounds ?? boundsOf(positions),
+        maxRadius,
+        activeCount,
+      );
+      const encoder = device.createCommandEncoder();
+      mod.recordGridCollisionPass(
+        encoder,
+        pipeline,
+        bindGroups,
+        gridBuffers,
+        nodeCount,
+        iterations,
+        activeCount,
+      );
+      device.queue.submit([encoder.finish()]);
+    };
     disposeVariant = () => mod.destroyGridCollisionBuffers(gridBuffers);
   } else {
     const pipeline = mod.createCollisionPipeline({ device });
-    mod.updateCollisionUniforms(device, buffers, nodeCount, forceConfig);
     const bindGroup = mod.createCollisionBindGroup(
       device,
       pipeline,
       buffers,
       positionBuffer,
       flagsBuffer,
+      liveIndicesBuffer,
     );
-    mod.recordCollisionPass(
-      encoder,
-      pipeline,
-      bindGroup,
-      nodeCount,
-      iterations,
-      variant === "tiled",
-    );
+    recordPhase = (activeCount, iterations) => {
+      mod.updateCollisionUniforms(device, buffers, nodeCount, forceConfig, activeCount);
+      const encoder = device.createCommandEncoder();
+      mod.recordCollisionPass(
+        encoder,
+        pipeline,
+        bindGroup,
+        nodeCount,
+        iterations,
+        variant === "tiled",
+        activeCount,
+      );
+      device.queue.submit([encoder.finish()]);
+    };
     disposeVariant = () => {};
   }
 
+  /** One recorded frame: upload this phase's state, then dispatch it. */
+  const runPhase = (
+    flags: Uint32Array,
+    liveIndices: Uint32Array | undefined,
+    iterations: number,
+  ): void => {
+    device.queue.writeBuffer(flagsBuffer, 0, flags.slice().buffer);
+    device.queue.writeBuffer(liveIndicesBuffer, 0, (liveIndices ?? identity).slice().buffer);
+    recordPhase(liveIndices?.length ?? nodeCount, iterations);
+  };
+
+  let flags = input.flags ?? new Uint32Array(nodeCount);
+  let liveIndices = input.liveIndices;
+  runPhase(flags, liveIndices, input.iterations ?? 1);
+
+  if (input.then) {
+    flags = input.then.flags ?? flags;
+    liveIndices = input.then.liveIndices ?? liveIndices;
+    runPhase(flags, liveIndices, input.then.iterations ?? input.iterations ?? 1);
+  }
+
+  const encoder = device.createCommandEncoder();
   encoder.copyBufferToBuffer(positionBuffer, 0, readback, 0, positions.byteLength);
   device.queue.submit([encoder.finish()]);
 
@@ -507,6 +574,7 @@ export async function runCollision(
   mod.destroyCollisionBuffers(buffers);
   positionBuffer.destroy();
   flagsBuffer.destroy();
+  liveIndicesBuffer.destroy();
   readback.destroy();
   return result;
 }
@@ -762,6 +830,16 @@ export interface SimHarness {
    */
   setNodeFlags(flags: Uint32Array): void;
   /**
+   * Overwrite the active-index list WITHOUT touching the flags.
+   *
+   * Deliberately breaks the choke point above, and exists for one reason: the
+   * flag mask is meant to be defence in depth over the gather, and the only way
+   * to test that is to hand the shaders a list that disagrees with the flags —
+   * the never-refreshed identity list a host would hold for one frame after a
+   * transition. Over-inclusion must cost threads and change nothing.
+   */
+  setActiveIndices(indices: Uint32Array): void;
+  /**
    * Overwrite per-slot masses mid-run, the way an LOD collapse or expand does:
    * a contents write to the buffer that already exists.
    */
@@ -958,6 +1036,10 @@ export async function createSimHarness(
       applyFlags(buffers, flags);
     },
 
+    setActiveIndices(indices: Uint32Array): void {
+      mod.uploadLiveIndices(device, buffers, indices);
+    },
+
     writePositionRange(lo: number, x: Float32Array, y: Float32Array): void {
       const interleaved = new Float32Array(x.length * 2);
       for (let i = 0; i < x.length; i++) {
@@ -1077,6 +1159,13 @@ interface HarnessAlgorithmContext {
   edgeTargetsData?: Uint32Array | undefined;
   nodeFlags?: GPUBuffer | undefined;
   nodeMass?: GPUBuffer | undefined;
+  liveIndices?: GPUBuffer | undefined;
+  activeCount?: number | undefined;
+  lodEdgesActive?: boolean | undefined;
+  liveEdgeIndices?: GPUBuffer | undefined;
+  edgeBundles?: GPUBuffer | undefined;
+  activeEdgeCount?: number | undefined;
+  bundleCount?: number | undefined;
 }
 
 /**
@@ -1249,6 +1338,16 @@ export async function createAlgorithmSimHarness(
     edgeTargetsData: graph.edgeTargets,
     nodeFlags: view.nodeFlags,
     nodeMass: view.nodeMass,
+    // The LOD state, from the same fields the core pipeline reads — mirroring
+    // GraphMother.buildAlgorithmContext, so the plugins the GPU tests drive
+    // are cut exactly the way production cuts them.
+    liveIndices: view.liveIndices,
+    activeCount: view.activeCount,
+    lodEdgesActive: view.lodEdgesActive,
+    liveEdgeIndices: view.liveEdgeIndices,
+    edgeBundles: view.edgeBundles,
+    activeEdgeCount: view.activeEdgeCount,
+    bundleCount: view.bundleCount,
   });
 
   const bindGroupMode = options.bindGroupMode ?? "prebuilt-parity";
@@ -1339,6 +1438,10 @@ export async function createAlgorithmSimHarness(
 
     setNodeFlags(flags: Uint32Array): void {
       applyFlags(buffers, flags);
+    },
+
+    setActiveIndices(indices: Uint32Array): void {
+      mod.uploadLiveIndices(device, buffers, indices);
     },
 
     writePositionRange(lo: number, x: Float32Array, y: Float32Array): void {

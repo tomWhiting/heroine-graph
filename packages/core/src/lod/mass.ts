@@ -96,6 +96,40 @@ export function commitNodeMass(shadow: Float32Array, mass: Float32Array): MassDi
 }
 
 /**
+ * Working arrays {@link rollUpMass} would otherwise allocate on every call.
+ *
+ * A transition runs the roll-up over the whole slot space, so at 220K nodes
+ * the three arrays are 1.9 MB of garbage per zoom step — produced on the
+ * interaction path, where a collection pause is a dropped frame. Passing a
+ * scratch set makes the walk allocation-free; omitting it is still correct.
+ *
+ * Build it with {@link createRollUpMassScratch} and keep it for as long as the
+ * hierarchy it is sized for.
+ */
+export interface RollUpMassScratch {
+  /** Membership of the collapsed-root set, one byte per slot. */
+  readonly collapsed: Uint8Array;
+  /** Explicit descent stack: the slot at each level. */
+  readonly stackSlot: Uint32Array;
+  /** Explicit descent stack: the visible ancestor accumulating that slot. */
+  readonly stackCarrier: Uint32Array;
+}
+
+/**
+ * Allocate a {@link RollUpMassScratch} for a `nodeCount`-slot hierarchy.
+ *
+ * Sized exactly: every slot is pushed at most once (it has one parent), so
+ * `nodeCount` entries bound the stack for any forest over that slot space.
+ */
+export function createRollUpMassScratch(nodeCount: number): RollUpMassScratch {
+  return {
+    collapsed: new Uint8Array(nodeCount),
+    stackSlot: new Uint32Array(nodeCount),
+    stackCarrier: new Uint32Array(nodeCount),
+  };
+}
+
+/**
  * Compute per-slot mass for a set of collapsed subtree roots.
  *
  * Every node hidden by the collapse contributes its unit of mass to its
@@ -121,15 +155,21 @@ export function commitNodeMass(shadow: Float32Array, mass: Float32Array): MassDi
  * @param out Optional destination, reused across transitions to keep the
  *   per-transition path allocation-free. Must be at least `parent.length` long;
  *   entries beyond that are left untouched.
+ * @param scratch Optional working arrays, reused for the same reason as `out`.
+ *   Each must be at least `parent.length` long; entries beyond that are left
+ *   untouched. Contents on entry are irrelevant — the walk seeds everything it
+ *   reads — so one set can serve every transition over one hierarchy.
  * @returns `out`, or a fresh array, holding one mass per slot.
  * @throws GraphMotherError if the CSR does not describe `parent.length` slots,
- *   `out` is too short, or a collapsed root is out of range.
+ *   `out` or any scratch array is too short, or a collapsed root is out of
+ *   range.
  */
 export function rollUpMass(
   parent: Uint32Array,
   children: ChildrenCsr,
   collapsedRoots: Iterable<number>,
   out?: Float32Array,
+  scratch?: RollUpMassScratch,
 ): Float32Array {
   const nodeCount = parent.length;
   if (children.offsets.length !== nodeCount + 1) {
@@ -145,6 +185,23 @@ export function rollUpMass(
       `mass output has ${out.length} entries, expected at least nodeCount (${nodeCount})`,
     );
   }
+  if (scratch) {
+    for (
+      const [name, length] of [
+        ["collapsed", scratch.collapsed.length],
+        ["stackSlot", scratch.stackSlot.length],
+        ["stackCarrier", scratch.stackCarrier.length],
+      ] as const
+    ) {
+      if (length < nodeCount) {
+        throw new GraphMotherError(
+          ErrorCode.INVALID_GRAPH_DATA,
+          `mass scratch ${name} has ${length} entries, expected at least nodeCount ` +
+            `(${nodeCount})`,
+        );
+      }
+    }
+  }
 
   const mass = out ?? new Float32Array(nodeCount);
   // A slot unreachable from any root is never visited below. Seeding the whole
@@ -152,7 +209,10 @@ export function rollUpMass(
   // from a previous transition through `out`.
   mass.fill(NODE_MASS_UNIT, 0, nodeCount);
 
-  const collapsed = new Uint8Array(nodeCount);
+  // A reused scratch carries the previous transition's collapsed set, and a
+  // stale 1 here would hide a subtree that is now expanded.
+  const collapsed = scratch?.collapsed ?? new Uint8Array(nodeCount);
+  if (scratch) collapsed.fill(0, 0, nodeCount);
   let anyCollapsed = false;
   for (const root of collapsedRoots) {
     if (!Number.isInteger(root) || root < 0 || root >= nodeCount) {
@@ -167,9 +227,10 @@ export function rollUpMass(
   if (!anyCollapsed) return mass;
 
   // Every slot is pushed exactly once (one parent each), so nodeCount entries
-  // bound the stack.
-  const stackSlot = new Uint32Array(nodeCount);
-  const stackCarrier = new Uint32Array(nodeCount);
+  // bound the stack. No seeding needed on a reused pair: an entry is always
+  // written before it is read.
+  const stackSlot = scratch?.stackSlot ?? new Uint32Array(nodeCount);
+  const stackCarrier = scratch?.stackCarrier ?? new Uint32Array(nodeCount);
   let top = 0;
   for (let i = 0; i < nodeCount; i++) {
     if (parent[i] !== HIERARCHY_ROOT) continue;

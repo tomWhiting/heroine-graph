@@ -21,11 +21,12 @@
 // units) and the layout collapses. The t_fdp_attraction shader uses the
 // same dist_scale so the model's P1-P3 force balance holds.
 //
-// Two entry points share the pair-force math (repulsion_n2 pattern):
-// - main:        bindings 0-2, no slot masking
-// - main_masked: bindings 0-3, skips inert slots (dead or LOD-hidden)
-// Auto pipeline layouts only require bindings statically reachable from the
-// chosen entry point, so main's layout stays 0-2.
+// One entry point, main_masked (bindings 0-4, repulsion_n2 pattern): one
+// thread per entry of the LOD active-index list, with the inner all-pairs sum
+// over the same list and inert slots (dead or LOD-hidden) masked on top. The
+// unmasked `main` it used to also expose was a hole — a removed node's slot
+// stays in range with its position zeroed, so it repelled as a phantom body at
+// the origin — and there is no configuration in which running it is correct.
 //
 // Uses vec2<f32> layout for consolidated position/force data.
 
@@ -34,14 +35,31 @@ struct TFdpUniforms {
     gamma: f32,              // >= 1.0, controls force shape
     repulsion_scale: f32,    // kr: global repulsion multiplier
     dist_scale: f32,         // world units per t-kernel unit
+    // Length of the active-index list. The dispatch and both loop bounds come
+    // from this, never from node_count.
+    active_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: TFdpUniforms;
 @group(0) @binding(1) var<storage, read> positions: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - main_masked only
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
+
+// Active-index list: the first active_count entries are the slots taking part
+// in this tick, ascending. `active` is a reserved WGSL identifier, hence the
+// name.
+@group(0) @binding(4) var<storage, read> live_idx: array<u32>;
+
+// Per-node simulation mass (f32 per slot, 1.0 = one body). A collapsed LOD
+// subtree rolls its members' mass into the visible proxy; without this the
+// proxy repels like the single node it is drawn as and the visible layout
+// contracts on collapse.
+@group(0) @binding(5) var<storage, read> node_mass: array<f32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
@@ -58,7 +76,15 @@ const EPSILON: f32 = 0.0001;
 const FLOOR_FRACTION: f32 = 0.3;
 const FLOOR_ZONE: f32 = 0.1;
 
-fn pair_force(node_idx: u32, pos: vec2<f32>, i: u32) -> vec2<f32> {
+// Repulsion exerted on `node_idx` by slot `i`.
+//
+// `bodies` is how many bodies the SOURCE slot `i` stands for — 1.0 for an
+// ordinary node, the subtree's mass for a collapsed proxy. Only the source is
+// scaled: the receiver then accelerates the way the centre of mass of the
+// bodies it stands for does, because the integrator has no mass term. At unit
+// mass the multiply is the exact IEEE identity, so an un-collapsed graph
+// computes the bits it computed before mass reached this shader.
+fn pair_force(node_idx: u32, pos: vec2<f32>, i: u32, bodies: f32) -> vec2<f32> {
     let delta = pos - positions[i];
     let dist_sq = dot(delta, delta);
 
@@ -68,7 +94,7 @@ fn pair_force(node_idx: u32, pos: vec2<f32>, i: u32) -> vec2<f32> {
     if (dist_sq < EPSILON) {
         let angle = f32(node_idx) * 0.618033988749895 * 6.28318530718;
         return vec2<f32>(cos(angle), sin(angle)) *
-            (uniforms.repulsion_scale * FLOOR_FRACTION);
+            (uniforms.repulsion_scale * FLOOR_FRACTION * bodies);
     }
 
     let dist = sqrt(dist_sq);
@@ -76,45 +102,33 @@ fn pair_force(node_idx: u32, pos: vec2<f32>, i: u32) -> vec2<f32> {
 
     // t-distribution repulsive force on the normalized distance
     let d = dist / uniforms.dist_scale;
-    let t_force = uniforms.repulsion_scale * d / pow(1.0 + d * d, uniforms.gamma);
+    let t_force = uniforms.repulsion_scale * bodies * d / pow(1.0 + d * d, uniforms.gamma);
 
     // Near-zero separation boost, faded out by FLOOR_ZONE * dist_scale
-    let floor_boost = uniforms.repulsion_scale * FLOOR_FRACTION *
+    let floor_boost = uniforms.repulsion_scale * bodies * FLOOR_FRACTION *
         (1.0 - smoothstep(0.0, FLOOR_ZONE * uniforms.dist_scale, dist));
 
     return dir * (t_force + floor_boost);
 }
 
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
-
-    let pos = positions[node_idx];
-    var total_force = vec2<f32>(0.0, 0.0);
-
-    for (var i = 0u; i < uniforms.node_count; i++) {
-        if (i == node_idx) {
-            continue;
-        }
-
-        total_force += pair_force(node_idx, pos, i);
-    }
-
-    forces[node_idx] += total_force;
-}
-
+// One thread per ENTRY of live_idx, and the inner sum runs over the same list,
+// so the cost is O(active_count^2) rather than O(node_count^2).
+//
+// The flag mask is kept on top of the gather. A stale list can only
+// over-include, and masking makes that inert rather than a phantom force, so a
+// host whose list was never refreshed (the identity list the fallback writes)
+// stays correct, just slower. Masking also keeps the summed set and its
+// addition order identical between the two cases, which is what makes the
+// no-cut path bit-identical to slot-order dispatch.
 @compute @workgroup_size(256)
 fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
+    let entry = global_id.x;
 
-    if (node_idx >= uniforms.node_count) {
+    if (entry >= uniforms.active_count) {
         return;
     }
 
+    let node_idx = live_idx[entry];
     // Inert slots — dead or LOD-hidden — neither
     // receive nor exert repulsion
     if ((node_flags[node_idx] & NODE_FLAG_INERT) != 0u) {
@@ -124,7 +138,8 @@ fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pos = positions[node_idx];
     var total_force = vec2<f32>(0.0, 0.0);
 
-    for (var i = 0u; i < uniforms.node_count; i++) {
+    for (var k = 0u; k < uniforms.active_count; k++) {
+        let i = live_idx[k];
         if (i == node_idx) {
             continue;
         }
@@ -132,7 +147,7 @@ fn main_masked(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        total_force += pair_force(node_idx, pos, i);
+        total_force += pair_force(node_idx, pos, i, node_mass[i]);
     }
 
     forces[node_idx] += total_force;

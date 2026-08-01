@@ -184,6 +184,55 @@ export interface AlgorithmRenderContext {
    * zeroed one: zero mass is no repulsion.
    */
   nodeMass?: GPUBuffer | undefined;
+  /**
+   * Active-index list (u32 per entry; see pipeline.ts `liveIndices`). The
+   * first {@link AlgorithmRenderContext.activeCount} entries are the slots
+   * taking part in this tick, ascending.
+   *
+   * A node-indexed pass should dispatch one thread per ENTRY and gather
+   * `live_idx[entry]`, which is what turns hiding a subtree into work that is
+   * not done rather than threads that return early. The gather never replaces
+   * the {@link AlgorithmRenderContext.nodeFlags} mask: a stale list can only
+   * over-include, and masking makes over-inclusion inert, so a host that never
+   * refreshes the list is slower and never wrong.
+   *
+   * Absent means "the whole graph, in slot order" — bind the identity list
+   * (see createAlgorithmLodFallbacks), never a zeroed buffer.
+   */
+  liveIndices?: GPUBuffer | undefined;
+  /**
+   * Entries of {@link AlgorithmRenderContext.liveIndices} the passes cover.
+   * Defaults to `nodeCount`, which is what the identity list describes.
+   *
+   * Per-frame state: it belongs in a uniform written by
+   * {@link ForceAlgorithm.updateUniforms}, never captured in a bind group.
+   */
+  activeCount?: number | undefined;
+  /**
+   * Whether an LOD edge aggregation is uploaded (see pipeline.ts
+   * `lodEdgesActive`). Distinct from the two counts below being zero, which is
+   * a legal aggregation covering nothing — a cut can leave every edge inside a
+   * collapsed subtree, and that must dispatch no attraction at all rather than
+   * fall back to the whole edge array.
+   */
+  lodEdgesActive?: boolean | undefined;
+  /**
+   * Source edges with both endpoints in the visible cut (u32 per entry;
+   * pipeline.ts `liveEdgeIndices`), and the aggregated cross-boundary edges
+   * standing in for everything else (three u32 per bundle — source, target,
+   * weight; pipeline.ts `edgeBundles`).
+   *
+   * An algorithm that supplies its own attraction (`handlesSprings`) MUST
+   * consume these under a cut. Skipping an edge because an endpoint is hidden
+   * does not defer that edge's pull, it deletes it: a collapsed module would
+   * exert nothing on the modules it imports, and the collapsed layout would
+   * stop resembling the expanded one (SC-002).
+   */
+  liveEdgeIndices?: GPUBuffer | undefined;
+  edgeBundles?: GPUBuffer | undefined;
+  /** Entries of each of the two lists above; meaningful while lodEdgesActive. */
+  activeEdgeCount?: number | undefined;
+  bundleCount?: number | undefined;
 }
 
 /**

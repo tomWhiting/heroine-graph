@@ -18,7 +18,14 @@ import type {
   ForceAlgorithmInfo,
 } from "./types.ts";
 // (EmptyAlgorithmBuffers no longer used — N2AlgorithmBuffers replaces it)
-import { NODE_MASS_UNIT } from "../../lod/mass.ts";
+import {
+  type AlgorithmLodFallbacks,
+  createAlgorithmLodFallbacks,
+  lodActiveCount,
+  lodLiveIndices,
+  lodNodeFlags,
+  lodNodeMass,
+} from "./lod_bindings.ts";
 
 // Import shader source
 import REPULSION_N2_WGSL from "../shaders/repulsion_n2.comp.wgsl";
@@ -41,25 +48,38 @@ const N2_ALGORITHM_INFO: ForceAlgorithmInfo = {
 class N2AlgorithmBuffers implements AlgorithmBuffers {
   constructor(
     public uniformBuffer: GPUBuffer,
-    /** Unit-filled masses for contexts that supply none (see createBuffers) */
-    public fallbackNodeMass: GPUBuffer,
+    /** Identity list / unit mass / all-live flags for a context that supplies none */
+    public fallbacks: AlgorithmLodFallbacks,
   ) {}
 
   destroy(): void {
     this.uniformBuffer.destroy();
-    this.fallbackNodeMass.destroy();
+    this.fallbacks.destroy();
   }
 }
 
 /**
- * N² repulsion algorithm implementation
+ * N² repulsion algorithm implementation.
+ *
+ * Runs `main_masked`, the same entry point the core simulation pipeline uses:
+ * one thread per entry of the active-index list, with the inner all-pairs sum
+ * over the same list and an inert-slot mask on top.
+ *
+ * It used to run an unmasked `main` whose bind group carried no node_flags.
+ * That was a hole. A removed node keeps its slot inside the high-water mark
+ * with its position zeroed, so under `setForceAlgorithm("n2")` every hole
+ * repelled as a phantom body at the origin — a graph that had shed nodes pushed
+ * its survivors outward from a point where nothing was drawn — and an LOD-hidden
+ * node went on repelling the proxy that replaced it on screen.
  */
 export class N2ForceAlgorithm implements ForceAlgorithm {
   readonly info = N2_ALGORITHM_INFO;
   readonly handlesGravity = false;
 
   private uniformBuffer: GPUBuffer | null = null;
-  private fallbackNodeMass: GPUBuffer | null = null;
+  private fallbacks: AlgorithmLodFallbacks | null = null;
+  /** Entries of the active list the last updateUniforms sized the pass for. */
+  private lastActiveCount: number | null = null;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
@@ -74,7 +94,7 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
       layout: "auto",
       compute: {
         module: shaderModule,
-        entryPoint: "main",
+        entryPoint: "main_masked",
       },
     });
 
@@ -84,30 +104,14 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
     this.uniformBuffer = device.createBuffer({
       label: "N² Repulsion Uniforms",
-      // RepulsionUniforms is 32 bytes: this entry point ignores the
-      // active-index half of it, but a uniform binding smaller than the
-      // declared struct is a validation error, and an invalid bind group
-      // discards the whole frame's command buffer rather than erroring here.
+      // RepulsionUniforms is 32 bytes.
       size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Unit masses for contexts that supply no nodeMass buffer. Unlike the
-    // node-flags fallback this cannot rely on zero-init: a zeroed mass buffer
-    // is a graph with no repulsion at all.
-    const slots = Math.max(maxNodes, 1);
-    this.fallbackNodeMass = device.createBuffer({
-      label: "N² Fallback Node Mass",
-      size: slots * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(
-      this.fallbackNodeMass,
-      0,
-      new Float32Array(slots).fill(NODE_MASS_UNIT),
-    );
+    this.fallbacks = createAlgorithmLodFallbacks(device, maxNodes, "N²");
 
-    return new N2AlgorithmBuffers(this.uniformBuffer, this.fallbackNodeMass);
+    return new N2AlgorithmBuffers(this.uniformBuffer, this.fallbacks);
   }
 
   createBindGroups(
@@ -116,9 +120,10 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
     context: AlgorithmRenderContext,
     _algorithmBuffers: AlgorithmBuffers,
   ): AlgorithmBindGroups {
-    if (!this.uniformBuffer || !this.fallbackNodeMass) {
+    if (!this.uniformBuffer || !this.fallbacks) {
       throw new Error("N² algorithm buffers not initialized");
     }
+    const fallbacks = this.fallbacks;
 
     const repulsion = device.createBindGroup({
       label: "N² Repulsion Bind Group",
@@ -127,7 +132,9 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
-        { binding: 4, resource: { buffer: context.nodeMass ?? this.fallbackNodeMass } },
+        { binding: 3, resource: { buffer: lodNodeFlags(context, fallbacks) } },
+        { binding: 4, resource: { buffer: lodNodeMass(context, fallbacks) } },
+        { binding: 5, resource: { buffer: lodLiveIndices(context, fallbacks) } },
       ],
     });
 
@@ -141,19 +148,20 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   ): void {
     if (!this.uniformBuffer) return;
 
+    // The dispatch below and the shader's loop bounds must both come from this
+    // one number, or threads read past the end of the list.
+    this.lastActiveCount = lodActiveCount(context);
+
     const data = new ArrayBuffer(32);
     const view = new DataView(data);
 
     // RepulsionUniforms: { node_count, repulsion_strength, min_distance,
     //                      max_distance, active_count, 3 x padding }
-    // This plugin runs the unmasked `main` entry point, which iterates every
-    // slot and reads neither active_count nor the list; it is written anyway
-    // so the buffer never disagrees with the struct it is bound as.
     view.setUint32(0, context.nodeCount, true);
     view.setFloat32(4, Math.abs(context.forceConfig.repulsionStrength), true);
     view.setFloat32(8, context.forceConfig.repulsionDistanceMin, true);
     view.setFloat32(12, context.forceConfig.repulsionDistanceMax, true);
-    view.setUint32(16, context.nodeCount, true);
+    view.setUint32(16, this.lastActiveCount, true);
 
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
@@ -164,7 +172,10 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
     bindGroups: AlgorithmBindGroups,
     nodeCount: number,
   ): void {
-    const workgroups = calculateWorkgroups(nodeCount, 256);
+    // One thread per active-list entry. Zero entries is a legal answer — every
+    // slot hidden — and must dispatch nothing, so the fallback is reached only
+    // when updateUniforms has never run.
+    const workgroups = calculateWorkgroups(this.lastActiveCount ?? nodeCount, 256);
 
     const pass = encoder.beginComputePass({ label: "N² Repulsion" });
     pass.setPipeline(pipelines.repulsion);
@@ -179,8 +190,9 @@ export class N2ForceAlgorithm implements ForceAlgorithm {
   destroy(): void {
     this.uniformBuffer?.destroy();
     this.uniformBuffer = null;
-    this.fallbackNodeMass?.destroy();
-    this.fallbackNodeMass = null;
+    this.fallbacks?.destroy();
+    this.fallbacks = null;
+    this.lastActiveCount = null;
   }
 }
 

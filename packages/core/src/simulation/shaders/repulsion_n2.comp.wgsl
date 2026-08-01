@@ -3,13 +3,17 @@
 //
 // Uses vec2<f32> layout for consolidated position/force data.
 //
-// Two entry points share the pair-force math:
-// - main:        bindings 0-2 + 4, no slot masking (used by the N² algorithm
-//                plugin, whose bind group has no node_flags buffer)
-// - main_masked: bindings 0-5, dispatched over the active-index list and
-//                masking inert slots — used by the core simulation pipeline
-// Auto pipeline layouts only require bindings statically reachable from the
-// chosen entry point, so main's layout stays free of node_flags and live_idx.
+// One entry point, main_masked (bindings 0-5): dispatched over the
+// active-index list and masking inert slots. The core simulation pipeline and
+// the N² algorithm plugin both run it.
+//
+// There used to be a second, unmasked `main` for the plugin, whose bind group
+// carried no node_flags. That was a hole, not an optimisation: a removed node's
+// slot stays in range with its position zeroed, so under setForceAlgorithm("n2")
+// every hole repelled as a phantom body at the origin, and an LOD-hidden node
+// went on pushing the nodes that replaced it on screen. The plugin now binds
+// the same six bindings; when its host supplies no list it binds the identity
+// one, which is the same slot-order sum the unmasked entry point computed.
 
 struct RepulsionUniforms {
     node_count: u32,
@@ -32,7 +36,7 @@ struct RepulsionUniforms {
 // Force accumulators (read-write) - vec2<f32> per node
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) - main_masked only
+// Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
 @group(0) @binding(3) var<storage, read> node_flags: array<u32>;
 
 // Per-node simulation mass (f32 per slot, 1.0 = one body). A collapsed LOD
@@ -43,7 +47,7 @@ struct RepulsionUniforms {
 
 // Active-index list: the first active_count entries are the slots taking part
 // in this tick, ascending. `active` is a reserved WGSL identifier, hence the
-// name. main_masked only.
+// name.
 @group(0) @binding(5) var<storage, read> live_idx: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
@@ -78,30 +82,7 @@ fn pair_force(node_pos: vec2<f32>, other_pos: vec2<f32>, other_mass: f32) -> vec
     return delta * (force_magnitude / dist);
 }
 
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
-
-    if (node_idx >= uniforms.node_count) {
-        return;
-    }
-
-    let node_pos = positions[node_idx];
-    var force = vec2<f32>(0.0, 0.0);
-
-    // Direct N^2 summation
-    for (var i = 0u; i < uniforms.node_count; i++) {
-        if (i == node_idx) {
-            continue;
-        }
-
-        force += pair_force(node_pos, positions[i], node_mass[i]);
-    }
-
-    forces[node_idx] += force;
-}
-
-// Active-list variant: one thread per ENTRY of live_idx, and the inner sum
+// One thread per ENTRY of live_idx, and the inner sum
 // runs over the same list, so the cost is O(active_count^2) rather than
 // O(node_count^2) — the reason the list exists.
 //

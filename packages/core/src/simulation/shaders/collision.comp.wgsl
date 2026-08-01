@@ -22,7 +22,11 @@ struct CollisionUniforms {
     _pad_iterations: u32,      // Reserved: the loop count lives on the CPU
                                // (recordCollisionPass), no shader reads it
     default_radius: f32,       // Default node radius if not specified
-    _pad0: f32,
+    // Length of the active-index list. Both entry points dispatch over it and
+    // sweep it, never over node_count: under a cut the collision set is the
+    // visible set, and paying full N to discover that is the cost this
+    // removes.
+    active_count: u32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -46,7 +50,18 @@ struct CollisionUniforms {
 // Per-node displacement accumulated by this iteration, consumed by the apply
 // pass. Every thread of the dispatch writes its own slot and no other, so
 // there is no cross-thread hazard.
+//
+// A slot the dispatch omits keeps a stale value, and that is safe for exactly
+// one reason: the omitted slots are the inert ones, and the apply pass skips
+// every IMMOVABLE slot on the flags rather than trusting the dispatch. The
+// mask is the guarantee; the list is the optimisation.
 @group(0) @binding(4) var<storage, read_write> displacements: array<vec2<f32>>;
+
+// Active-index list: the first active_count entries are the slots taking part
+// in this tick, ascending. `active` is a reserved WGSL identifier, hence the
+// name. It holds every non-inert slot, which is a superset of the slots the
+// apply pass will touch.
+@group(0) @binding(5) var<storage, read> live_idx: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
@@ -89,8 +104,12 @@ fn resolve_displacement(node_idx: u32) -> vec2<f32> {
     // Accumulated displacement
     var disp = vec2<f32>(0.0, 0.0);
 
-    // Check against all other nodes
-    for (var j = 0u; j < uniforms.node_count; j++) {
+    // Check against every other node in the active set. Ascending list order
+    // keeps the visited set and the accumulation order identical to slot-order
+    // sweeping, so with the identity list the resolved positions are the ones
+    // the pre-list shader produced.
+    for (var e = 0u; e < uniforms.active_count; e++) {
+        let j = live_idx[e];
         if (j == node_idx) {
             continue;
         }
@@ -143,14 +162,20 @@ fn resolve_displacement(node_idx: u32) -> vec2<f32> {
 
 // Main collision detection and resolution
 // Uses iterative relaxation to separate overlapping nodes
+//
+// One thread per ENTRY of the active-index list. Every entry writes its own
+// slot every iteration, so the apply pass that follows can never pick up a
+// displacement left by an earlier iteration; the slots no entry names are the
+// inert ones, which the apply pass drops on the flags.
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let node_idx = global_id.x;
+    let entry = global_id.x;
 
-    // Every thread within the buffer writes its slot — including the
-    // padding threads past node_count that the workgroup round-up adds —
-    // so the apply pass can never pick up a displacement left by an
-    // earlier iteration or an earlier (larger) node count.
+    if (entry >= uniforms.active_count) {
+        return;
+    }
+
+    let node_idx = live_idx[entry];
     if (node_idx >= arrayLength(&displacements)) {
         return;
     }
@@ -167,15 +192,24 @@ var<workgroup> shared_radius: array<f32, 256>;
 fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
                  @builtin(local_invocation_id) local_id: vec3<u32>,
                  @builtin(workgroup_id) group_id: vec3<u32>) {
-    let node_idx = global_id.x;
+    let entry = global_id.x;
     let tid = local_id.x;
 
-    // CRITICAL: All threads must reach workgroupBarrier() calls.
+    // CRITICAL: All threads must reach workgroupBarrier() calls. A thread past
+    // the end of the active list cannot return early — it still has to load
+    // its share of every tile — so it carries a sentinel slot and is excluded
+    // from the work and from the final write instead.
+    let in_range = entry < uniforms.active_count;
+    var node_idx = 0u;
+    if (in_range) {
+        node_idx = live_idx[entry];
+    }
+
     // Out-of-bounds threads participate in barriers but skip actual work.
     // Dead slots (negative radius) participate in barriers but never collide.
     // Pinned nodes participate in barriers and tile loads (so they push
     // others away) but never receive displacement themselves.
-    var is_valid = node_idx < uniforms.node_count;
+    var is_valid = in_range && node_idx < uniforms.node_count;
 
     // Load this node's data (only valid threads read from global memory)
     var pos = vec2<f32>(0.0, 0.0);
@@ -264,7 +298,9 @@ fn resolve_tiled(@builtin(global_invocation_id) global_id: vec3<u32>,
     // slot (disp is still zero for out-of-range, dead and pinned nodes) so
     // the apply pass never reads a value left over from a previous
     // iteration — see the header note on the two-pass split.
-    if (node_idx < arrayLength(&displacements)) {
+    // in_range first: an out-of-range thread carries the sentinel slot 0, and
+    // writing zero there would erase a live node's displacement.
+    if (in_range && node_idx < arrayLength(&displacements)) {
         displacements[node_idx] = disp;
     }
 }

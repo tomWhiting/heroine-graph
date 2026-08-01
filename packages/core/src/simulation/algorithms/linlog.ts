@@ -18,14 +18,26 @@
 
 import type { GPUContext } from "../../webgpu/context.ts";
 import { calculateWorkgroups } from "../../renderer/commands.ts";
-import type {
-  AlgorithmBindGroups,
-  AlgorithmBuffers,
-  AlgorithmPipelines,
-  AlgorithmRenderContext,
-  ForceAlgorithm,
-  ForceAlgorithmInfo,
+import {
+  type AlgorithmBindGroups,
+  type AlgorithmBuffers,
+  type AlgorithmPipelines,
+  type AlgorithmRenderContext,
+  assertAlgorithmSupportedOnDevice,
+  type ForceAlgorithm,
+  type ForceAlgorithmInfo,
 } from "./types.ts";
+import {
+  type AlgorithmLodFallbacks,
+  createAlgorithmLodFallbacks,
+  lodActiveCount,
+  lodEdgeBundles,
+  type LodEdgeDispatch,
+  lodEdgeDispatch,
+  lodLiveEdgeIndices,
+  lodLiveIndices,
+  lodNodeMass,
+} from "./lod_bindings.ts";
 
 // Import shader sources (separate files due to different bind group layouts)
 import LINLOG_REPULSION_WGSL from "../shaders/linlog.comp.wgsl";
@@ -42,7 +54,16 @@ const LINLOG_ALGORITHM_INFO: ForceAlgorithmInfo = {
   minNodes: 0,
   maxNodes: 50000,
   complexity: "O(n²)",
+  // The bundled attraction pass binds nine storage buffers in one stage: the
+  // six the un-cut pass uses, plus the LOD active-edge list, the bundle table
+  // and per-node mass. Without them a collapse DELETES a module's cross-cutting
+  // imports rather than transferring them to the proxy, so this is the price of
+  // the layout being the same layout at every zoom level, not an optimisation.
+  minStorageBuffersPerShaderStage: 9,
 };
+
+/** Byte size of LinLogUniforms, shared by both LinLog shaders. */
+const LINLOG_UNIFORM_BYTES = 48;
 
 /**
  * Extended pipeline type for LinLog (repulsion + attraction passes)
@@ -50,6 +71,15 @@ const LINLOG_ALGORITHM_INFO: ForceAlgorithmInfo = {
 interface LinLogPipelines extends AlgorithmPipelines {
   attraction: GPUComputePipeline;
   attractionLayout: GPUBindGroupLayout;
+  /**
+   * Attraction over the LOD active-edge list plus the aggregated bundles.
+   *
+   * A second entry point rather than a branch in the first, so that with no cut
+   * the pipeline, its bind group and its arithmetic are the ones that shipped
+   * before edge aggregation existed.
+   */
+  attractionBundled: GPUComputePipeline;
+  attractionBundledLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -57,6 +87,7 @@ interface LinLogPipelines extends AlgorithmPipelines {
  */
 interface LinLogBindGroups extends AlgorithmBindGroups {
   attraction: GPUBindGroup;
+  attractionBundled: GPUBindGroup;
 }
 
 /**
@@ -67,6 +98,8 @@ class LinLogBuffers implements AlgorithmBuffers {
     public uniformBuffer: GPUBuffer,
     public degreesBuffer: GPUBuffer,
     public edgeWeightsBuffer: GPUBuffer,
+    /** Identity list / unit mass / all-live flags for a context supplying none */
+    public fallbacks: AlgorithmLodFallbacks,
     public maxNodes: number,
     public maxEdges: number,
   ) {}
@@ -75,6 +108,7 @@ class LinLogBuffers implements AlgorithmBuffers {
     this.uniformBuffer.destroy();
     this.degreesBuffer.destroy();
     this.edgeWeightsBuffer.destroy();
+    this.fallbacks.destroy();
   }
 }
 
@@ -97,9 +131,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
 
   /** Cached edge count from last updateUniforms for attraction dispatch sizing */
   private lastEdgeCount = 0;
+  /** Entries of the active-index list the last updateUniforms sized the pass for. */
+  private lastActiveCount: number | null = null;
+  /** The aggregated edge set the last updateUniforms saw, or null for no cut. */
+  private lastLodEdges: LodEdgeDispatch | null = null;
 
   createPipelines(context: GPUContext): AlgorithmPipelines {
     const { device } = context;
+    assertAlgorithmSupportedOnDevice(LINLOG_ALGORITHM_INFO, device);
 
     // Separate shader modules — different bind group layouts require separate WGSL files
     const repulsionShader = device.createShaderModule({
@@ -112,7 +151,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       code: LINLOG_ATTRACTION_WGSL,
     });
 
-    // Repulsion pipeline: uniforms, positions, forces, degrees, node_flags
+    // Repulsion pipeline: uniforms, positions, forces, degrees, node_flags,
+    // active-index list, per-node mass
     const repulsionLayout = device.createBindGroupLayout({
       label: "LinLog Repulsion Layout",
       entries: [
@@ -121,6 +161,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -135,17 +177,19 @@ export class LinLogAlgorithm implements ForceAlgorithm {
 
     // Attraction pipeline: uniforms, positions, forces, edge_sources, edge_targets,
     // edge_weights, node_flags
+    const attractionEntries: GPUBindGroupLayoutEntry[] = [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+    ];
+
     const attractionLayout = device.createBindGroupLayout({
       label: "LinLog Attraction Layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      ],
+      entries: attractionEntries,
     });
 
     const attraction = device.createComputePipeline({
@@ -157,21 +201,46 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       },
     });
 
+    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
+    // the bundle table and the per-node mass each arriving pull is divided by.
+    const attractionBundledLayout = device.createBindGroupLayout({
+      label: "LinLog Attraction Layout (LOD bundles)",
+      entries: [
+        ...attractionEntries,
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    const attractionBundled = device.createComputePipeline({
+      label: "LinLog Attraction Pipeline (LOD bundles)",
+      layout: device.createPipelineLayout({ bindGroupLayouts: [attractionBundledLayout] }),
+      compute: {
+        module: attractionShader,
+        entryPoint: "main_bundled",
+      },
+    });
+
     const pipelines: LinLogPipelines = {
       repulsion,
       attraction,
       attractionLayout,
+      attractionBundled,
+      attractionBundledLayout,
     };
     return pipelines;
   }
 
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
-    // LinLogUniforms: 32 bytes
+    // LinLogUniforms: LINLOG_UNIFORM_BYTES
     // { node_count: u32, edge_count: u32, kr: f32, kg: f32,
-    //   edge_weight_influence: f32, flags: u32, _padding: vec2<u32> }
+    //   edge_weight_influence: f32, flags: u32, active_count: u32,
+    //   active_edge_count: u32, bundle_count: u32, 3 x padding }
+    // One buffer, bound by both LinLog shaders, which declare it identically.
     const uniformBuffer = device.createBuffer({
       label: "LinLog Uniforms",
-      size: 32,
+      size: LINLOG_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -190,7 +259,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    return new LinLogBuffers(uniformBuffer, degreesBuffer, edgeWeightsBuffer, maxNodes, maxEdges);
+    return new LinLogBuffers(
+      uniformBuffer,
+      degreesBuffer,
+      edgeWeightsBuffer,
+      createAlgorithmLodFallbacks(device, maxNodes, "LinLog"),
+      maxNodes,
+      maxEdges,
+    );
   }
 
   createBindGroups(
@@ -209,7 +285,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       );
     }
 
-    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags
+    // Repulsion bind group: uniforms, positions, forces, degrees, node_flags,
+    // active-index list, per-node mass
     const repulsion = device.createBindGroup({
       label: "LinLog Repulsion Bind Group",
       layout: pipelines.repulsion.getBindGroupLayout(0),
@@ -219,6 +296,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
         { binding: 2, resource: { buffer: context.forces } },
         { binding: 3, resource: { buffer: buffers.degreesBuffer } },
         { binding: 4, resource: { buffer: context.nodeFlags } },
+        { binding: 5, resource: { buffer: lodLiveIndices(context, buffers.fallbacks) } },
+        { binding: 6, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 
@@ -231,21 +310,37 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       );
     }
 
+    const attractionEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: buffers.uniformBuffer } },
+      { binding: 1, resource: { buffer: context.positions } },
+      { binding: 2, resource: { buffer: context.forces } },
+      { binding: 3, resource: { buffer: context.edgeSources } },
+      { binding: 4, resource: { buffer: context.edgeTargets } },
+      { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
+      { binding: 6, resource: { buffer: context.nodeFlags } },
+    ];
+
     const attraction = device.createBindGroup({
       label: "LinLog Attraction Bind Group",
       layout: llPipelines.attractionLayout,
+      entries: attractionEntries,
+    });
+
+    // Built unconditionally, dispatched only under a cut: whether an
+    // aggregation is live is per-frame state, and createBindGroups is
+    // contractually forbidden from capturing any of that.
+    const attractionBundled = device.createBindGroup({
+      label: "LinLog Attraction Bind Group (LOD bundles)",
+      layout: llPipelines.attractionBundledLayout,
       entries: [
-        { binding: 0, resource: { buffer: buffers.uniformBuffer } },
-        { binding: 1, resource: { buffer: context.positions } },
-        { binding: 2, resource: { buffer: context.forces } },
-        { binding: 3, resource: { buffer: context.edgeSources } },
-        { binding: 4, resource: { buffer: context.edgeTargets } },
-        { binding: 5, resource: { buffer: buffers.edgeWeightsBuffer } },
-        { binding: 6, resource: { buffer: context.nodeFlags } },
+        ...attractionEntries,
+        { binding: 7, resource: { buffer: lodLiveEdgeIndices(context, buffers.fallbacks) } },
+        { binding: 8, resource: { buffer: lodEdgeBundles(context, buffers.fallbacks) } },
+        { binding: 9, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 
-    const bindGroups: LinLogBindGroups = { repulsion, attraction };
+    const bindGroups: LinLogBindGroups = { repulsion, attraction, attractionBundled };
     return bindGroups;
   }
 
@@ -286,8 +381,14 @@ export class LinLogAlgorithm implements ForceAlgorithm {
     const edgeWeightInfluence = fc.linlogEdgeWeightInfluence;
     const flags = fc.linlogStrongGravity ? 1 : 0;
 
-    // Write uniform buffer (32 bytes)
-    const data = new ArrayBuffer(32);
+    // The repulsion dispatch and the shader's two loop bounds must all come
+    // from this one number, or threads read past the end of the list.
+    this.lastActiveCount = lodActiveCount(context);
+    this.lastLodEdges = lodEdgeDispatch(context);
+
+    // Write uniform buffer (LINLOG_UNIFORM_BYTES). The three LOD counts are
+    // zero with no cut, which is what keeps `main` reading nothing new.
+    const data = new ArrayBuffer(LINLOG_UNIFORM_BYTES);
     const view = new DataView(data);
     view.setUint32(0, context.nodeCount, true);
     view.setUint32(4, context.edgeCount, true);
@@ -295,8 +396,12 @@ export class LinLogAlgorithm implements ForceAlgorithm {
     view.setFloat32(12, kg, true);
     view.setFloat32(16, edgeWeightInfluence, true);
     view.setUint32(20, flags, true);
-    view.setUint32(24, 0, true); // padding
-    view.setUint32(28, 0, true); // padding
+    view.setUint32(24, this.lastActiveCount, true);
+    view.setUint32(28, this.lastLodEdges?.activeEdgeCount ?? 0, true);
+    view.setUint32(32, this.lastLodEdges?.bundleCount ?? 0, true);
+    view.setUint32(36, 0, true); // padding
+    view.setUint32(40, 0, true); // padding
+    view.setUint32(44, 0, true); // padding
 
     device.queue.writeBuffer(buffers.uniformBuffer, 0, data);
 
@@ -343,9 +448,9 @@ export class LinLogAlgorithm implements ForceAlgorithm {
     const llPipelines = pipelines as LinLogPipelines;
     const llBindGroups = bindGroups as LinLogBindGroups;
 
-    // Pass 1: Repulsion + Gravity (combined in shader, N² over nodes)
+    // Pass 1: Repulsion + Gravity (combined in shader, N² over the active set)
     {
-      const workgroups = calculateWorkgroups(nodeCount, 256);
+      const workgroups = calculateWorkgroups(this.lastActiveCount ?? nodeCount, 256);
       const pass = encoder.beginComputePass({ label: "LinLog Repulsion + Gravity" });
       pass.setPipeline(llPipelines.repulsion);
       pass.setBindGroup(0, llBindGroups.repulsion);
@@ -355,7 +460,24 @@ export class LinLogAlgorithm implements ForceAlgorithm {
 
     // Pass 2: Native LinLog logarithmic attraction (per-edge, F = w^delta * log(1 + d)).
     // Balances the FA2-calibrated 1/d repulsion — see class doc.
-    if (this.lastEdgeCount > 0) {
+    //
+    // Under a live LOD cut it runs over the aggregated edge set instead: the
+    // visible source edges plus the bundles standing in for everything that
+    // crosses a collapse boundary. Every source edge is covered by exactly one
+    // of the two, so an edge is never pulled twice and a collapsed subtree's
+    // cross-cutting attraction is transferred rather than dropped. Zero
+    // threads is a legal aggregation — every edge inside a collapsed subtree —
+    // and must dispatch nothing rather than fall back to the whole edge array.
+    const lodEdges = this.lastLodEdges;
+    if (lodEdges !== null) {
+      if (lodEdges.total > 0) {
+        const pass = encoder.beginComputePass({ label: "LinLog Attraction (LOD bundles)" });
+        pass.setPipeline(llPipelines.attractionBundled);
+        pass.setBindGroup(0, llBindGroups.attractionBundled);
+        pass.dispatchWorkgroups(calculateWorkgroups(lodEdges.total, 256));
+        pass.end();
+      }
+    } else if (this.lastEdgeCount > 0) {
       const edgeWorkgroups = calculateWorkgroups(this.lastEdgeCount, 256);
       const pass = encoder.beginComputePass({ label: "LinLog Attraction" });
       pass.setPipeline(llPipelines.attraction);
@@ -368,6 +490,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
   destroy(): void {
     // Buffers are destroyed via AlgorithmBuffers.destroy()
     this.lastEdgeCount = 0;
+    this.lastActiveCount = null;
+    this.lastLodEdges = null;
   }
 }
 

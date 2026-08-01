@@ -300,8 +300,8 @@ export function createSimulationPipeline(
     layout: "auto",
     compute: {
       module: repulsionModule,
-      // Dead-slot-masked variant; plain "main" is used by the N² algorithm
-      // plugin whose bind group has no node_flags buffer
+      // The only entry point: one thread per active-list entry, inert slots
+      // masked. The N² algorithm plugin runs it too.
       entryPoint: "main_masked",
     },
   });

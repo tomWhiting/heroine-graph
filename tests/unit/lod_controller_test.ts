@@ -748,6 +748,63 @@ Deno.test("proxies: a collapse rolls the subtree's mass onto the proxy and zeroe
   assertNoReheat(log);
 });
 
+Deno.test("proxies: a transition's mass roll-up allocates nothing", () => {
+  // The roll-up walks the whole slot space, so at 220 000 nodes the three
+  // working arrays it used to allocate were 1.9 MB of garbage per zoom step —
+  // produced on the interaction path, where a collection pause is a dropped
+  // frame. The controller holds one scratch set for the hierarchy's lifetime.
+  const hierarchy = proxyFixture();
+  const { controller, log } = rig(hierarchy);
+  const n = hierarchy.nodeCount;
+  log.viewport.scale = 1;
+
+  // Warm: #adopt allocates the scratch, and the first cut is not the steady
+  // state this measures.
+  controller.evaluateNow(0);
+  const uploads = log.mass.length;
+
+  // Records every Uint8Array allocated while two real transitions run.
+  //
+  // Uint8Array specifically, because the roll-up's collapsed-set membership
+  // array is the only nodeCount-long one of that type anywhere on this path —
+  // the controller's own per-slot byte columns are allocated once, in #adopt.
+  // (Its two stack arrays are Uint32Arrays, which a transition does allocate
+  // for other reasons; the "allocates nothing at all" claim belongs to
+  // rollUpMass itself and is measured exactly in tests/unit/mass_test.ts. What
+  // this test adds is that the controller actually supplies a scratch set.)
+  const seen: string[] = [];
+  const originals = { Uint8Array: globalThis.Uint8Array };
+  for (const name of Object.keys(originals) as (keyof typeof originals)[]) {
+    const Original = originals[name];
+    // deno-lint-ignore no-explicit-any
+    (globalThis as any)[name] = class extends (Original as any) {
+      // deno-lint-ignore no-explicit-any
+      constructor(...args: any[]) {
+        super(...args);
+        // deno-lint-ignore no-explicit-any
+        seen.push(`${name}(${(this as any).length})`);
+      }
+    };
+  }
+  try {
+    controller.expandNode(1, 16);
+    controller.collapseNode(1, 16);
+  } finally {
+    for (const name of Object.keys(originals) as (keyof typeof originals)[]) {
+      // deno-lint-ignore no-explicit-any
+      (globalThis as any)[name] = originals[name];
+    }
+  }
+
+  // Non-vacuous: both transitions really did re-run the roll-up.
+  assertEquals(log.mass.length, uploads + 2);
+  assertEquals(
+    seen.filter((entry) => entry === `Uint8Array(${n})`),
+    [],
+    `the roll-up allocated its collapsed-set array again (saw ${seen.join(", ")})`,
+  );
+});
+
 Deno.test("proxies: expanding restores unit mass everywhere", () => {
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;

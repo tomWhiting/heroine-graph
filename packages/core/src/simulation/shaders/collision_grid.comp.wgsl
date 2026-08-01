@@ -30,7 +30,11 @@ struct GridCollisionUniforms {
     radius_multiplier: f32,
     default_radius: f32,
     total_cells: u32,
-    _pad0: u32,
+    // Length of the active-index list. build_lists and resolve_grid dispatch
+    // over it rather than over node_count: under a cut the collision set is
+    // the visible set, and paying full N to discover that is the cost this
+    // removes. clear_cells is indexed by CELL and is unaffected.
+    active_count: u32,
     _pad1: u32,
 }
 
@@ -48,7 +52,17 @@ struct GridCollisionUniforms {
 
 // Per-node displacement accumulated by resolve_grid, consumed by the apply
 // pass. Each thread writes only its own slot.
+//
+// A slot the dispatch omits keeps a stale value, and that is safe for exactly
+// one reason: the omitted slots are the inert ones, and the apply pass skips
+// every IMMOVABLE slot on the flags rather than trusting the dispatch.
 @group(0) @binding(7) var<storage, read_write> displacements: array<vec2<f32>>;
+
+// Active-index list: the first active_count entries are the slots taking part
+// in this tick, ascending. `active` is a reserved WGSL identifier, hence the
+// name. It holds every non-inert slot, which is a superset of the slots the
+// apply pass will touch.
+@group(0) @binding(8) var<storage, read> live_idx: array<u32>;
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_PINNED: u32 = 2u;
@@ -82,7 +96,12 @@ fn clear_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
 // head of that cell's list. The old head becomes the node's "next" pointer.
 @compute @workgroup_size(256)
 fn build_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+    let entry = gid.x;
+    if (entry >= uniforms.active_count) {
+        return;
+    }
+
+    let idx = live_idx[entry];
     if (idx >= uniforms.node_count) {
         return;
     }
@@ -211,14 +230,20 @@ fn grid_displacement(node_idx: u32) -> vec2<f32> {
 // Phase 3: Resolve collisions using spatial grid.
 // For each node, walks the linked lists in its cell and 8 adjacent cells,
 // checking for overlapping neighbors and accumulating displacement.
+//
+// One thread per ENTRY of the active-index list. Every entry writes its own
+// slot every iteration, so the apply pass that follows can never pick up a
+// displacement left by an earlier iteration; the slots no entry names are the
+// inert ones, which the apply pass drops on the flags.
 @compute @workgroup_size(256)
 fn resolve_grid(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let node_idx = gid.x;
+    let entry = gid.x;
 
-    // Every thread within the buffer writes its slot — including the padding
-    // threads past node_count that the workgroup round-up adds — so the apply
-    // pass can never pick up a displacement left by an earlier iteration or an
-    // earlier (larger) node count.
+    if (entry >= uniforms.active_count) {
+        return;
+    }
+
+    let node_idx = live_idx[entry];
     if (node_idx >= arrayLength(&displacements)) {
         return;
     }
