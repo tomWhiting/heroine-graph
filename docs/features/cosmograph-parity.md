@@ -301,5 +301,5 @@ linkVisibilityMinTransparency: number         // Min opacity at max distance
 - `packages/core/src/types.ts` - New config types
 - `packages/core/src/renderer/pipelines/edges.ts` - Curved edge support
 - `packages/core/src/renderer/pipelines/nodes.ts` - Border/shape config
-- `examples/mission-control/index.html` - Enhanced controls
-- `examples/mission-control/main.ts` - Control wiring
+- `examples/code-graph/index.html` - Enhanced controls
+- `examples/code-graph/main.ts` - Control wiring

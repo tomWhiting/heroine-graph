@@ -21,7 +21,7 @@ import {
   labelCandidateLimit,
   labelConfigFromKnobs,
   lodConfigFromKnobs,
-} from "../../examples/mission-control/src/knobs.ts";
+} from "../../examples/code-graph/src/knobs.ts";
 
 function knobs(patch: Partial<KnobState> = {}): KnobState {
   return { ...DEFAULT_KNOBS, ...patch };

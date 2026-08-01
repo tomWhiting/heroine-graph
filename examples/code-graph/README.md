@@ -41,7 +41,7 @@ From the repository root:
 ```bash
 deno task build:wasm     # once: builds packages/wasm/pkg
 deno task build          # once: builds dist/, including the label font atlas
-deno task example:mission-control
+deno task example:code-graph
 ```
 
 Then open the printed URL in a WebGPU-capable browser (Chrome or Edge 113+, or
@@ -52,7 +52,7 @@ logs that labels are unavailable.
 To produce a static build:
 
 ```bash
-cd examples/mission-control && dx vite build
+cd examples/code-graph && dx vite build
 ```
 
 `dx` is Deno's `npx` equivalent. Vite 8 needs Deno 2.9 or newer; on an older

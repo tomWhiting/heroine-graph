@@ -11,8 +11,8 @@
 
 import { assertEquals } from "jsr:@std/assert@^1";
 import type { LodCandidate, LodContext } from "../../packages/core/src/lod/policy.ts";
-import { codeGraphLodPolicy } from "../../examples/mission-control/src/lod_policy.ts";
-import { NODE_KIND } from "../../examples/mission-control/src/repo.ts";
+import { codeGraphLodPolicy } from "../../examples/code-graph/src/lod_policy.ts";
+import { NODE_KIND } from "../../examples/code-graph/src/repo.ts";
 
 const CONTEXT: LodContext = {
   zoom: 1,

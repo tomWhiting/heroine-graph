@@ -92,15 +92,15 @@ The user (Tom) has a clear vision for a new layout algorithm built on top of Rel
 - WGSL: bubble collision shader (modified collision shader using wellRadius)
 - WGSL: depth-aware gravity shader
 - TypeScript: wire into algorithm system, upload per-node wellRadius + depth data
-- Rewrite mission-control example as focused code graph visualizer with ~5 tuning knobs
+- Rewrite the example as a focused code graph visualizer with ~5 tuning knobs (done: `examples/code-graph/`)
 
 **Density field grid artifact**: The 128x128 density grid in Relativity Atlas causes visible cross-hatch patterns because force gradients have discrete steps at cell boundaries. The bubble approach should use continuous distance functions instead.
 
 ### Previous Work Reference
 Tom previously forked Cosmos GL (open source version of Cosmograph) and added variable link lengths and node mass strengths per type. That work was partially lost in a git incident. The same concept of different attraction/repulsion constants per link/node type should be carried forward.
 
-## Mission Control Example
-Located at `examples/mission-control/`. Currently a 3,600-line kitchen-sink demo showing every feature. Plan is to rewrite as a focused code graph visualizer. The code quality is decent but it's trying to do too much. Has 3 data sources (random corporate graph, hierarchical tree, codebase dataset) and exposes ~50 configuration sliders.
+## Code Graph Example
+Located at `examples/code-graph/` (formerly `examples/mission-control`, a 3,600-line kitchen-sink demo — rewritten on branch 007-review-fixes). One dataset shape (a generated code repository), one layout (nested bubbles over the supplied hierarchy), semantic LOD promoting to DOM cards, five knobs. Run with `deno task example:code-graph`. Its pure modules (`src/repo.ts`, `src/knobs.ts`, `src/hud.ts`, `src/lod_policy.ts`) are unit-tested from `tests/unit/example_*.ts`.
 
 ## Status (post branch 005-audit-fixes)
 

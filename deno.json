@@ -24,7 +24,7 @@
     "storybook:clean": "rm -rf node_modules/.cache",
     "publish": "deno run -A scripts/publish.ts",
     "publish:dry": "deno run -A scripts/publish.ts --dry-run",
-    "example:mission-control": "cd examples/mission-control && dx vite --port 1573"
+    "example:code-graph": "cd examples/code-graph && dx vite --port 1573"
   },
   "compilerOptions": {
     "strict": true,
@@ -64,8 +64,7 @@
       "**/node_modules/",
       "**/dist/",
       "**/pkg/",
-      "**/*.wgsl",
-      "examples/mission-control/indexer-data.json"
+      "**/*.wgsl"
     ]
   },
   "imports": {

@@ -11,7 +11,7 @@
  */
 
 import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1";
-import { formatCount, formatMs, HudModel } from "../../examples/mission-control/src/hud.ts";
+import { formatCount, formatMs, HudModel } from "../../examples/code-graph/src/hud.ts";
 
 Deno.test("hud: a load resets everything derived from the previous dataset", () => {
   const hud = new HudModel();

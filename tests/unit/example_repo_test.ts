@@ -1,7 +1,7 @@
 /**
  * The code-graph example's producer.
  *
- * `examples/mission-control/src/repo.ts` stands in for a real indexer, which
+ * `examples/code-graph/src/repo.ts` stands in for a real indexer, which
  * means it has to honour the same contracts one would: a well-formed forest
  * that `validateHierarchyColumns` accepts, depth-first slot order so subtrees
  * are contiguous ranges, `wellRadius` computed with the formula the WASM
@@ -26,7 +26,7 @@ import {
   rankLabelCandidates,
   REPO_SCALES,
   type RepoGraph,
-} from "../../examples/mission-control/src/repo.ts";
+} from "../../examples/code-graph/src/repo.ts";
 
 /** Sizes big enough to exercise nesting without making the suite slow. */
 const SIZES = [1, 2, 25, 400, 2_500];
