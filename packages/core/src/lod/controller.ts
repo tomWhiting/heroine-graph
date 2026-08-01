@@ -28,6 +28,11 @@
  * 4. **Hiding is deferred behind the fade.** The `HIDDEN_LOD` flag culls a node
  *    in the vertex stage, so writing it at transition time would delete the
  *    node the crossfade is fading. The flag lands when the ramp does.
+ * 5. **Expanding is a rigid-body move, not a re-layout.** A folded subtree is
+ *    frozen while its proxy goes on simulating, so it is translated by the
+ *    proxy's drift before it is revealed. That is what lets a collapse be
+ *    undone exactly, and it is why the proxy renders at its own position
+ *    rather than at a centroid.
  *
  * @module
  */
@@ -45,6 +50,8 @@ import { HIERARCHY_ROOT, type RetainedHierarchy } from "../graph/hierarchy.ts";
 import type { CardSyncEntry } from "../overlay/overlay.ts";
 import { CrossfadeScheduler } from "./crossfade.ts";
 import { DEFAULT_LOD_CONFIG, type LodConfig, resolveLodConfig } from "./config.ts";
+import { NODE_MASS_UNIT, rollUpMass } from "./mass.ts";
+import { forEachSlotRun } from "./runs.ts";
 import type { LodCandidate, LodContext, LodDecision, LodPolicy } from "./policy.ts";
 
 /**
@@ -137,6 +144,29 @@ export interface LodHost {
   applyVisibility(lo: number, hi: number, visible: Uint8Array): void;
   /** Upload the scheduler's dirty alpha range. */
   uploadNodeAlpha(scheduler: CrossfadeScheduler): void;
+  /**
+   * Upload per-slot simulation mass covering `[0, mass.length)`.
+   *
+   * The array is the controller's, reused across transitions and valid only
+   * for the duration of the call: a host that keeps it must copy.
+   */
+  uploadNodeMass(mass: Float32Array): void;
+  /**
+   * Declare the collapsed proxies: `proxies[k]` renders at radius `radii[k]`.
+   *
+   * Complete, not incremental — a slot that was a proxy and is absent here
+   * returns to the radius it had before it became one. Both arrays are
+   * controller-owned scratch, valid only for the duration of the call.
+   */
+  setCollapsedProxies(proxies: Uint32Array, radii: Float32Array): void;
+  /**
+   * Translate the positions of slots `[lo, hi)` by `(dx, dy)`.
+   *
+   * The expand fix-up, issued once per contiguous run of a subtree that is
+   * about to be revealed. Must not pin and must not reheat: the caller is
+   * restoring an arrangement, not moving a node.
+   */
+  translateNodeRange(lo: number, hi: number, dx: number, dy: number): void;
   /** Declare the current card set to the DOM overlay. */
   syncCards(entries: readonly CardSyncEntry[]): void;
   /** Emit one LOD event. */
@@ -154,6 +184,9 @@ type MutableContext = { -readonly [K in keyof LodContext]: LodContext[K] };
 const EMPTY_U8 = new Uint8Array(0);
 const EMPTY_U32 = new Uint32Array(0);
 const EMPTY_F32 = new Float32Array(0);
+
+/** Empty transition diff, for a proxy re-declaration that changes no state. */
+const NO_NODES: readonly NodeId[] = [];
 
 export class LODController {
   readonly #host: LodHost;
@@ -206,6 +239,31 @@ export class LODController {
   /** Interior slots sorted ascending by well radius, with their radii. */
   #interior = EMPTY_U32;
   #interiorRadii = EMPTY_F32;
+
+  // ---- Proxy state, all reused across transitions ----
+  /** Per-slot mass, rebuilt in place on every collapsed-set change. */
+  #mass = EMPTY_F32;
+  /** The collapsed set as an ascending slot list, and its well radii. */
+  #proxies = EMPTY_U32;
+  #proxyRadii = EMPTY_F32;
+  /**
+   * Where each proxy stood when it collapsed; `NaN` for a slot that is not one.
+   *
+   * The whole point of the expand fix-up: the proxy keeps simulating while the
+   * subtree under it is frozen, so on expand the subtree is rigid-body
+   * translated by how far the proxy drifted. Without it a subtree reappears at
+   * an absolute position its parent left behind long ago.
+   */
+  #anchorX = EMPTY_F32;
+  #anchorY = EMPTY_F32;
+  /**
+   * The host's proxy state has not been written since the hierarchy changed.
+   *
+   * A topology change resets mass and proxy radii on the host's side (they
+   * name subtrees of the old slot mapping), so the first transition against a
+   * rebuilt hierarchy must re-declare them even when its diff is empty.
+   */
+  #proxiesStale = false;
 
   #frame = 0;
   #zoom = 0;
@@ -274,7 +332,7 @@ export class LODController {
     const previous = this.#config;
     this.#config = resolveLodConfig(patch, previous);
     if (!this.#config.enabled) {
-      if (previous.enabled) this.#release();
+      if (previous.enabled) this.#release(true);
       return;
     }
     this.#forceFull = true;
@@ -381,6 +439,10 @@ export class LODController {
    * ramps are snapped to their endpoints: a capacity change is a topology
    * change, not an LOD transition, and there is nothing coherent to interpolate
    * across it.
+   *
+   * The mass buffer is reallocated at unit mass for the same reason, so the
+   * live collapsed set is re-declared rather than left to the next transition,
+   * which may be many frames away.
    */
   handleNodeCapacityChange(capacity: number, nowMs: number): void {
     this.#crossfade.resize(capacity);
@@ -389,6 +451,11 @@ export class LODController {
       this.#crossfade.fadeOut(this.#pendingHideOrHidden(), nowMs, 0);
     }
     this.#host.uploadNodeAlpha(this.#crossfade);
+
+    if (this.#hasCut) {
+      this.#proxiesStale = true;
+      this.#onCollapsedSetChanged(NO_NODES, NO_NODES);
+    }
   }
 
   /**
@@ -444,7 +511,7 @@ export class LODController {
 
     const hierarchy = this.#host.getHierarchy();
     if (hierarchy === null) {
-      if (this.#hasCut) this.#release();
+      if (this.#hasCut) this.#release(false);
       return false;
     }
     if (hierarchy !== this.#hierarchy) this.#adopt(hierarchy);
@@ -518,6 +585,16 @@ export class LODController {
     this.#hasCut = false;
     this.#pendingHide.clear();
     this.#cardedSince.clear();
+
+    this.#mass = new Float32Array(n);
+    this.#proxies = new Uint32Array(n);
+    this.#proxyRadii = new Float32Array(n);
+    // Anchors from the previous hierarchy name slots the mutation may have
+    // reassigned, so they are dropped rather than carried: a fix-up against a
+    // stale anchor would translate a subtree by an arbitrary distance.
+    this.#anchorX = new Float32Array(n).fill(NaN);
+    this.#anchorY = new Float32Array(n).fill(NaN);
+    this.#proxiesStale = true;
 
     // The semantic columns are producer data, fixed for the graph's lifetime,
     // so they are read once here rather than on every evaluation.
@@ -927,6 +1004,11 @@ export class LODController {
     this.#nextCollapsedMask = previousCollapsed;
     this.#hasCut = true;
 
+    // Ahead of the reveal below: an expanding subtree has to be translated
+    // under its proxy *before* it is unflagged, or it is drawn for one frame
+    // wherever it was left when the proxy took over.
+    this.#onCollapsedSetChanged(entered, left);
+
     if (shown.length === 0 && hidden.length === 0 && entered.length === 0 && left.length === 0) {
       this.#syncCards(nowMs);
       return false;
@@ -946,8 +1028,6 @@ export class LODController {
     this.#crossfade.fadeOut(hidden, nowMs, this.#config.transitionMs);
     this.#host.uploadNodeAlpha(this.#crossfade);
     this.#settleHidden();
-
-    this.#onCollapsedSetChanged(entered, left);
 
     for (const slot of entered) {
       this.#host.emit({
@@ -981,15 +1061,91 @@ export class LODController {
   }
 
   /**
-   * The seam aggregate mass hooks into.
+   * Everything a change in the collapsed set implies, in the only order that
+   * is coherent.
    *
-   * A collapsed proxy standing for 5 000 nodes must repel like 5 000 nodes, or
-   * the layout of everything still visible contracts on collapse and re-inflates
-   * on expand. That rollup is its own work package; this is the one place a
-   * collapsed-set change is known, and the only place it needs to be called
-   * from.
+   * 1. **Expand fix-up first.** A proxy keeps simulating while its subtree is
+   *    frozen, so a subtree revealed without being moved reappears wherever its
+   *    parent used to be. It runs before the anchors are rewritten because an
+   *    expand can immediately re-collapse a child, and that child's anchor has
+   *    to be its translated position.
+   * 2. **Aggregate mass.** A proxy standing for 5 000 nodes must repel like
+   *    5 000 nodes, or the visible layout contracts on collapse and re-inflates
+   *    on expand — the one thing semantic LOD must not do (SC-002).
+   * 3. **Proxy radii.** The collapsed parent renders through the ordinary node
+   *    pipeline as one instance at its well radius, so the fold reads as a
+   *    bubble containing what it hides rather than as a lone leaf.
    */
-  #onCollapsedSetChanged(_entered: readonly NodeId[], _left: readonly NodeId[]): void {}
+  #onCollapsedSetChanged(entered: readonly NodeId[], left: readonly NodeId[]): void {
+    const h = this.#hierarchy;
+    if (h === null) return;
+    const stale = this.#proxiesStale;
+    if (!stale && entered.length === 0 && left.length === 0) return;
+    this.#proxiesStale = false;
+
+    for (const slot of left) this.#restoreSubtree(slot);
+
+    const count = this.#gatherProxies();
+    const proxies = this.#proxies.subarray(0, count);
+    const { wellRadius } = h.columns;
+    for (let k = 0; k < count; k++) this.#proxyRadii[k] = wellRadius[proxies[k]];
+
+    rollUpMass(h.columns.parent, h.children, proxies, this.#mass);
+    this.#host.uploadNodeMass(this.#mass);
+    this.#host.setCollapsedProxies(proxies, this.#proxyRadii.subarray(0, count));
+
+    for (const slot of left) {
+      this.#anchorX[slot] = NaN;
+      this.#anchorY[slot] = NaN;
+    }
+    for (const slot of entered) {
+      const position = this.#host.getNodePosition(slot);
+      this.#anchorX[slot] = position.x;
+      this.#anchorY[slot] = position.y;
+    }
+  }
+
+  /** The collapsed set as an ascending slot list in `#proxies`. */
+  #gatherProxies(): number {
+    const collapsed = this.#collapsedMask;
+    let count = 0;
+    for (let i = 0; i < this.#nodeCount; i++) {
+      if (collapsed[i] === 1) this.#proxies[count++] = i;
+    }
+    return count;
+  }
+
+  /**
+   * Rigid-body translate `root`'s descendants by how far `root` drifted while
+   * they were folded into it.
+   *
+   * Issued as one call per contiguous slot run, which is a single buffer write
+   * for the whole subtree when the producer emits slots depth-first — the
+   * ordering the hierarchy module asks producers for, and the reason it does.
+   */
+  #restoreSubtree(root: NodeId): void {
+    const position = this.#host.getNodePosition(root);
+    const dx = position.x - this.#anchorX[root];
+    const dy = position.y - this.#anchorY[root];
+    // A proxy that never moved needs no fix-up, and an un-anchored root — one
+    // whose anchor the hierarchy it was collapsed under took with it — has
+    // nothing coherent to be moved to.
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return;
+
+    const { offsets, children } = this.#hierarchy!.children;
+    let top = 0;
+    let count = 0;
+    for (let c = offsets[root]; c < offsets[root + 1]; c++) this.#stack[top++] = children[c];
+    while (top > 0) {
+      const slot = this.#stack[--top];
+      this.#scratch[count++] = slot;
+      for (let c = offsets[slot]; c < offsets[slot + 1]; c++) this.#stack[top++] = children[c];
+    }
+
+    const slots = this.#scratch.subarray(0, count);
+    slots.sort();
+    forEachSlotRun(slots, count, (lo, hi) => this.#host.translateNodeRange(lo, hi, dx, dy));
+  }
 
   /**
    * Flag the nodes whose fade-out has landed.
@@ -1084,8 +1240,29 @@ export class LODController {
   // Release
   // ==========================================================================
 
-  /** Return every node to visible and opaque, and drop the cut. */
-  #release(): void {
+  /**
+   * Return every node to visible and opaque, and drop the cut.
+   *
+   * @param restore - Whether to unfold the proxies as an expand would, rather
+   *   than merely forgetting them. False only when the graph has dropped the
+   *   hierarchy the collapsed set was named against, where the descendant
+   *   walk would follow a tree that no longer describes the slot space.
+   */
+  #release(restore: boolean): void {
+    if (restore) {
+      const count = this.#gatherProxies();
+      for (let k = 0; k < count; k++) this.#restoreSubtree(this.#proxies[k]);
+    }
+    this.#collapsedMask.fill(0);
+    this.#anchorX.fill(NaN);
+    this.#anchorY.fill(NaN);
+    if (this.#nodeCount > 0) {
+      this.#mass.fill(NODE_MASS_UNIT);
+      this.#host.uploadNodeMass(this.#mass);
+    }
+    this.#host.setCollapsedProxies(EMPTY_U32, EMPTY_F32);
+    this.#proxiesStale = true;
+
     this.#visibleMask.fill(1);
     this.#appliedVisible.fill(1);
     this.#cardedMask.fill(0);

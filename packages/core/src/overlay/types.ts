@@ -134,6 +134,20 @@ export interface DomOverlayConfig {
   forwardWheel: boolean;
   /** Class applied to each card container, for consumer styling. */
   className?: string;
+  /**
+   * Ceiling on simultaneously mounted cards (FR-009).
+   *
+   * Shared with `LodConfig.maxCards`: the controller ranks and truncates the
+   * declared set, the overlay budgets what it is handed. Two independently
+   * settable copies would silently disagree, so `setLodConfig` forwards it.
+   */
+  maxCards: number;
+  /**
+   * Anti-flicker floor on how long a card stays once it exists, in ms
+   * (FR-009). Shared with `LodConfig.minCardLifetimeMs` for the same reason
+   * as {@link DomOverlayConfig.maxCards}.
+   */
+  minCardLifetimeMs: number;
 }
 
 /** Defaults for {@link DomOverlayConfig}: off, with both behaviours armed. */
@@ -141,4 +155,6 @@ export const DEFAULT_DOM_OVERLAY_CONFIG: DomOverlayConfig = {
   enabled: false,
   rasterizeOnSettle: true,
   forwardWheel: true,
+  maxCards: 150,
+  minCardLifetimeMs: 400,
 };

@@ -38,6 +38,7 @@ import {
 } from "../../packages/core/src/overlay/projection.ts";
 import type { CardNode, CardProvider } from "../../packages/core/src/overlay/types.ts";
 import type { NodeId, Vec2, ViewportState } from "../../packages/core/src/types.ts";
+import { resolveLodConfig } from "../../packages/core/src/lod/config.ts";
 
 // -----------------------------------------------------------------------------
 // Harness
@@ -443,6 +444,63 @@ Deno.test("overlay: the lifetime floor outranks the budget, and drains within on
   h.overlay.syncCards([entry(2, 9)]);
   assertEquals(mountedNodes(h.provider), [2]);
   assertEquals(h.provider.count("release", 1), 1);
+});
+
+Deno.test("overlay: setConfig retunes the budget, and the new cap binds at once", () => {
+  const h = harness({ maxCards: 3, minCardLifetimeMs: 0 });
+
+  h.overlay.syncCards([entry(1, 0.1), entry(2, 0.9), entry(3, 0.5), entry(4, 0.7)]);
+  assertEquals(mountedNodes(h.provider), [2, 3, 4]);
+
+  h.overlay.setConfig({ maxCards: 2 });
+  assertEquals(h.overlay.config.maxCards, 2);
+  h.overlay.syncCards([entry(1, 0.1), entry(2, 0.9), entry(3, 0.5), entry(4, 0.7)]);
+  assertEquals(mountedNodes(h.provider), [2, 4]);
+});
+
+Deno.test("overlay: setConfig retunes the lifetime floor", () => {
+  const h = harness({ minCardLifetimeMs: 400 });
+
+  h.overlay.syncCards([entry(1, 1)]);
+  h.overlay.setConfig({ minCardLifetimeMs: 0 });
+  assertEquals(h.overlay.config.minCardLifetimeMs, 0);
+
+  // The floor was the only thing holding this card; with it gone it goes now,
+  // where the 400 ms harness default would have held it to `now = 400`.
+  h.overlay.syncCards([]);
+  assertEquals(h.overlay.cardCount, 0);
+});
+
+Deno.test("overlay: a nonsense budget saturates rather than admitting everything", () => {
+  const h = harness({ maxCards: 4, minCardLifetimeMs: 0 });
+
+  // Matches resolveLodConfig: these are live inspector knobs, and one that
+  // throws mid-drag is worse than one that saturates.
+  h.overlay.setConfig({ maxCards: Number.NaN, minCardLifetimeMs: -5 });
+  assertEquals(h.overlay.config.maxCards, 0);
+  assertEquals(h.overlay.config.minCardLifetimeMs, 0);
+
+  h.overlay.syncCards([entry(1, 1), entry(2, 1)]);
+  assertEquals(h.overlay.cardCount, 0);
+});
+
+Deno.test("overlay: the LOD budget knobs transfer by name", () => {
+  const h = harness({ maxCards: 16, minCardLifetimeMs: 400 });
+
+  // What GraphMother.setLodConfig forwards. The two configurations carry the
+  // same two knobs, and a card budget the controller and the overlay disagree
+  // about produces cards that mount and are evicted on the same evaluation.
+  const lod = resolveLodConfig({ maxCards: 2, minCardLifetimeMs: 25 });
+  h.overlay.setConfig({
+    maxCards: lod.maxCards,
+    minCardLifetimeMs: lod.minCardLifetimeMs,
+  });
+
+  assertEquals(h.overlay.config.maxCards, lod.maxCards);
+  assertEquals(h.overlay.config.minCardLifetimeMs, lod.minCardLifetimeMs);
+
+  h.overlay.syncCards([entry(1, 0.1), entry(2, 0.9), entry(3, 0.5)]);
+  assertEquals(mountedNodes(h.provider), [2, 3]);
 });
 
 Deno.test("overlay: an unrequested card survives until the floor, then goes", () => {

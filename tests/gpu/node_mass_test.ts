@@ -46,7 +46,11 @@ import {
   probeAdapter,
   requestHarnessDevice,
 } from "../helpers/gpu.ts";
-import { assertVisibleSetMatchesReference, countNonFinite } from "../helpers/invariants.ts";
+import {
+  assertVisibleSetMatchesReference,
+  countNonFinite,
+  maxRadius,
+} from "../helpers/invariants.ts";
 import { generateCodeTree } from "../fixtures/code_tree.ts";
 import {
   type FullForceConfig,
@@ -506,6 +510,62 @@ gpuTest("SC-002: a collapsed subtree lays out like the expanded subtree", async 
   // their centroid, seen from 40 units away — parts in 10^4 of the ring radius.
   // A proxy that repelled like a single node would leave the ring ~14 units
   // short of here, four orders of magnitude outside this bound.
+  assertVisibleSetMatchesReference(collapsed, reference, RING_INDICES, 0.02, RING_INDICES);
+});
+
+/**
+ * Gravity at ten times the library default, so a discrepancy is amplified
+ * rather than hidden: over 25 ticks it pulls the ring several units inward.
+ */
+const SC002_GRAVITY_CONFIG = validateForceConfig({ centerStrength: 0.1 });
+
+gpuTest("SC-002: gravity does not break the collapsed/expanded equivalence", async (device) => {
+  const shipped = await Deno.readTextFile(REPULSION_N2_URL);
+  const ring = ringPositions();
+  const cluster = clusterPositions();
+  const nodeCount = RING_COUNT + SUBTREE_SIZE;
+
+  // The open question WP-F left: gravity is `(centre - p) * strength` with no
+  // mass term, so a proxy is pulled like one body while the subtree it stands
+  // for is pulled like SUBTREE_SIZE of them. Under `a = F` with mass on the
+  // source side of repulsion only, that is exactly right — every member would
+  // receive the same central acceleration, so the centre of mass receives it
+  // too, and an unweighted proxy standing at the centre of mass tracks it.
+  const expanded: EdgeFreeGraph = {
+    nodeCount,
+    positionsX: new Float32Array([...ring.x, ...cluster.x]),
+    positionsY: new Float32Array([...ring.y, ...cluster.y]),
+    flags: Uint32Array.from(
+      { length: nodeCount },
+      (_, i) => i >= RING_COUNT ? NODE_FLAG_PINNED : 0,
+    ),
+  };
+
+  const collapsed = await runWithRepulsionShader(
+    device,
+    collapsedGraph(),
+    shipped,
+    true,
+    SC002_GRAVITY_CONFIG,
+    SC002_TICKS,
+  );
+  const reference = await runWithRepulsionShader(
+    device,
+    expanded,
+    shipped,
+    true,
+    SC002_GRAVITY_CONFIG,
+    SC002_TICKS,
+  );
+
+  assertEquals(countNonFinite(collapsed.x, collapsed.y), 0);
+  // Gravity moved the ring: without it the ring sits at RING_RADIUS, so a
+  // bound this tight on the difference is only meaningful because the two runs
+  // are both far from where the gravity-free runs above ended up.
+  assert(
+    maxRadius(reference.x, reference.y) < RING_RADIUS,
+    "gravity must actually have pulled the ring in, or this proves nothing",
+  );
   assertVisibleSetMatchesReference(collapsed, reference, RING_INDICES, 0.02, RING_INDICES);
 });
 

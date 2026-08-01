@@ -141,9 +141,17 @@ export interface DomCardOverlayOptions {
   readonly viewport: () => ViewportState;
   /** Graph data the cards read through. */
   readonly nodes: CardNodeSource;
-  /** Simultaneously mounted cards. Defaults to {@link DEFAULT_MAX_CARDS}. */
+  /**
+   * Initial card budget. Defaults to {@link DEFAULT_MAX_CARDS}, and is a
+   * {@link DomOverlayConfig} field from then on — `setLodConfig` keeps it
+   * equal to the controller's.
+   */
   readonly maxCards?: number;
-  /** Anti-flicker lifetime floor. Defaults to {@link DEFAULT_MIN_CARD_LIFETIME_MS}. */
+  /**
+   * Initial anti-flicker lifetime floor. Defaults to
+   * {@link DEFAULT_MIN_CARD_LIFETIME_MS}, and is a {@link DomOverlayConfig}
+   * field from then on.
+   */
   readonly minCardLifetimeMs?: number;
   /** Gesture debounce. Defaults to {@link DEFAULT_GESTURE_IDLE_MS}. */
   readonly gestureIdleMs?: number;
@@ -176,8 +184,6 @@ export class DomCardOverlay {
   readonly #canvas: HTMLCanvasElement;
   readonly #viewport: () => ViewportState;
   readonly #nodes: CardNodeSource;
-  readonly #maxCards: number;
-  readonly #minCardLifetimeMs: number;
   readonly #gestureIdleMs: number;
   readonly #now: () => number;
   readonly #timers: OverlayTimers;
@@ -209,11 +215,11 @@ export class DomCardOverlay {
     this.#canvas = options.canvas;
     this.#viewport = options.viewport;
     this.#nodes = options.nodes;
-    this.#maxCards = Math.max(0, Math.trunc(options.maxCards ?? DEFAULT_MAX_CARDS));
-    this.#minCardLifetimeMs = Math.max(
-      0,
-      options.minCardLifetimeMs ?? DEFAULT_MIN_CARD_LIFETIME_MS,
-    );
+    this.#config = clampBudget({
+      ...DEFAULT_DOM_OVERLAY_CONFIG,
+      maxCards: options.maxCards ?? DEFAULT_MAX_CARDS,
+      minCardLifetimeMs: options.minCardLifetimeMs ?? DEFAULT_MIN_CARD_LIFETIME_MS,
+    });
     this.#gestureIdleMs = Math.max(0, options.gestureIdleMs ?? DEFAULT_GESTURE_IDLE_MS);
     this.#now = options.now ?? (() => performance.now());
     this.#timers = options.timers ?? HOST_TIMERS;
@@ -254,7 +260,7 @@ export class DomCardOverlay {
    */
   setConfig(config: Partial<DomOverlayConfig>): void {
     const previous = this.#config;
-    const next: DomOverlayConfig = { ...previous, ...config };
+    const next = clampBudget({ ...previous, ...config });
     this.#config = next;
 
     const hostChanged = next.host !== previous.host;
@@ -333,7 +339,7 @@ export class DomCardOverlay {
     // Unrequested cards go as soon as the anti-flicker floor allows.
     for (const [node, record] of [...this.#cards]) {
       if (requested.has(node)) continue;
-      if (now - record.mountedAtMs < this.#minCardLifetimeMs) continue;
+      if (now - record.mountedAtMs < this.#config.minCardLifetimeMs) continue;
       this.#release(node);
     }
 
@@ -524,7 +530,7 @@ export class DomCardOverlay {
     const candidates: Candidate[] = [];
 
     for (const [node, record] of this.#cards) {
-      if (now - record.mountedAtMs < this.#minCardLifetimeMs) {
+      if (now - record.mountedAtMs < this.#config.minCardLifetimeMs) {
         admitted.add(node);
         continue;
       }
@@ -546,7 +552,7 @@ export class DomCardOverlay {
     });
 
     for (const candidate of candidates) {
-      if (admitted.size >= this.#maxCards) break;
+      if (admitted.size >= this.#config.maxCards) break;
       admitted.add(candidate.node);
     }
     return admitted;
@@ -657,6 +663,23 @@ export class DomCardOverlay {
     event.preventDefault();
     canvas.dispatchEvent(cloneWheelEvent(event as WheelEvent, canvas.ownerDocument.defaultView));
   };
+}
+
+/**
+ * Coerce the two budget knobs to values the admission pass can compare against.
+ *
+ * They arrive from the same place `LodConfig` does — a live inspector slider,
+ * a consumer's own interpolation — so nonsense saturates rather than throwing,
+ * matching `resolveLodConfig`. A NaN budget would admit every card, and a NaN
+ * lifetime would hold every card forever.
+ */
+function clampBudget(config: DomOverlayConfig): DomOverlayConfig {
+  const maxCards = Number.isFinite(config.maxCards) ? Math.max(0, Math.trunc(config.maxCards)) : 0;
+  const minCardLifetimeMs = Number.isFinite(config.minCardLifetimeMs)
+    ? Math.max(0, config.minCardLifetimeMs)
+    : 0;
+  if (maxCards === config.maxCards && minCardLifetimeMs === config.minCardLifetimeMs) return config;
+  return { ...config, maxCards, minCardLifetimeMs };
 }
 
 /** Enough of a constructor to rebuild an event inside its own DOM. */

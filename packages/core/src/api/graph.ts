@@ -42,8 +42,16 @@ import {
   selectContainmentEdges,
 } from "../graph/hierarchy.ts";
 import { commitNodeMass, NODE_MASS_UNIT } from "../lod/mass.ts";
+import { forEachSlotRun } from "../lod/runs.ts";
+import { type ProxyRadiusHost, ProxyRadiusTable } from "../lod/proxy_radius.ts";
 import type { CrossfadeScheduler } from "../lod/crossfade.ts";
-import { type LodConfig, LODController, type LodHost, type LodPolicy } from "../lod/mod.ts";
+import {
+  DEFAULT_LOD_CONFIG,
+  type LodConfig,
+  LODController,
+  type LodHost,
+  type LodPolicy,
+} from "../lod/mod.ts";
 import {
   createNodeBindGroup,
   createNodeRenderPipeline,
@@ -437,6 +445,8 @@ export class GraphMother {
    * the latter — pinning a node runs the same choke point as hiding one.
    */
   private activeIndexShadow: Uint32Array | null = null;
+  /** Render radii borrowed by the current collapsed proxies. */
+  private readonly lodProxies = new ProxyRadiusTable();
 
   // Components
   private viewport: Viewport;
@@ -1897,6 +1907,7 @@ export class GraphMother {
   private uploadAlgorithmEdgeData(device: GPUDevice): void {
     this.hierarchy = null;
     this.resetNodeMass();
+    this.resetLodProxyRadii();
 
     if (!this.currentAlgorithm || !this.algorithmBuffers || !this.graphState) {
       return;
@@ -3212,6 +3223,118 @@ export class GraphMother {
       lo * 4,
       toArrayBuffer(shadow.subarray(lo, hi)),
     );
+  }
+
+  /**
+   * Render the declared slots as collapsed bubbles at the given radii, and give
+   * every slot that has stopped being one its own radius back.
+   *
+   * A collapsed parent is drawn through the ordinary node pipeline as a single
+   * instance at its well radius (Phase 3 §5.4 v1) — no metaballs and, expressly,
+   * nothing built on `SimpleContourLayer`, which is documented broken. Only the
+   * render radius moves: the collision radius stays the node's own, so a
+   * transition changes nothing the physics reads.
+   *
+   * `proxies` is complete, not a diff, so a caller cannot leak an inflated
+   * radius by forgetting to name an expansion.
+   */
+  private setCollapsedProxies(proxies: Uint32Array, radii: Float32Array): void {
+    if (!this.graphState) return;
+    this.flushNodeAttributeRows(
+      this.lodProxies.declare(proxies, proxies.length, radii, this.proxyRadiusHost()),
+    );
+  }
+
+  /**
+   * Un-inflate every collapsed proxy after a topology change.
+   *
+   * Runs beside {@link resetNodeMass} and for the same reason: the collapse set
+   * belongs to the hierarchy that just went stale.
+   */
+  private resetLodProxyRadii(): void {
+    if (this.lodProxies.size === 0 || !this.graphState) return;
+    this.flushNodeAttributeRows(this.lodProxies.release(this.proxyRadiusHost()));
+  }
+
+  /** The per-slot readings and radius write the proxy table drives. */
+  private proxyRadiusHost(): ProxyRadiusHost {
+    const gs = this.graphState!;
+    return {
+      radiusOf: (slot) => gs.nodeAttributes[slot * NODE_ATTR_FLOATS],
+      externalIdOf: (slot) => externalIdForSlot(gs, slot),
+      slotOf: (externalId) => slotForExternalId(gs, externalId),
+      setRadius: (slot, radius) => {
+        if (slot < 0 || slot >= gs.nodeHighWater) return false;
+        const index = slot * NODE_ATTR_FLOATS;
+        if (gs.nodeAttributes[index] === radius) return false;
+        gs.nodeAttributes[index] = radius;
+        return true;
+      },
+    };
+  }
+
+  /**
+   * Upload the attribute rows of `slots` as one write per contiguous run.
+   *
+   * A run may span slots the caller never touched, which is safe here and only
+   * here: the attribute shadow is the CPU-side authority for the render buffer,
+   * where the position shadow merely lags it between readbacks. Sorting is what
+   * makes a depth-first collapse set a single queue operation.
+   */
+  private flushNodeAttributeRows(slots: number[]): void {
+    const gs = this.graphState;
+    if (!gs || !this.buffers || slots.length === 0) return;
+    slots.sort((a, b) => a - b);
+
+    const { device } = this.gpuContext;
+    const buffer = this.buffers.nodeAttributes;
+    forEachSlotRun(slots, slots.length, (lo, hi) => {
+      device.queue.writeBuffer(
+        buffer,
+        lo * NODE_ATTR_BYTES,
+        toArrayBuffer(gs.nodeAttributes.subarray(lo * NODE_ATTR_FLOATS, hi * NODE_ATTR_FLOATS)),
+      );
+    });
+    this.markRenderDirty();
+  }
+
+  /**
+   * Translate the positions of `[lo, hi)` by `(dx, dy)`, CPU shadow and GPU.
+   *
+   * The LOD expand fix-up: a folded subtree is frozen while its proxy goes on
+   * simulating, so it is moved by the proxy's drift before it is revealed.
+   * Unlike {@link setNodePosition} this neither pins nor disturbs alpha — an
+   * LOD transition must never reheat the simulation, and the nodes involved are
+   * being restored to an arrangement, not placed by a user.
+   *
+   * Both ping-pong position buffers are written, because the caller does not
+   * know which orientation the next tick reads.
+   */
+  private translateNodeRange(lo: number, hi: number, dx: number, dy: number): void {
+    const gs = this.graphState;
+    if (!gs || !this.buffers) return;
+    const start = Math.max(0, lo);
+    const end = Math.min(hi, gs.nodeHighWater);
+    if (end <= start) return;
+
+    const moved = new Float32Array((end - start) * 2);
+    for (let slot = start; slot < end; slot++) {
+      const x = gs.positionsX[slot] + dx;
+      const y = gs.positionsY[slot] + dy;
+      gs.positionsX[slot] = x;
+      gs.positionsY[slot] = y;
+      moved[(slot - start) * 2] = x;
+      moved[(slot - start) * 2 + 1] = y;
+    }
+
+    const { device } = this.gpuContext;
+    const offset = start * 8;
+    device.queue.writeBuffer(this.buffers.positions, offset, moved);
+    if (this.simBuffers) {
+      device.queue.writeBuffer(this.simBuffers.positions, offset, moved);
+      device.queue.writeBuffer(this.simBuffers.positionsOut, offset, moved);
+    }
+    this.markRenderDirty();
   }
 
   /**
@@ -4992,13 +5115,21 @@ export class GraphMother {
     this.domOverlay?.syncCards(entries);
   }
 
-  /** Create the overlay on first use; it holds no GPU resources. */
+  /**
+   * Create the overlay on first use; it holds no GPU resources.
+   *
+   * Seeded with the LOD budget so the two agree from the first sync, whichever
+   * order the caller enabled them in.
+   */
   private ensureDomOverlay(): DomCardOverlay {
     if (this.domOverlay === null) {
+      const lod = this.lodController?.getConfig() ?? DEFAULT_LOD_CONFIG;
       this.domOverlay = new DomCardOverlay({
         canvas: this.canvas,
         viewport: () => this.viewport.state,
         nodes: this.createCardNodeSource(),
+        maxCards: lod.maxCards,
+        minCardLifetimeMs: lod.minCardLifetimeMs,
       });
     }
     return this.domOverlay;
@@ -5094,7 +5225,17 @@ export class GraphMother {
    * @param config - Settings to change; anything omitted keeps its value
    */
   setLodConfig(config: Partial<LodConfig>): void {
-    this.ensureLodController().setConfig(config);
+    const controller = this.ensureLodController();
+    controller.setConfig(config);
+    // The card budget and the anti-flicker floor exist on both sides — the
+    // controller ranks and truncates, the overlay admits and holds — and two
+    // separately settable copies of one knob disagree silently. The controller's
+    // resolved value wins, so the clamps apply once.
+    const resolved = controller.getConfig();
+    this.domOverlay?.setConfig({
+      maxCards: resolved.maxCards,
+      minCardLifetimeMs: resolved.minCardLifetimeMs,
+    });
   }
 
   /** Current LOD configuration, including defaults never explicitly set. */
@@ -5191,6 +5332,9 @@ export class GraphMother {
       getNodeWeight: (node) => this.getNodeWeight(node),
       applyVisibility: (lo, hi, visible) => this.applyLodVisibility(lo, hi, visible),
       uploadNodeAlpha: (scheduler) => this.uploadNodeAlpha(scheduler),
+      uploadNodeMass: (mass) => this.uploadNodeMass(mass),
+      setCollapsedProxies: (proxies, radii) => this.setCollapsedProxies(proxies, radii),
+      translateNodeRange: (lo, hi, dx, dy) => this.translateNodeRange(lo, hi, dx, dy),
       syncCards: (entries) => this.syncDomCards(entries),
       emit: (event) => this.events.emit(event),
     };

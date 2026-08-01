@@ -12,7 +12,7 @@
  * controller takes to one is visible as a property access.
  */
 
-import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert@^1";
+import { assert, assertEquals, assertNotEquals, assertStrictEquals } from "jsr:@std/assert@^1";
 import {
   LOD_FORCE_CARD_PRIORITY,
   LODController,
@@ -96,6 +96,20 @@ interface VisibilityWrite {
   hidden: number[];
 }
 
+/** One `setCollapsedProxies` call, flattened to slot/radius pairs. */
+interface ProxyWrite {
+  slots: number[];
+  radii: number[];
+}
+
+/** One `translateNodeRange` call. */
+interface TranslateWrite {
+  lo: number;
+  hi: number;
+  dx: number;
+  dy: number;
+}
+
 /** Names that would reheat the simulation. None may ever be touched. */
 const REHEAT_NAMES = [
   "setAlpha",
@@ -106,8 +120,33 @@ const REHEAT_NAMES = [
   "restartSimulation",
 ] as const;
 
+/**
+ * The entire declared {@link LodHost} surface.
+ *
+ * The controller may read nothing else off its host. Kept as a literal rather
+ * than derived from the type — the point is to notice when the seam grows, and
+ * a list generated from the seam could not.
+ */
+const HOST_SURFACE: readonly string[] = [
+  "getHierarchy",
+  "getViewport",
+  "getNodePosition",
+  "getNodeRadius",
+  "getNodeTag",
+  "getNodeWeight",
+  "applyVisibility",
+  "uploadNodeAlpha",
+  "uploadNodeMass",
+  "setCollapsedProxies",
+  "translateNodeRange",
+  "syncCards",
+  "emit",
+];
+
 interface Recorder {
   host: LodHost;
+  /** Swappable, so a test can hand the controller a rebuilt hierarchy. */
+  hierarchy: RetainedHierarchy | null;
   visibility: VisibilityWrite[];
   cards: CardSyncEntry[][];
   events: string[];
@@ -117,6 +156,14 @@ interface Recorder {
   viewport: { x: number; y: number; scale: number };
   radiusOf: (node: NodeId) => number;
   weightOf: (node: NodeId) => number;
+  positionOf: (node: NodeId) => { x: number; y: number };
+  /** Every mass array handed over, copied — plus the identities, uncopied. */
+  mass: Float32Array[];
+  massIdentities: Float32Array[];
+  proxies: ProxyWrite[];
+  translations: TranslateWrite[];
+  /** Host method names in call order, for claims about relative ordering. */
+  calls: string[];
 }
 
 /**
@@ -129,6 +176,7 @@ interface Recorder {
 function recorder(hierarchy: RetainedHierarchy | null): Recorder {
   const state: Recorder = {
     host: null as unknown as LodHost,
+    hierarchy,
     visibility: [],
     cards: [],
     events: [],
@@ -137,6 +185,12 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     viewport: { x: VIEWPORT.x, y: VIEWPORT.y, scale: VIEWPORT.scale },
     radiusOf: () => 1,
     weightOf: () => 0,
+    positionOf: () => ({ x: 0, y: 0 }),
+    mass: [],
+    massIdentities: [],
+    proxies: [],
+    translations: [],
+    calls: [],
   };
 
   const reheat = () => {
@@ -144,9 +198,9 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
   };
 
   const target = {
-    getHierarchy: () => hierarchy,
+    getHierarchy: () => state.hierarchy,
     getViewport: (): ViewportState => ({ ...VIEWPORT, ...state.viewport }),
-    getNodePosition: () => ({ x: 0, y: 0 }),
+    getNodePosition: (node: NodeId) => state.positionOf(node),
     getNodeRadius: (node: NodeId) => state.radiusOf(node),
     getNodeTag: () => 0,
     getNodeWeight: (node: NodeId) => state.weightOf(node),
@@ -156,8 +210,20 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
         if (visible[slot] === 0) hidden.push(slot);
       }
       state.visibility.push({ lo, hi, hidden });
+      state.calls.push("applyVisibility");
     },
     uploadNodeAlpha: () => {},
+    uploadNodeMass: (mass: Float32Array) => {
+      state.mass.push(mass.slice());
+      state.massIdentities.push(mass);
+    },
+    setCollapsedProxies: (proxies: Uint32Array, radii: Float32Array) => {
+      state.proxies.push({ slots: Array.from(proxies), radii: Array.from(radii) });
+    },
+    translateNodeRange: (lo: number, hi: number, dx: number, dy: number) => {
+      state.translations.push({ lo, hi, dx, dy });
+      state.calls.push("translateNodeRange");
+    },
     syncCards: (entries: readonly CardSyncEntry[]) => {
       state.cards.push([...entries]);
     },
@@ -186,11 +252,21 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
   return state;
 }
 
-/** Assert the controller took no route to simulation alpha. */
+/**
+ * Assert the controller took no route to simulation alpha.
+ *
+ * Two claims, and the second is the durable one: nothing named a reheat was
+ * touched, *and* nothing outside the declared seam was touched at all — so a
+ * future route to alpha through some new host method fails here even though
+ * this list has never heard of it.
+ */
 function assertNoReheat(log: Recorder): void {
   const touched = log.accessed.filter((name) => (REHEAT_NAMES as readonly string[]).includes(name));
   assertEquals(touched, [], "LOD must never reach simulation alpha");
   assertEquals(log.reheatCalls, 0);
+
+  const undeclared = [...new Set(log.accessed)].filter((name) => !HOST_SURFACE.includes(name));
+  assertEquals(undeclared, [], "LOD must read nothing outside the declared LodHost surface");
 }
 
 interface Rig {
@@ -626,6 +702,186 @@ Deno.test("lifecycle: disabling releases the cut and shows everything again", ()
   assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3, 4]);
   assertEquals(log.visibility.at(-1)?.hidden, []);
   assertEquals(log.cards.at(-1), []);
+});
+
+// =============================================================================
+// Collapsed proxies — mass, render radius and the expand fix-up
+// =============================================================================
+
+/**
+ * Root 0 over subtree root 1 (children 3, 4) and leaf 2.
+ *
+ * Slots are depth-first inside node 1's subtree, so a fix-up over it is one
+ * contiguous run — the producer contract the hierarchy module asks for.
+ */
+function proxyFixture(): RetainedHierarchy {
+  return hierarchyOf([-1, 0, 0, 1, 1], (slot) => (slot === 0 ? 4000 : 10));
+}
+
+Deno.test("proxies: a collapse rolls the subtree's mass onto the proxy and zeroes what it hides", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // Node 1 stands for itself plus 3 and 4; nothing else is folded.
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+  // Total mass is conserved whatever the collapse set, or the visible layout
+  // would change scale as you zoom.
+  assertEquals(log.mass.at(-1)!.reduce((a, b) => a + b, 0), 5);
+  assertNoReheat(log);
+});
+
+Deno.test("proxies: expanding restores unit mass everywhere", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+
+  controller.expandNode(1, 16);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
+  assertNoReheat(log);
+});
+
+Deno.test("proxies: every transition reuses one mass array", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.expandNode(1, 16);
+  controller.collapseNode(1, 32);
+
+  assert(log.massIdentities.length >= 3, "expected one upload per transition");
+  for (const array of log.massIdentities) {
+    assertStrictEquals(
+      array,
+      log.massIdentities[0],
+      "the per-transition path must not allocate a mass array",
+    );
+  }
+});
+
+Deno.test("proxies: a rebuilt hierarchy re-declares mass and radii", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  const uploadsBefore = log.mass.length;
+  const proxiesBefore = log.proxies.length;
+
+  // A topology change: the graph drops its hierarchy and derives a new one,
+  // and the host has already reset mass and radii against the old slot map.
+  log.hierarchy = proxyFixture();
+  controller.evaluateNow(16);
+
+  assert(log.mass.length > uploadsBefore, "adopting a hierarchy must re-upload mass");
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+  assert(log.proxies.length > proxiesBefore, "adopting a hierarchy must re-declare proxies");
+  assertEquals(log.proxies.at(-1), { slots: [1], radii: [10] });
+});
+
+Deno.test("proxies: a rebuilt hierarchy that folds nothing still clears the old rollup", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+
+  // Every node is now large enough to expand, so the new cut folds nothing and
+  // its diff against a freshly adopted state is empty in every column. The
+  // rollup still has to be withdrawn: it named the old slot mapping.
+  log.hierarchy = hierarchyOf([-1, 0, 0, 1, 1], () => 4000);
+  controller.evaluateNow(16);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
+  assertEquals(log.proxies.at(-1), { slots: [], radii: [] });
+});
+
+Deno.test("proxies: the collapsed parent renders at its well radius and gets its own back", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(log.proxies.at(-1), { slots: [1], radii: [10] });
+
+  controller.expandNode(1, 16);
+  assertEquals(log.proxies.at(-1), { slots: [], radii: [] });
+  assertNoReheat(log);
+});
+
+Deno.test("expand fix-up: the subtree is translated by the proxy's drift, before it is revealed", () => {
+  const { controller, log } = rig(proxyFixture());
+  const positions = new Map<NodeId, { x: number; y: number }>([[1, { x: 10, y: -4 }]]);
+  log.positionOf = (node) => positions.get(node) ?? { x: 0, y: 0 };
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(log.translations, [], "a collapse translates nothing");
+
+  // The proxy goes on simulating while 3 and 4 are frozen underneath it.
+  positions.set(1, { x: 25, y: 6 });
+  const visibilityWrites = log.visibility.length;
+  const callsBefore = log.calls.length;
+  controller.expandNode(1, 16);
+
+  // Slots 3 and 4 are adjacent, so the whole subtree is one buffer write.
+  assertEquals(log.translations, [{ lo: 3, hi: 5, dx: 15, dy: 10 }]);
+  // The reveal must follow the translate: a subtree unflagged first is drawn
+  // for a frame at the position its parent abandoned.
+  const expandCalls = log.calls.slice(callsBefore);
+  assertEquals(
+    expandCalls.indexOf("translateNodeRange") < expandCalls.indexOf("applyVisibility"),
+    true,
+    `expected the translate before the reveal, got ${expandCalls.join(" -> ")}`,
+  );
+  assert(log.visibility.length > visibilityWrites);
+  assertNoReheat(log);
+});
+
+Deno.test("expand fix-up: a scattered subtree becomes one call per contiguous run", () => {
+  // Node 1's children are slots 2 and 4; node 3 belongs to the other root.
+  const hierarchy = hierarchyOf([-1, 0, 1, 0, 1], (slot) => (slot === 0 ? 4000 : 10));
+  const { controller, log } = rig(hierarchy);
+  const positions = new Map<NodeId, { x: number; y: number }>([[1, { x: 0, y: 0 }]]);
+  log.positionOf = (node) => positions.get(node) ?? { x: 0, y: 0 };
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  positions.set(1, { x: 3, y: 7 });
+  controller.expandNode(1, 16);
+  assertEquals(log.translations, [
+    { lo: 2, hi: 3, dx: 3, dy: 7 },
+    { lo: 4, hi: 5, dx: 3, dy: 7 },
+  ]);
+});
+
+Deno.test("expand fix-up: a proxy that never moved costs no write at all", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.expandNode(1, 16);
+  assertEquals(log.translations, []);
+});
+
+Deno.test("proxies: disabling LOD unfolds the proxies and returns every slot to unit mass", () => {
+  const { controller, log } = rig(proxyFixture());
+  const positions = new Map<NodeId, { x: number; y: number }>([[1, { x: 0, y: 0 }]]);
+  log.positionOf = (node) => positions.get(node) ?? { x: 0, y: 0 };
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  positions.set(1, { x: -8, y: 2 });
+  controller.setConfig({ enabled: false });
+
+  assertEquals(log.translations, [{ lo: 3, hi: 5, dx: -8, dy: 2 }]);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
+  assertEquals(log.proxies.at(-1), { slots: [], radii: [] });
+});
+
+Deno.test("proxies: a capacity change re-declares the live collapsed set", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  const uploads = log.mass.length;
+
+  // Reallocation hands back a unit-mass buffer, so the rollup has to be
+  // rewritten rather than left to whenever the next band is crossed.
+  controller.handleNodeCapacityChange(64, 16);
+  assert(log.mass.length > uploads);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
 });
 
 Deno.test("lifecycle: no hierarchy means no cut and no host writes", () => {
