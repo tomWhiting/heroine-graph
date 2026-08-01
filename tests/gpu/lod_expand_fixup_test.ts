@@ -257,6 +257,52 @@ async function harnessOver(device: GPUDevice): Promise<SimHarness> {
 }
 
 // =============================================================================
+// The crossfade window
+// =============================================================================
+
+gpuTest(
+  "crossfade window: a collapsing subtree simulates exactly as it did before",
+  async (device) => {
+    // The cut moves a whole fade ahead of the flags, so for `transitionMs` the
+    // subtree is still drawn, still dispatched and still integrated. Anything
+    // the collapse changes about the physics inside that window acts on bodies
+    // that are still there: mass rolled onto the proxy leaves them weightless
+    // inside its aggregate repulsion, and the arrangement they are blown into
+    // is the one the flag then freezes and the expand fix-up faithfully
+    // restores. So the claim is exact rather than a tolerance on a blowout —
+    // mid-fade, the simulation must be indistinguishable from one where no
+    // collapse happened at all.
+    const collapsing = await harnessOver(device);
+    const control = await harnessOver(device);
+    try {
+      const rig = createRig(collapsing, fixtureHierarchy());
+      rig.controller.evaluateNow(0);
+      for (const slot of DESCENDANTS) {
+        assertEquals(
+          rig.flags[slot] & NODE_FLAG_HIDDEN_LOD,
+          0,
+          `slot ${slot} was flagged at cut time, so this test proves nothing`,
+        );
+      }
+
+      // Nine ticks is one 150 ms crossfade at 60 fps.
+      await collapsing.tick(9);
+      await control.tick(9);
+      const live = await collapsing.readPositions();
+      const expected = await control.readPositions();
+      assertOffsetsMatch(
+        offsetsFromProxy(live.x, live.y),
+        offsetsFromProxy(expected.x, expected.y),
+        1e-3,
+      );
+    } finally {
+      collapsing.dispose();
+      control.dispose();
+    }
+  },
+);
+
+// =============================================================================
 // Round trip
 // =============================================================================
 

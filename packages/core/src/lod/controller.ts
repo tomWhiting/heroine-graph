@@ -10,7 +10,7 @@
  * boundary arrives as an argument, so a viewport sequence replays to the same
  * decision stream every time.
  *
- * Four properties are load-bearing and none of them is expressible in a type:
+ * Six properties are load-bearing and none of them is expressible in a type:
  *
  * 1. **A transition must never reheat the simulation.** Nothing here touches
  *    simulation alpha, and nothing here may: at the codebase's standard reheat
@@ -25,14 +25,24 @@
  *    oscillation. It does not answer a subtree that moves or resizes under a
  *    hot simulation with the camera held still, which is what the quantised
  *    zoom band and {@link LodConfig.minBandCommitFrames} are for.
- * 4. **Hiding is deferred behind the fade.** The `HIDDEN_LOD` flag culls a node
- *    in the vertex stage, so writing it at transition time would delete the
- *    node the crossfade is fading. The flag lands when the ramp does.
+ * 4. **Hiding is deferred behind the fade, and the physics goes with it.** The
+ *    `HIDDEN_LOD` flag culls a node in the vertex stage, so writing it at
+ *    transition time would delete the node the crossfade is fading. The flag
+ *    lands when the ramp does, and so do the mass roll-up and the edge
+ *    aggregation: a node still being integrated but already massless and
+ *    springless is thrown outwards by its own proxy's aggregate repulsion for
+ *    the whole length of the fade, and is then frozen in that arrangement.
  * 5. **Expanding is a rigid-body move, not a re-layout.** A folded subtree is
  *    frozen while its proxy goes on simulating, so it is translated by the
  *    proxy's drift before it is revealed. That is what lets a collapse be
  *    undone exactly, and it is why the proxy renders at its own position
  *    rather than at a centroid.
+ * 6. **A card and its sprite are one node's two representations.** Gaining a
+ *    card ramps the sprite out as the card ramps in, and losing one ramps it
+ *    back; the two are never both solid. The card set is culled to the camera
+ *    for the same reason it has a budget at all — a card the user cannot see
+ *    is DOM spent on nothing — so cards follow a pan even though the cut does
+ *    not.
  *
  * @module
  */
@@ -72,12 +82,13 @@ import type { LodCandidate, LodContext, LodDecision, LodPolicy } from "./policy.
 export const LOD_ZOOM_QUANTA_PER_OCTAVE = 8;
 
 /**
- * Fraction of the viewport extent the camera must pan before a policy is
- * re-consulted.
+ * Fraction of the viewport extent the camera must pan before the controller
+ * re-evaluates.
  *
  * Panning cannot change the geometric cut — the metrics are zoom-only — but it
- * changes {@link LodCandidate.onScreen}, which a policy may read. So the pan
- * trigger exists, and is skipped entirely when no policy is registered.
+ * moves the card ring, which is culled to the camera, and it changes
+ * {@link LodCandidate.onScreen}, which a policy may read. So the pan trigger
+ * exists, and is skipped entirely when neither is in play.
  */
 export const LOD_PAN_REEVALUATE_FRACTION = 0.25;
 
@@ -165,18 +176,19 @@ export interface LodHost {
    */
   setCollapsedProxies(proxies: Uint32Array, radii: Float32Array): void;
   /**
-   * Aggregate the edge set against the cut.
+   * Aggregate the edge set against the applied cut.
    *
-   * `visible[slot]` is 1 for a slot in the cut. Cross-boundary edges are
-   * bundled onto the lowest visible ancestor of each endpoint so that a
-   * collapsed subtree keeps pulling on what it depends on — without this the
-   * spring pass simply drops those edges, and the collapsed layout differs
-   * structurally from the expanded one.
+   * `visible[slot]` is 1 for a slot that is still rendered and simulated.
+   * Cross-boundary edges are bundled onto the lowest visible ancestor of each
+   * endpoint so that a collapsed subtree keeps pulling on what it depends on —
+   * without this the spring pass simply drops those edges, and the collapsed
+   * layout differs structurally from the expanded one.
    *
-   * Keyed off the *cut* rather than off the flags the crossfade lands later:
-   * the aggregated set replaces the source edge list wholesale, so an edge is
-   * covered by exactly one of the two at every instant and a node on its way
-   * out never carries its own spring and its bundle at once.
+   * Keyed off the flags the crossfade lands rather than off the cut ahead of
+   * them: the aggregated set replaces the source edge list wholesale, so an
+   * edge is covered by exactly one of the two at every instant, and taking the
+   * later of the two instants is what keeps a node that is still being
+   * integrated attached to its parent for the length of its fade.
    *
    * The array is the controller's, reused across transitions and valid only
    * for the duration of the call: a host that keeps it must copy.
@@ -204,6 +216,13 @@ export interface LodHost {
  */
 type MutableCandidate = { -readonly [K in keyof LodCandidate]: LodCandidate[K] };
 type MutableContext = { -readonly [K in keyof LodContext]: LodContext[K] };
+
+/**
+ * A card entry under construction: its opacity is only knowable once the whole
+ * set is ranked, because the budget decides which nodes gain a card and it is
+ * gaining one that starts the sprite's fade.
+ */
+type MutableCardEntry = { -readonly [K in keyof CardSyncEntry]: CardSyncEntry[K] };
 
 /** Empty stand-in so every accessor is total before a graph is attached. */
 const EMPTY_U8 = new Uint8Array(0);
@@ -297,6 +316,18 @@ export class LODController {
    * rebuilt hierarchy must re-declare them even when its diff is empty.
    */
   #proxiesStale = false;
+  /**
+   * The host's mass buffer, and its edge aggregation, no longer describe
+   * {@link LODController.#appliedVisible}.
+   *
+   * Two flags rather than one because their inputs differ: mass is also
+   * invalidated by the host reallocating the buffer or resetting it under a
+   * topology change, where the aggregation — which names edge indices, not
+   * slots — survives untouched and re-walking the edge array would be a
+   * transition budget spent on nothing.
+   */
+  #massStale = false;
+  #aggregationStale = false;
 
   #frame = 0;
   #zoom = 0;
@@ -326,6 +357,14 @@ export class LODController {
   readonly #pendingHide = new Set<NodeId>();
   /** Clock value each currently-carded node was first carded at. */
   readonly #cardedSince = new Map<NodeId, number>();
+  /**
+   * The last card sync saw a node large enough to card or prefetch, whether or
+   * not the viewport cull kept it.
+   *
+   * The gate on re-deriving cards after a pan. It has to ignore the cull it
+   * gates: a set emptied *by* the cull is exactly the state a pan brings back.
+   */
+  #cardBandActive = false;
 
   readonly #candidate: MutableCandidate = {
     node: 0,
@@ -488,13 +527,18 @@ export class LODController {
     this.#crossfade.resize(capacity);
     this.#crossfade.reset();
     if (this.#hasCut) {
-      this.#crossfade.fadeOut(this.#pendingHideOrHidden(), nowMs, 0);
+      this.#crossfade.fadeOut(this.#spriteTransparent(), nowMs, 0);
     }
     this.#host.uploadNodeAlpha(this.#crossfade);
 
     if (this.#hasCut) {
+      // Snapping the ramps landed every one of them, so the flags they were
+      // waiting on land here too: nothing else will advance the scheduler for
+      // a slot that has no fade left in flight.
+      this.#settleHidden();
       this.#proxiesStale = true;
       this.#onCollapsedSetChanged(NO_NODES, NO_NODES);
+      this.#flushPhysics();
     }
   }
 
@@ -532,8 +576,9 @@ export class LODController {
     if (this.#crossfade.advance(nowMs)) {
       this.#host.uploadNodeAlpha(this.#crossfade);
       this.#settleHidden();
-      // A card's opacity tracks the node it replaced, so it is re-declared for
-      // as long as a ramp is in flight and never again after it lands.
+      this.#flushPhysics();
+      // A card's opacity tracks the sprite it replaced, so it is re-declared
+      // for as long as a ramp is in flight and never again after it lands.
       this.#syncCards(nowMs);
       changed = true;
     }
@@ -582,10 +627,9 @@ export class LODController {
     // without any band state moving — clearing a policy's sticky verdicts, for
     // one — so it always rebuilds rather than trusting the diff.
     if (!bandChanged && !full && this.#hasCut) {
-      // The cut is unchanged, but the DOM band is measured in the same zoom
-      // that just moved, so the card set still has to be re-derived.
-      this.#syncCards(nowMs);
-      return false;
+      // The cut is unchanged, but the card set is derived from the zoom and
+      // the camera position that just moved, so it is re-derived regardless.
+      return this.#syncCards(nowMs);
     }
 
     return this.#recut(nowMs);
@@ -625,6 +669,7 @@ export class LODController {
     this.#hasCut = false;
     this.#pendingHide.clear();
     this.#cardedSince.clear();
+    this.#cardBandActive = false;
 
     this.#mass = new Float32Array(n);
     this.#massScratch = createRollUpMassScratch(n);
@@ -696,9 +741,11 @@ export class LODController {
     const zoom = quantiseZoom(viewport.scale);
     if (zoom !== this.#lastZoom) return true;
 
-    // Only a policy can see onScreen, so with none registered a pan can change
-    // nothing and the evaluation is skipped outright.
-    if (this.#policy === null || zoom === 0) return false;
+    // A pan cannot move the geometric cut — both metrics are zoom-only — so it
+    // is worth an evaluation for exactly two reasons: a policy may read
+    // `onScreen`, and the card ring is culled to the camera. With neither in
+    // play a translation changes nothing and the evaluation is skipped.
+    if ((this.#policy === null && !this.#cardBandActive) || zoom === 0) return false;
 
     const extentX = viewport.width / zoom;
     const extentY = viewport.height / zoom;
@@ -1050,25 +1097,29 @@ export class LODController {
     // wherever it was left when the proxy took over.
     const wasStale = this.#proxiesStale;
     this.#onCollapsedSetChanged(entered, left);
-
-    // Same transition boundary, its own trigger: the cut can change without
-    // the collapsed set changing — a node turning pass-through leaves the cut
-    // without ever becoming a proxy — and the aggregation is keyed on the cut.
-    if (wasStale || shown.length > 0 || hidden.length > 0) {
-      this.#host.aggregateEdges(this.#visibleMask);
-    }
+    // A rebuilt hierarchy leaves the host holding an aggregation named against
+    // the old slot mapping, so that one has to be re-derived even when the diff
+    // is empty. Every other trigger is a flag moving: below, or in
+    // #settleHidden a fade later.
+    if (wasStale) this.#aggregationStale = true;
 
     if (shown.length === 0 && hidden.length === 0 && entered.length === 0 && left.length === 0) {
-      this.#syncCards(nowMs);
-      return false;
+      this.#flushPhysics();
+      return this.#syncCards(nowMs);
     }
 
     // A node that reappears mid-fade must lose its HIDDEN_LOD flag now, or it
-    // would fade in behind a vertex-stage cull and never be drawn. Nodes on
-    // their way out keep theirs until #settleHidden lands the ramp.
+    // would fade in behind a vertex-stage cull and never be drawn — and it
+    // needs its mass and its springs from the same frame, or it fades in while
+    // being blown across the screen. Nodes on their way out keep both until
+    // #settleHidden lands the ramp.
     for (const slot of shown) {
       this.#pendingHide.delete(slot);
       this.#appliedVisible[slot] = 1;
+    }
+    if (shown.length > 0) {
+      this.#massStale = true;
+      this.#aggregationStale = true;
     }
     for (const slot of hidden) this.#pendingHide.add(slot);
     if (hi > lo) this.#host.applyVisibility(lo, hi, this.#appliedVisible);
@@ -1077,6 +1128,7 @@ export class LODController {
     this.#crossfade.fadeOut(hidden, nowMs, this.#config.transitionMs);
     this.#host.uploadNodeAlpha(this.#crossfade);
     this.#settleHidden();
+    this.#flushPhysics();
 
     for (const slot of entered) {
       this.#host.emit({
@@ -1118,12 +1170,15 @@ export class LODController {
    *    parent used to be. It runs before the anchors are rewritten because an
    *    expand can immediately re-collapse a child, and that child's anchor has
    *    to be its translated position.
-   * 2. **Aggregate mass.** A proxy standing for 5 000 nodes must repel like
-   *    5 000 nodes, or the visible layout contracts on collapse and re-inflates
-   *    on expand — the one thing semantic LOD must not do (SC-002).
-   * 3. **Proxy radii.** The collapsed parent renders through the ordinary node
+   * 2. **Proxy radii.** The collapsed parent renders through the ordinary node
    *    pipeline as one instance at its well radius, so the fold reads as a
-   *    bubble containing what it hides rather than as a lone leaf.
+   *    bubble containing what it hides rather than as a lone leaf. It is a
+   *    render radius and lands on the cut, unlike the mass below.
+   * 3. **Mass is only marked stale.** A proxy standing for 5 000 nodes must
+   *    repel like 5 000 nodes, or the visible layout contracts on collapse and
+   *    re-inflates on expand — the one thing semantic LOD must not do
+   *    (SC-002). But it must not do so while those 5 000 are still simulated,
+   *    so the roll-up itself waits for {@link LODController.#flushPhysics}.
    */
   #onCollapsedSetChanged(entered: readonly NodeId[], left: readonly NodeId[]): void {
     const h = this.#hierarchy;
@@ -1131,16 +1186,14 @@ export class LODController {
     const stale = this.#proxiesStale;
     if (!stale && entered.length === 0 && left.length === 0) return;
     this.#proxiesStale = false;
+    this.#massStale = true;
 
     for (const slot of left) this.#restoreSubtree(slot);
 
-    const count = this.#gatherProxies();
+    const count = this.#gatherProxies(false);
     const proxies = this.#proxies.subarray(0, count);
     const { wellRadius } = h.columns;
     for (let k = 0; k < count; k++) this.#proxyRadii[k] = wellRadius[proxies[k]];
-
-    rollUpMass(h.columns.parent, h.children, proxies, this.#mass, this.#massScratch);
-    this.#host.uploadNodeMass(this.#mass);
     this.#host.setCollapsedProxies(proxies, this.#proxyRadii.subarray(0, count));
 
     for (const slot of left) {
@@ -1154,14 +1207,68 @@ export class LODController {
     }
   }
 
-  /** The collapsed set as an ascending slot list in `#proxies`. */
-  #gatherProxies(): number {
+  /**
+   * The collapsed set as an ascending slot list in `#proxies`.
+   *
+   * @param applied - Restrict the list to the proxies whose subtree has
+   *   actually been flagged hidden. A proxy takes on its subtree's mass only
+   *   then: until the ramp lands, its members are still integrated bodies, and
+   *   moving their mass to the proxy leaves them weightless inside the
+   *   aggregate repulsion of the very node standing in for them. A collapse
+   *   hides a subtree as one batch and one ramp, so every descendant of a proxy
+   *   lands together and the first child answers for all of them.
+   */
+  #gatherProxies(applied: boolean): number {
+    if (this.#nodeCount === 0) return 0;
     const collapsed = this.#collapsedMask;
+    // The slot space and the hierarchy are adopted together, so a non-empty
+    // one of the first implies the second.
+    const { offsets, children } = this.#hierarchy!.children;
     let count = 0;
     for (let i = 0; i < this.#nodeCount; i++) {
-      if (collapsed[i] === 1) this.#proxies[count++] = i;
+      if (collapsed[i] !== 1) continue;
+      if (applied && this.#appliedVisible[children[offsets[i]]] === 1) continue;
+      this.#proxies[count++] = i;
     }
     return count;
+  }
+
+  /**
+   * Bring the host's physics back in line with the flags, and only the flags.
+   *
+   * Both derived quantities are keyed on {@link LODController.#appliedVisible}
+   * rather than on the cut, because a collapse moves the cut a whole fade
+   * ahead of the flags. Keyed on the cut, a node spends that fade with no mass
+   * of its own, no springs at all — the aggregation routes its edges onto an
+   * ancestor it is not yet part of — and the full aggregate repulsion of its
+   * proxy: 50 members of a directory measurably travel a whole link length
+   * outwards per crossfade, and are then frozen where they land.
+   *
+   * Recomputed from the current masks rather than from a diff, so it is
+   * idempotent and order-free: overlapping transitions and a settle that lands
+   * only part of the pending set all leave it describing exactly the state the
+   * host is in.
+   */
+  #flushPhysics(): void {
+    const h = this.#hierarchy;
+    if (h === null) return;
+
+    if (this.#massStale) {
+      this.#massStale = false;
+      const count = this.#gatherProxies(true);
+      rollUpMass(
+        h.columns.parent,
+        h.children,
+        this.#proxies.subarray(0, count),
+        this.#mass,
+        this.#massScratch,
+      );
+      this.#host.uploadNodeMass(this.#mass);
+    }
+    if (this.#aggregationStale) {
+      this.#aggregationStale = false;
+      this.#host.aggregateEdges(this.#appliedVisible);
+    }
   }
 
   /**
@@ -1201,7 +1308,14 @@ export class LODController {
    *
    * Deferring the flag is what makes the crossfade visible at all: the render
    * pipeline discards on `HIDDEN_LOD` in the vertex stage, so a node flagged at
-   * transition time disappears instantly instead of fading.
+   * transition time disappears instantly instead of fading. It is also the
+   * instant the physics is allowed to follow the cut, which is why the caller
+   * must reach {@link LODController.#flushPhysics} afterwards.
+   *
+   * Every slot here left the cut, and the card set is a subset of the cut, so
+   * this can never flag a node a card is standing in for — a carded node's
+   * sprite is at alpha 0 too, and it must stay simulated because its position
+   * is where its card is drawn.
    */
   #settleHidden(): void {
     if (this.#pendingHide.size === 0) return;
@@ -1215,7 +1329,11 @@ export class LODController {
       if (slot < lo) lo = slot;
       if (slot >= hi) hi = slot + 1;
     }
-    if (hi > lo) this.#host.applyVisibility(lo, hi, this.#appliedVisible);
+    if (hi > lo) {
+      this.#host.applyVisibility(lo, hi, this.#appliedVisible);
+      this.#massStale = true;
+      this.#aggregationStale = true;
+    }
   }
 
   // ==========================================================================
@@ -1225,52 +1343,103 @@ export class LODController {
   /**
    * Derive and declare the card set.
    *
-   * Three inputs, in precedence order: the focus set and any `force-card`
-   * policy verdict, which ignore screen size entirely; the DOM band with its
-   * own hysteresis; and the minimum card lifetime, which holds a card that has
-   * just appeared even once it has shrunk back out of the band. Nodes still
-   * outside the band but inside the prefetch ring are declared as prefetch
-   * only, so a provider can start work before the swap without any DOM existing.
+   * Four inputs, in precedence order. The focus set and any `force-card` policy
+   * verdict, which ignore screen size and the camera entirely — both are
+   * declarations of intent rather than observations about geometry. The card
+   * ring: the viewport rect widened by the prefetch ratio, because a card the
+   * user cannot see is DOM, layout and provider work spent on nothing, and at
+   * the operating point where every leaf clears the DOM threshold there is
+   * nothing but the ring to spend the budget on. The DOM band with its own
+   * hysteresis. And the minimum card lifetime, which holds a card that has just
+   * appeared even once it has shrunk back out of the band. Nodes outside the
+   * band but inside the ring are declared as prefetch only, so a provider can
+   * start work before the swap without any DOM existing.
+   *
+   * The budget lands before the card set is committed rather than after: a node
+   * ranked out of it is not carded, and must not be recorded as carded, because
+   * a carded node's sprite fades out and a card that never mounts would leave
+   * nothing on screen at all.
+   *
+   * @returns whether the carded set changed, i.e. whether a sprite is now
+   *   ramping. A prefetch offer moves no pixels and does not count.
    */
-  #syncCards(nowMs: number): void {
+  #syncCards(nowMs: number): boolean {
     this.#lastCardClockMs = nowMs;
-    if (!this.#hasCut) return;
+    if (!this.#hasCut) return false;
 
     const config = this.#config;
     const prefetchThreshold = config.domThreshold / config.prefetchRatio;
-    const carded: CardSyncEntry[] = [];
-    const prefetch: CardSyncEntry[] = [];
+    const viewport = this.#host.getViewport();
+    // The ring in world units, widened by the same ratio that widens the DOM
+    // band into the prefetch band: a node is offered to the provider as early
+    // in space as it is in screen size.
+    const halfW = (viewport.width / (2 * this.#zoom)) * config.prefetchRatio;
+    const halfH = (viewport.height / (2 * this.#zoom)) * config.prefetchRatio;
+
+    const carded: MutableCardEntry[] = [];
+    const prefetch: MutableCardEntry[] = [];
+    const gained: NodeId[] = [];
+    const dropped: NodeId[] = [];
+    let bandActive = false;
 
     for (const slot of this.#visible) {
-      const radius = this.#host.getNodeRadius(slot) * this.#zoom;
+      const worldRadius = this.#host.getNodeRadius(slot);
+      const radius = worldRadius * this.#zoom;
+      if (radius >= prefetchThreshold) bandActive = true;
+
       const forced = this.#forceCard[slot] === 1 || this.#focus.has(slot);
       const wasCarded = this.#cardedMask[slot] === 1;
       const since = this.#cardedSince.get(slot);
       const held = since !== undefined && nowMs - since < config.minCardLifetimeMs;
       const inBand = wasCarded ? radius >= config.domExitThreshold : radius >= config.domThreshold;
-      const wanted = forced || inBand || (wasCarded && held);
 
-      if (!wanted) {
-        this.#cardedMask[slot] = 0;
-        this.#cardedSince.delete(slot);
-        if (radius >= prefetchThreshold) {
-          prefetch.push({ node: slot, priority: radius, prefetchOnly: true });
-        }
+      let want = forced || inBand || (wasCarded && held);
+      let offer = want || radius >= prefetchThreshold;
+      // The cull is the last question asked, so a node no size test wanted
+      // never costs a position read.
+      if (
+        offer && !forced &&
+        !this.#inCardRing(slot, viewport, halfW + worldRadius, halfH + worldRadius)
+      ) {
+        want = false;
+        offer = false;
+      }
+
+      if (want) {
+        carded.push({
+          node: slot,
+          // Weight is a sub-pixel tie-break: it can only reorder nodes whose
+          // screen radii are within one pixel of each other.
+          priority: radius + this.#weight[slot] + (forced ? LOD_FORCE_CARD_PRIORITY : 0),
+        });
         continue;
       }
 
+      if (wasCarded) dropped.push(slot);
+      this.#cardedMask[slot] = 0;
+      this.#cardedSince.delete(slot);
+      if (offer) prefetch.push({ node: slot, priority: radius, prefetchOnly: true });
+    }
+    this.#cardBandActive = bandActive;
+
+    byPriority(carded);
+    const budget = Math.min(carded.length, config.maxCards);
+    for (let k = budget; k < carded.length; k++) {
+      const slot = carded[k].node;
+      if (this.#cardedMask[slot] === 1) dropped.push(slot);
+      this.#cardedMask[slot] = 0;
+      this.#cardedSince.delete(slot);
+    }
+    for (let k = 0; k < budget; k++) {
+      const slot = carded[k].node;
+      if (this.#cardedMask[slot] === 0) gained.push(slot);
       this.#cardedMask[slot] = 1;
-      if (since === undefined) this.#cardedSince.set(slot, nowMs);
-      carded.push({
-        node: slot,
-        // Weight is a sub-pixel tie-break: it can only reorder nodes whose
-        // screen radii are within one pixel of each other.
-        priority: radius + this.#weight[slot] + (forced ? LOD_FORCE_CARD_PRIORITY : 0),
-        opacity: this.#crossfade.alphaOf(slot),
-      });
+      if (!this.#cardedSince.has(slot)) this.#cardedSince.set(slot, nowMs);
     }
 
     // Nodes that left the cut cannot hold a card, whatever their lifetime says.
+    // They are not faded back in: their sprite is already ramping out with the
+    // transition that dropped them, and a fade-in here would fight it.
     for (const slot of this.#cardedSince.keys()) {
       if (this.#visibleMask[slot] === 0) {
         this.#cardedSince.delete(slot);
@@ -1278,11 +1447,29 @@ export class LODController {
       }
     }
 
-    byPriority(carded);
+    // The swap itself: the card takes over the node's pixels, so the sprite
+    // ramps out under it and back in when the card goes. Both ramps are the
+    // ordinary crossfade, so a node caught mid-swap reverses continuously.
+    if (gained.length > 0) this.#crossfade.fadeOut(gained, nowMs, config.transitionMs);
+    if (dropped.length > 0) this.#crossfade.fadeIn(dropped, nowMs, config.transitionMs);
+    if (gained.length > 0 || dropped.length > 0) this.#host.uploadNodeAlpha(this.#crossfade);
+
+    const entries: MutableCardEntry[] = carded.slice(0, budget);
+    for (const entry of entries) entry.opacity = 1 - this.#crossfade.alphaOf(entry.node);
+
     byPriority(prefetch);
-    const entries = carded.slice(0, config.maxCards);
-    for (const entry of prefetch.slice(0, config.maxCards)) entries.push(entry);
+    const offers = Math.min(prefetch.length, config.maxCards);
+    for (let k = 0; k < offers; k++) entries.push(prefetch[k]);
     this.#host.syncCards(entries);
+
+    return gained.length > 0 || dropped.length > 0;
+  }
+
+  /** Whether a slot's centre lies inside the card ring's half-extents. */
+  #inCardRing(slot: NodeId, viewport: ViewportState, halfW: number, halfH: number): boolean {
+    const position = this.#host.getNodePosition(slot);
+    return Math.abs(position.x - viewport.x) <= halfW &&
+      Math.abs(position.y - viewport.y) <= halfH;
   }
 
   // ==========================================================================
@@ -1310,7 +1497,7 @@ export class LODController {
     const hadCut = this.#hasCut;
     let released: readonly NodeId[] = EMPTY_RELEASED;
     if (restore) {
-      const count = this.#gatherProxies();
+      const count = this.#gatherProxies(false);
       for (let k = 0; k < count; k++) this.#restoreSubtree(this.#proxies[k]);
       if (hadCut && count > 0) {
         released = Array.from(this.#proxies.subarray(0, count));
@@ -1326,6 +1513,10 @@ export class LODController {
     this.#host.setCollapsedProxies(EMPTY_U32, EMPTY_F32);
     this.#host.releaseEdgeAggregation();
     this.#proxiesStale = true;
+    // Everything the flush would derive has just been declared outright, and
+    // for a slot space that is now entirely visible.
+    this.#massStale = false;
+    this.#aggregationStale = false;
 
     this.#visibleMask.fill(1);
     this.#appliedVisible.fill(1);
@@ -1336,6 +1527,7 @@ export class LODController {
     this.#visible = materialise(this.#visibleMask, this.#nodeCount);
     this.#pendingHide.clear();
     this.#cardedSince.clear();
+    this.#cardBandActive = false;
     this.#crossfade.reset();
     this.#host.uploadNodeAlpha(this.#crossfade);
     this.#host.syncCards([]);
@@ -1362,10 +1554,13 @@ export class LODController {
     });
   }
 
-  /** Slots currently hidden or on their way there, for an alpha rebuild. */
-  *#pendingHideOrHidden(): Generator<number> {
+  /**
+   * Slots whose sprite is transparent or on its way there, for an alpha
+   * rebuild: out of the cut, or replaced by a card.
+   */
+  *#spriteTransparent(): Generator<number> {
     for (let i = 0; i < this.#nodeCount; i++) {
-      if (this.#visibleMask[i] === 0) yield i;
+      if (this.#visibleMask[i] === 0 || this.#cardedMask[i] === 1) yield i;
     }
   }
 

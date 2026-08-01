@@ -641,6 +641,156 @@ Deno.test("cards: the minimum lifetime holds a card that has shrunk away", () =>
   assertEquals(cardedNodes(log), [], "the floor has expired");
 });
 
+/**
+ * One root over six leaves. Slots 1..3 sit under the camera at half the size
+ * of slots 4..6, which are a million units away — so a rank that never asks
+ * where the camera is awards every card to nodes nobody can see.
+ */
+function offscreenFixture(): RetainedHierarchy {
+  return hierarchyOf([-1, 0, 0, 0, 0, 0, 0], () => 4000);
+}
+
+const FAR_AWAY = { x: 1_000_000, y: 0 };
+
+function offscreenRig(config: Parameters<LODController["setConfig"]>[0] = {}): Rig {
+  const built = rig(offscreenFixture(), { maxCards: 3, minCardLifetimeMs: 0, ...config });
+  built.log.viewport.scale = 1;
+  // The root is far too small to card, so the budget is a contest between the
+  // two leaf clusters and nothing else.
+  built.log.radiusOf = (node) => (node === 0 ? 1 : node >= 4 ? 200 : 50);
+  built.log.positionOf = (node) => (node >= 4 ? FAR_AWAY : { x: 0, y: 0 });
+  return built;
+}
+
+Deno.test("cards: the card set is culled to the camera, whatever the rank says", () => {
+  const { controller, log } = offscreenRig();
+  controller.evaluateNow(0);
+
+  // 4, 5 and 6 outrank everything on screen four to one and get nothing: a
+  // card the user cannot see is DOM, layout and provider work spent on
+  // nothing, and at the zoom where every leaf clears the DOM threshold the
+  // ring is the only thing left to spend the budget on.
+  assertEquals(cardedNodes(log), [1, 2, 3]);
+  const offered = (log.cards.at(-1) ?? []).map((entry) => entry.node);
+  assertEquals(offered.filter((node) => node >= 4), [], "nor is an unseen node prefetched");
+  assertNoReheat(log);
+});
+
+Deno.test("cards: panning to the far cluster takes the cards with it", () => {
+  const { controller, log } = offscreenRig();
+  controller.evaluateNow(0);
+  assertEquals(cardedNodes(log), [1, 2, 3]);
+  // Every ramp lands first, so the pan is the only thing that can make the
+  // tick below re-derive anything: a fade in flight re-syncs cards on its own.
+  for (let frame = 1; frame <= 20; frame++) controller.tick(frame * 16);
+  assertEquals(cardedNodes(log), [1, 2, 3]);
+
+  // A pan moves no band — both LOD metrics are zoom-only — so nothing but the
+  // card ring makes this evaluation worth running, and without it the card set
+  // is a function of the graph alone and never follows the camera at all.
+  log.viewport.x = FAR_AWAY.x;
+  controller.viewportChanged();
+  controller.tick(1000);
+  assertEquals(cardedNodes(log), [4, 5, 6]);
+  assertNoReheat(log);
+});
+
+Deno.test("cards: a focused node is carded wherever it is", () => {
+  const { controller, log } = offscreenRig();
+  controller.evaluateNow(0);
+  assertEquals(cardedNodes(log), [1, 2, 3]);
+
+  // Focus and a force-card verdict are declarations of intent, not
+  // observations about screen geometry, so the ring does not apply to them.
+  controller.setFocus([5]);
+  assert(cardedNodes(log).includes(5), `expected 5 to be carded, got ${cardedNodes(log)}`);
+});
+
+Deno.test("cards: the ring reaches a prefetch ratio beyond the viewport edge", () => {
+  const { controller, log } = rig(offscreenFixture(), { minCardLifetimeMs: 0 });
+  log.viewport.scale = 1;
+  log.radiusOf = (node) => (node === 0 ? 1 : 50);
+  // Half the 1200 px viewport is 600 graph units at zoom 1; the ring reaches
+  // prefetchRatio times that, and a node's own render radius reaches further.
+  log.positionOf = (node) => ({ x: [0, 900, 1249, 1251, 0, 0, 0][node], y: 0 });
+
+  controller.evaluateNow(0);
+  assertEquals(cardedNodes(log), [1, 2, 4, 5, 6]);
+});
+
+Deno.test("cards: gaining a card crossfades the sprite out and the card in", () => {
+  const hierarchy = hierarchyOf([-1, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  log.radiusOf = () => 10;
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(cardedNodes(log), [], "10 px is well below the 48 px DOM threshold");
+  assertEquals(controller.crossfade.alphaOf(1), 1);
+
+  // Crossing the DOM band: 10 graph units at zoom 8 is 80 px.
+  log.viewport.scale = 8;
+  controller.viewportChanged();
+  controller.tick(1000);
+  assertEquals(cardedNodes(log), [0, 1]);
+  // The card mounts transparent over a solid sprite. The two are one node's
+  // two representations, so they exchange opacity rather than both being drawn
+  // — and the swap is the one transition in the system a user actually watches.
+  assertEquals(lastCards(log).map((entry) => entry.opacity), [0, 0]);
+  assertEquals(controller.crossfade.alphaOf(1), 1);
+
+  controller.tick(1000 + DEFAULT_LOD_CONFIG.transitionMs / 2);
+  assertEquals(lastCards(log).map((entry) => entry.opacity), [0.5, 0.5]);
+  assertEquals(controller.crossfade.alphaOf(1), 0.5);
+
+  controller.tick(1000 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(lastCards(log).map((entry) => entry.opacity), [1, 1]);
+  assertEquals(controller.crossfade.alphaOf(1), 0);
+
+  // Leaving the band reverses both ramps.
+  log.viewport.scale = 1;
+  controller.viewportChanged();
+  controller.tick(2000);
+  assertEquals(cardedNodes(log), []);
+  assertEquals(controller.crossfade.alphaOf(1), 0, "the sprite comes back over the same ramp");
+  controller.tick(2000 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(controller.crossfade.alphaOf(1), 1);
+  assertNoReheat(log);
+});
+
+Deno.test("cards: a carded node fades its sprite but is never hidden or unweighted", () => {
+  // The card is where the node is drawn, not a replacement for the node: the
+  // simulation still has to move it, or every card in the graph freezes.
+  const hierarchy = hierarchyOf([-1, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  log.radiusOf = () => 48;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  for (let frame = 1; frame <= 20; frame++) controller.tick(frame * 16);
+
+  assertEquals(cardedNodes(log), [0, 1]);
+  assertEquals(controller.crossfade.alphaOf(1), 0, "the sprite is fully faded");
+  assertEquals(log.visibility.flatMap((write) => write.hidden), [], "and never flagged hidden");
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1], "and never loses its mass");
+});
+
+Deno.test("cards: a node ranked out of the budget keeps its sprite", () => {
+  // Committing the card set before applying the budget would fade out the
+  // sprite of a node whose card never mounts, leaving nothing on screen at all.
+  const hierarchy = hierarchyOf([-1, 0, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { maxCards: 1, minCardLifetimeMs: 0 });
+  log.radiusOf = (node) => 48 + node;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  for (let frame = 1; frame <= 20; frame++) controller.tick(frame * 16);
+
+  assertEquals(cardedNodes(log), [2], "the largest takes the only card");
+  assertEquals(controller.crossfade.alphaOf(2), 0);
+  assertEquals(controller.crossfade.alphaOf(0), 1);
+  assertEquals(controller.crossfade.alphaOf(1), 1);
+});
+
 Deno.test("cards: the budget keeps the largest and weight breaks ties", () => {
   const hierarchy = hierarchyOf([-1, 0, 0, 0], () => 4000);
   const { controller, log } = rig(hierarchy, { maxCards: 2, minCardLifetimeMs: 0 });
@@ -772,6 +922,9 @@ Deno.test("proxies: a collapse rolls the subtree's mass onto the proxy and zeroe
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
+  // The roll-up lands with the flag, not with the cut — see the physics-timing
+  // tests below — so the crossfade has to finish before the mass is final.
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
 
   // Node 1 stands for itself plus 3 and 4; nothing else is folded.
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
@@ -842,9 +995,10 @@ Deno.test("proxies: expanding restores unit mass everywhere", () => {
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
 
-  controller.expandNode(1, 16);
+  controller.expandNode(1, 200);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
   assertNoReheat(log);
 });
@@ -879,6 +1033,7 @@ Deno.test("proxies: a rebuilt hierarchy re-declares mass and radii", () => {
   controller.evaluateNow(16);
 
   assert(log.mass.length > uploadsBefore, "adopting a hierarchy must re-upload mass");
+  controller.tick(16 + DEFAULT_LOD_CONFIG.transitionMs);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
   assert(log.proxies.length > proxiesBefore, "adopting a hierarchy must re-declare proxies");
   assertEquals(log.proxies.at(-1), { slots: [1], radii: [10] });
@@ -888,6 +1043,7 @@ Deno.test("proxies: a rebuilt hierarchy that folds nothing still clears the old 
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
 
   // Every node is now large enough to expand, so the new cut folds nothing and
@@ -995,13 +1151,18 @@ Deno.test("proxies: a capacity change re-declares the live collapsed set", () =>
 // Edge aggregation — the seam, and when it fires
 // =============================================================================
 
-Deno.test("edges: the first cut aggregates against the visible mask", () => {
+Deno.test("edges: the first cut aggregates against the applied mask", () => {
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
 
-  // Node 1 stands for its subtree, so 3 and 4 are off the cut and every edge
+  // 3 and 4 have left the cut but are still drawn and still integrated, so
+  // they still carry their own springs.
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
+
+  // Node 1 stands for its subtree, so once they are flagged every edge
   // touching them has to be bundled onto it.
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
   assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0]);
   assertNoReheat(log);
 });
@@ -1010,9 +1171,10 @@ Deno.test("edges: aggregation runs on the same transition boundary as mass", () 
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
   const before = log.aggregations.length;
 
-  controller.expandNode(1, 16);
+  controller.expandNode(1, 200);
   assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
   // Ordering is load-bearing: mass has to be uploaded before the aggregation
   // is, or a bundle arrives at a proxy the shaders still think weighs one node.
@@ -1033,6 +1195,11 @@ Deno.test("edges: a transition that changes nothing costs no aggregation", () =>
   // nothing to re-walk 253 000 edges for.
   controller.expandNode(1, 32);
   assertEquals(log.aggregations.length, before);
+
+  // Nor does simply advancing the clock: every ramp has landed, so no flag
+  // moves and the aggregation still describes the state the host is in.
+  controller.tick(200);
+  assertEquals(log.aggregations.length, before);
 });
 
 Deno.test("edges: disabling LOD releases the aggregation", () => {
@@ -1050,6 +1217,8 @@ Deno.test("edges: a node-capacity change leaves the aggregation alone", () => {
   const { controller, log } = rig(proxyFixture());
   log.viewport.scale = 1;
   controller.evaluateNow(0);
+  // With the cut's own fade landed, nothing about the applied cut moves here.
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
   const before = log.aggregations.length;
 
   // Growing the node buffers reallocates mass and alpha, so those are
@@ -1061,6 +1230,99 @@ Deno.test("edges: a node-capacity change leaves the aggregation alone", () => {
   assertEquals(log.aggregations.length, before);
   assertEquals(log.aggregationReleases, 0);
   assertNoReheat(log);
+});
+
+// =============================================================================
+// Physics timing — the cut moves a fade ahead of the flags, and the physics
+// must follow the flags
+// =============================================================================
+
+Deno.test("physics timing: a collapse holds mass and springs until the fade lands", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // The cut has moved and the proxy is declared...
+  assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2]);
+  assertEquals(log.proxies.at(-1), { slots: [1], radii: [10] });
+  // ...but 3 and 4 are still drawn and still integrated. Rolling their mass
+  // onto the proxy now leaves them weightless, and aggregating their edges onto
+  // it strips every spring they have, for the whole length of the fade: two
+  // massless bodies inside the aggregate repulsion of the node standing in for
+  // them, which measurably throws them a full link length outwards and then
+  // freezes them there.
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
+  assertEquals(log.visibility.flatMap((write) => write.hidden), []);
+
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs / 2);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1], "mid-ramp is still mid-ramp");
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
+
+  // The frame the flag lands, the physics lands with it.
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(log.visibility.at(-1)?.hidden, [3, 4]);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0]);
+  assertNoReheat(log);
+});
+
+Deno.test("physics timing: overlapping collapses each land with their own ramp", () => {
+  // Two sibling subtrees, collapsed 100 ms apart inside a 150 ms transition.
+  const hierarchy = hierarchyOf([-1, 0, 0, 1, 1, 2, 2], (slot) => (slot === 0 ? 4000 : 200));
+  const { controller, log } = rig(hierarchy);
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3, 4, 5, 6]);
+
+  controller.collapseNode(1, 0);
+  controller.collapseNode(2, 100);
+
+  // The deferred physics is recomputed from the flags rather than replayed
+  // from a diff, so a settle that lands only part of the pending set applies
+  // only that part: node 1 carries its subtree, node 2 does not yet.
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(log.visibility.at(-1)?.hidden, [3, 4]);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0, 1, 1]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0, 1, 1]);
+
+  controller.tick(100 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 3, 0, 0, 0, 0]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0, 0, 0]);
+  assertNoReheat(log);
+});
+
+Deno.test("physics timing: an expand restores mass and springs immediately", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.tick(DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+
+  // The other direction does not defer: a node fading *in* is drawn and
+  // integrated from the first frame, so it needs its own mass and its own
+  // springs from the first frame, not a fade later.
+  controller.expandNode(1, 200);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 1, 1, 1, 1]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 1, 1]);
+  assert(controller.crossfade.alphaOf(3) < 1, "the reveal must still be ramping");
+});
+
+Deno.test("physics timing: with no transition the physics lands in the same call", () => {
+  const { controller, log } = rig(proxyFixture(), { transitionMs: 0 });
+  log.viewport.scale = 1;
+  const massBefore = log.mass.length;
+  const aggregationsBefore = log.aggregations.length;
+
+  controller.evaluateNow(0);
+
+  // Nothing to wait for, so the flag, the roll-up and the aggregation all land
+  // on the cut — and each is written once, not once per settle pass.
+  assertEquals(log.visibility.at(-1)?.hidden, [3, 4]);
+  assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+  assertEquals(Array.from(log.aggregations.at(-1)!), [1, 1, 1, 0, 0]);
+  assertEquals(log.mass.length, massBefore + 1);
+  assertEquals(log.aggregations.length, aggregationsBefore + 1);
 });
 
 Deno.test("lifecycle: no hierarchy means no cut and no host writes", () => {
