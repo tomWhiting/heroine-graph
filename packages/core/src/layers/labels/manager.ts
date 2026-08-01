@@ -11,14 +11,27 @@ import type { FontAtlas } from "./atlas.ts";
 import { getGlyph, getGlyphUVs, getKerning, measureText } from "./atlas.ts";
 
 /**
- * Position provider for dynamic label positioning
+ * Live per-node readings the label set is derived from.
+ *
+ * Positions are the bulk of it. The other two exist so the GPU label set
+ * tracks state only the graph knows: the render radius a collapsed LOD proxy
+ * is inflated to — the same attribute row the sprite is drawn at, so a bubble
+ * outranks its own leaves without the label path knowing what a bubble is —
+ * and whether a node is hidden by the cut or already showing a DOM card.
  */
-export interface PositionProvider {
+export interface LabelNodeSource {
   /** Get X position for a node */
   getX(nodeId: number): number;
   /** Get Y position for a node */
   getY(nodeId: number): number;
+  /** Graph-space render radius; multiplied by zoom for the priority term. */
+  getRadius?(nodeId: number): number;
+  /** Node is hidden by the LOD cut or carded: it must produce no GPU label. */
+  isSuppressed?(nodeId: number): boolean;
 }
+
+/** @deprecated Renamed to {@link LabelNodeSource}, which it now aliases. */
+export type PositionProvider = LabelNodeSource;
 
 /**
  * Label data for a single node
@@ -33,6 +46,8 @@ export interface LabelData {
   y: number;
   /** Priority (0-1, higher = more important) */
   priority: number;
+  /** Graph-space node radius, used when the source reports none */
+  radius?: number;
   /** Minimum zoom level to show this label */
   minZoom?: number;
   /** Maximum zoom level to show this label */
@@ -58,6 +73,18 @@ export interface GlyphInstance {
   /** Offset from baseline (xoffset, yoffset) */
   offsetX: number;
   offsetY: number;
+}
+
+/**
+ * A label that survived culling, with everything the budget pass needs to
+ * rank it and lay it out.
+ */
+interface LabelCandidate {
+  readonly label: LabelData;
+  /** Node centre in screen pixels. */
+  readonly screenX: number;
+  readonly screenY: number;
+  readonly rank: number;
 }
 
 /**
@@ -208,7 +235,7 @@ export class LabelManager {
    * moves any nodes moves (essentially all) sampled ones too, changing
    * the fingerprint and invalidating the cached glyph layout.
    */
-  positionFingerprint(positionProvider?: PositionProvider): number {
+  positionFingerprint(source?: LabelNodeSource): number {
     const n = this.labels.length;
     if (n === 0) return 0;
 
@@ -219,8 +246,8 @@ export class LabelManager {
     let weight = 1;
     for (let i = 0; i < n; i += stride) {
       const label = this.labels[i];
-      const x = positionProvider ? positionProvider.getX(label.nodeId) : label.x;
-      const y = positionProvider ? positionProvider.getY(label.nodeId) : label.y;
+      const x = source ? source.getX(label.nodeId) : label.x;
+      const y = source ? source.getY(label.nodeId) : label.y;
       sum += x * weight + y * (weight + 1);
       weight += 2;
     }
@@ -230,12 +257,18 @@ export class LabelManager {
   /**
    * Get visible labels after culling
    *
+   * Two passes, because the budget and the collision grid are spent in
+   * priority order and priority is only known once the camera is: a label's
+   * rank is its on-screen size, so the same two labels swap places between
+   * zoom levels. Ranking on the static priority alone — which is what this did
+   * — meant zooming into a region could not promote that region's labels.
+   *
    * @param viewportX - Viewport center X in graph space
    * @param viewportY - Viewport center Y in graph space
    * @param scale - Current zoom scale
    * @param canvasWidth - Canvas width in pixels
    * @param canvasHeight - Canvas height in pixels
-   * @param positionProvider - Optional provider for dynamic node positions
+   * @param source - Optional live per-node readings
    * @returns Array of visible labels with screen positions
    */
   getVisibleLabels(
@@ -244,7 +277,7 @@ export class LabelManager {
     scale: number,
     canvasWidth: number,
     canvasHeight: number,
-    positionProvider?: PositionProvider,
+    source?: LabelNodeSource,
   ): VisibleLabel[] {
     if (!this.fontAtlas) {
       return [];
@@ -255,51 +288,31 @@ export class LabelManager {
       return [];
     }
 
+    const candidates = this.collectCandidates(
+      viewportX,
+      viewportY,
+      scale,
+      canvasWidth,
+      canvasHeight,
+      source,
+    );
+    // Total order, so a fixed viewport produces a fixed label set however the
+    // candidates were encountered — the anti-flicker guarantee of US4-AS3.
+    candidates.sort((a, b) => b.rank - a.rank || a.label.nodeId - b.label.nodeId);
+
     // Reset collision grid
     this.initCollisionGrid(canvasWidth, canvasHeight);
-
-    // Calculate viewport bounds in graph space
-    const halfWidth = (canvasWidth / 2) / scale;
-    const halfHeight = (canvasHeight / 2) / scale;
-    const viewLeft = viewportX - halfWidth;
-    const viewRight = viewportX + halfWidth;
-    const viewTop = viewportY - halfHeight;
-    const viewBottom = viewportY + halfHeight;
 
     const visibleLabels: VisibleLabel[] = [];
     const { fontSize, labelPadding, maxLabels } = this.config;
 
-    for (const label of this.labels) {
+    for (const candidate of candidates) {
       // Stop if we've reached max labels
       if (visibleLabels.length >= maxLabels) {
         break;
       }
 
-      // Check LOD zoom thresholds
-      if (label.minZoom !== undefined && scale < label.minZoom) {
-        continue;
-      }
-      if (label.maxZoom !== undefined && scale > label.maxZoom) {
-        continue;
-      }
-
-      // Get current position - use position provider if available, otherwise use static label position
-      const nodeX = positionProvider ? positionProvider.getX(label.nodeId) : label.x;
-      const nodeY = positionProvider ? positionProvider.getY(label.nodeId) : label.y;
-
-      // Check if label is in viewport (graph space)
-      if (
-        nodeX < viewLeft ||
-        nodeX > viewRight ||
-        nodeY < viewTop ||
-        nodeY > viewBottom
-      ) {
-        continue;
-      }
-
-      // Calculate screen position
-      const screenX = (nodeX - viewportX) * scale + canvasWidth / 2;
-      const screenY = (nodeY - viewportY) * scale + canvasHeight / 2;
+      const { label, screenX, screenY } = candidate;
 
       // Measure label dimensions (cached: width is static per text for a
       // given fontSize/atlas, so don't re-walk the string every rebuild)
@@ -341,6 +354,88 @@ export class LabelManager {
     }
 
     return visibleLabels;
+  }
+
+  /**
+   * The labels eligible to compete for this frame's budget, with their ranks.
+   *
+   * Everything that does not depend on what else got a label lives here: the
+   * per-label zoom band, LOD/card suppression, and the viewport cull.
+   */
+  private collectCandidates(
+    viewportX: number,
+    viewportY: number,
+    scale: number,
+    canvasWidth: number,
+    canvasHeight: number,
+    source: LabelNodeSource | undefined,
+  ): LabelCandidate[] {
+    const halfWidth = (canvasWidth / 2) / scale;
+    const halfHeight = (canvasHeight / 2) / scale;
+    const viewLeft = viewportX - halfWidth;
+    const viewRight = viewportX + halfWidth;
+    const viewTop = viewportY - halfHeight;
+    const viewBottom = viewportY + halfHeight;
+
+    const candidates: LabelCandidate[] = [];
+    for (const label of this.labels) {
+      // Check LOD zoom thresholds
+      if (label.minZoom !== undefined && scale < label.minZoom) {
+        continue;
+      }
+      if (label.maxZoom !== undefined && scale > label.maxZoom) {
+        continue;
+      }
+
+      // Hidden by the LOD cut, or already promoted to a DOM card whose text
+      // this would duplicate underneath.
+      if (source?.isSuppressed?.(label.nodeId) === true) {
+        continue;
+      }
+
+      // Get current position - use the source if available, otherwise use static label position
+      const nodeX = source ? source.getX(label.nodeId) : label.x;
+      const nodeY = source ? source.getY(label.nodeId) : label.y;
+
+      // Check if label is in viewport (graph space)
+      if (
+        nodeX < viewLeft ||
+        nodeX > viewRight ||
+        nodeY < viewTop ||
+        nodeY > viewBottom
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        label,
+        screenX: (nodeX - viewportX) * scale + canvasWidth / 2,
+        screenY: (nodeY - viewportY) * scale + canvasHeight / 2,
+        rank: this.rankOf(label, source, scale),
+      });
+    }
+    return candidates;
+  }
+
+  /**
+   * Selection rank: on-screen size in pixels, with the static priority as a
+   * sub-pixel tie-break — the same convention the LOD card ranking uses.
+   *
+   * The two terms trade off with zoom, which is the point: at a wide camera
+   * every node is sub-pixel and the producer's priority decides, and as the
+   * camera comes in the geometry takes over, so the labels that survive the
+   * budget are the ones the user is actually looking at. A label whose radius
+   * is unknown scores zero pixels and is ordered by priority alone, which is
+   * the ordering it had before there was a screen-space term at all.
+   */
+  private rankOf(
+    label: LabelData,
+    source: LabelNodeSource | undefined,
+    scale: number,
+  ): number {
+    const radius = source?.getRadius?.(label.nodeId) ?? label.radius ?? 0;
+    const screen = Number.isFinite(radius) && radius > 0 ? radius * scale : 0;
+    return screen + Math.min(1, Math.max(0, label.priority));
   }
 
   /**

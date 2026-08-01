@@ -149,6 +149,7 @@ import {
 } from "../simulation/collision.ts";
 import { createHitTester, type HitTester } from "../interaction/hit_test.ts";
 import { HoverTracker } from "../interaction/hover.ts";
+import { NodeDragController } from "../interaction/node_drag.ts";
 import { createPointerManager, type PointerManager } from "../interaction/pointer.ts";
 import {
   type ColorScaleName,
@@ -164,6 +165,7 @@ import {
   type HeatmapLayer,
   type LabelConfig,
   type LabelData,
+  type LabelNodeSource,
   // Labels layer
   LabelsLayer,
   type LabelsRenderContext,
@@ -650,8 +652,17 @@ export class GraphMother {
   private selectedNodes: Set<NodeId> = new Set();
   private selectedEdges: Set<EdgeId> = new Set();
   private hover: HoverTracker;
-  private draggedNode: NodeId | null = null;
-  private lastDragPosition: Vec2 | null = null;
+  /**
+   * The one node drag, whichever gesture produced it: a pointer on the sprite,
+   * or a pointer on the drag handle of the card standing in for it. Pointer
+   * capture keeps the two from overlapping, and both leave the node pinned.
+   */
+  private readonly nodeDrag = new NodeDragController({
+    setPinned: (node, pinned) => this.setNodePinnedState(node, pinned),
+    setPosition: (node, x, y) => this.setNodePosition(node, x, y),
+    emit: (event) => this.events.emit(event),
+    now: () => Date.now(),
+  });
   private dragStartScreenPosition: Vec2 | null = null;
   private lastClick: { nodeId: NodeId; timestamp: number } | null = null;
   private pinnedNodes: Set<NodeId> = new Set();
@@ -697,6 +708,13 @@ export class GraphMother {
    * asks for LOD pays nothing and behaves exactly as it did before it existed.
    */
   private lodController: LODController | null = null;
+
+  /**
+   * Bumped whenever the per-node inputs to the GPU label set change other than
+   * by movement: the LOD cut and the collapsed-proxy radii. The card set is a
+   * second counter, on the overlay, and the two are summed for the layer.
+   */
+  private labelNodeStateVersion = 0;
 
   // Value stream system
   private streamManager: StreamManager;
@@ -3343,6 +3361,9 @@ export class GraphMother {
     this.flushNodeAttributeRows(
       this.lodProxies.declare(proxies, proxies.length, radii, this.proxyRadiusHost()),
     );
+    // Proxy radii are a label-ranking input, so the cached glyph layout is
+    // stale even though nothing moved.
+    this.labelNodeStateVersion++;
   }
 
   /**
@@ -5058,24 +5079,57 @@ export class GraphMother {
       const cssWidth = this.canvas.clientWidth || this.canvas.width;
       const cssHeight = this.canvas.clientHeight || this.canvas.height;
 
-      // Create position provider that reads from parsedGraph arrays
-      const positionsX = this.state.parsedGraph.positionsX;
-      const positionsY = this.state.parsedGraph.positionsY;
-      const positionProvider = {
-        getX: (nodeId: number) => positionsX[nodeId] ?? 0,
-        getY: (nodeId: number) => positionsY[nodeId] ?? 0,
-      };
-
       const labelsContext: LabelsRenderContext = {
         viewportX: viewportState.x,
         viewportY: viewportState.y,
         scale: viewportState.scale,
         canvasWidth: cssWidth,
         canvasHeight: cssHeight,
-        positionProvider,
+        nodeSource: this.labelNodeSource(),
+        // Two counters summed: both only ever increase, so the sum changes
+        // whenever either does, and the cache compares it for inequality.
+        nodeStateVersion: this.labelNodeStateVersion + (this.domOverlay?.cardEpoch ?? 0),
       };
       labelsLayer.setRenderContext(labelsContext);
     }
+  }
+
+  /**
+   * The live per-node readings the GPU label set is derived from.
+   *
+   * Radius is read from the same attribute row the sprite is drawn at, so a
+   * collapsed LOD proxy — inflated to its well radius by
+   * {@link GraphMother.setCollapsedProxies} — outranks the leaves it stands
+   * for without the label path knowing that bubbles exist.
+   */
+  private labelNodeSource(): LabelNodeSource {
+    const positionsX = this.state.parsedGraph!.positionsX;
+    const positionsY = this.state.parsedGraph!.positionsY;
+    return {
+      getX: (nodeId) => positionsX[nodeId] ?? 0,
+      getY: (nodeId) => positionsY[nodeId] ?? 0,
+      getRadius: (nodeId) => this.getNodeRenderRadius(nodeId),
+      isSuppressed: (nodeId) => this.isLabelSuppressed(nodeId),
+    };
+  }
+
+  /**
+   * Whether a node's GPU label is suppressed.
+   *
+   * Two reasons, both of which would otherwise draw text the user cannot use:
+   * a node the LOD cut hides is not on screen at all, and a node holding a DOM
+   * card already shows richer text on top of the sprite.
+   */
+  private isLabelSuppressed(nodeId: NodeId): boolean {
+    if (this.lodController !== null && !this.lodController.isVisible(nodeId)) return true;
+    return this.domOverlay?.hasCard(nodeId) === true;
+  }
+
+  /** Graph-space render radius of a slot, from the attribute shadow. */
+  private getNodeRenderRadius(nodeId: NodeId): number {
+    const gs = this.graphState;
+    if (!gs || nodeId < 0 || nodeId >= gs.nodeHighWater) return 0;
+    return gs.nodeAttributes[nodeId * NODE_ATTR_FLOATS];
   }
 
   /**
@@ -5456,6 +5510,10 @@ export class GraphMother {
         canvas: this.canvas,
         viewport: () => this.viewport.state,
         nodes: this.createCardNodeSource(),
+        // A card dragged by its handle is a node drag: the same controller the
+        // canvas gesture drives, so the pin, the position writes and the
+        // `node:drag*` events are not merely similar but identical.
+        drag: this.nodeDrag,
         maxCards: lod.maxCards,
         minCardLifetimeMs: lod.minCardLifetimeMs,
       });
@@ -5651,11 +5709,7 @@ export class GraphMother {
       getHierarchy: () => this.getHierarchy(),
       getViewport: () => this.viewport.state,
       getNodePosition: (node) => this.getNodePositionOrOrigin(node),
-      getNodeRadius: (node) => {
-        const gs = this.graphState;
-        if (!gs || node < 0 || node >= gs.nodeHighWater) return 0;
-        return gs.nodeAttributes[node * NODE_ATTR_FLOATS];
-      },
+      getNodeRadius: (node) => this.getNodeRenderRadius(node),
       getNodeTag: (node) => this.getNodeTag(node),
       getNodeWeight: (node) => this.getNodeWeight(node),
       applyVisibility: (lo, hi, visible) => this.applyLodVisibility(lo, hi, visible),
@@ -5690,6 +5744,8 @@ export class GraphMother {
       changedHi = slot + 1;
     }
     this.flushNodeFlagRange(changedLo, changedHi);
+    // A node leaving or entering the cut also leaves or enters the label set.
+    if (changedHi > changedLo) this.labelNodeStateVersion++;
   }
 
   /** Upload the crossfade scheduler's dirty alpha range, if buffers exist. */
@@ -7213,10 +7269,8 @@ export class GraphMother {
 
       if (nodeId !== null) {
         // Start drag on node
-        this.draggedNode = nodeId;
-        this.lastDragPosition = { ...e.graphPosition };
+        this.nodeDrag.begin(nodeId, e.graphPosition);
         this.dragStartScreenPosition = { ...e.screenPosition };
-        this.setNodePinnedState(nodeId, true);
 
         // Select if not already selected (or add to selection with shift)
         if (!e.modifiers.shift && !this.selectedNodes.has(nodeId)) {
@@ -7224,13 +7278,6 @@ export class GraphMother {
         } else if (e.modifiers.shift) {
           this.addToSelection([nodeId]);
         }
-
-        this.events.emit({
-          type: "node:dragstart",
-          timestamp: Date.now(),
-          nodeId,
-          position: e.graphPosition,
-        });
       } else {
         // No node hit - start panning (allow panning even when clicking on/near edges)
         // Check for edge click to select it, but still allow panning
@@ -7253,28 +7300,9 @@ export class GraphMother {
 
     // Handle pointer move (drag, pan, or hover)
     this.pointerManager.on("pointermove", (e) => {
-      if (this.draggedNode !== null) {
-        // Calculate delta from last position
-        const delta: Vec2 = this.lastDragPosition
-          ? {
-            x: e.graphPosition.x - this.lastDragPosition.x,
-            y: e.graphPosition.y - this.lastDragPosition.y,
-          }
-          : { x: 0, y: 0 };
-
-        // Update last position
-        this.lastDragPosition = { ...e.graphPosition };
-
-        // Update dragged node position
-        this.setNodePosition(this.draggedNode, e.graphPosition.x, e.graphPosition.y);
-
-        this.events.emit({
-          type: "node:dragmove",
-          timestamp: Date.now(),
-          nodeId: this.draggedNode,
-          position: e.graphPosition,
-          delta,
-        });
+      const dragging = this.nodeDrag.node;
+      if (dragging !== null) {
+        this.nodeDrag.move(dragging, e.graphPosition);
       } else if (this.isPanning && this.lastPanPosition) {
         // Pan the viewport (inverted - like pushing a piece of paper)
         // Use panScreen since delta is in screen pixels, not graph units
@@ -7290,11 +7318,9 @@ export class GraphMother {
 
     // Handle pointer up (end drag or pan)
     this.pointerManager.on("pointerup", (e) => {
-      if (this.draggedNode !== null) {
-        const nodeId = this.draggedNode;
+      const nodeId = this.nodeDrag.node;
+      if (nodeId !== null) {
         const dragStart = this.dragStartScreenPosition;
-        this.draggedNode = null;
-        this.lastDragPosition = null;
         this.dragStartScreenPosition = null;
 
         // Distinguish click from drag: if pointer moved less than 5px
@@ -7308,7 +7334,9 @@ export class GraphMother {
         }
 
         if (isClick) {
-          // Unpin node — it wasn't actually dragged, just clicked
+          // Not a drag after all: no `node:dragend`, and the pin the gesture
+          // took at pointerdown goes back.
+          this.nodeDrag.cancel();
           this.setNodePinnedState(nodeId, false);
 
           // pointerup always has a PointerEvent (not WheelEvent)
@@ -7336,15 +7364,7 @@ export class GraphMother {
             this.lastClick = { nodeId, timestamp: now };
           }
         } else {
-          // Optionally unpin after drag (could be configurable)
-          // this.setNodePinnedState(nodeId, false);
-
-          this.events.emit({
-            type: "node:dragend",
-            timestamp: Date.now(),
-            nodeId,
-            position: e.graphPosition,
-          });
+          this.nodeDrag.end(nodeId, e.graphPosition);
         }
       }
 

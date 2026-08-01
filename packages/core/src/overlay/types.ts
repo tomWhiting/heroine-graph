@@ -103,6 +103,11 @@ export interface CardProvider<TState = unknown> {
    * Everything inside `container` belongs to the provider. Core writes only
    * `transform`, `width`, `height` and `opacity` on the container element
    * itself and never touches its children.
+   *
+   * A child carrying the `data-graphmother-drag` attribute becomes the card's
+   * drag handle: a pointer gesture starting on it moves the node exactly as
+   * dragging the node's sprite on the canvas does. Declare none and the card
+   * does not drag, which is what keeps its text selectable.
    */
   mount(container: HTMLElement, node: CardNode): TState;
 

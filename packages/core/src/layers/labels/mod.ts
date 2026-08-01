@@ -10,7 +10,12 @@
  * @module
  */
 
-export { LabelsLayer, type LabelsRenderContext, type PositionProvider } from "./layer.ts";
+export {
+  type LabelNodeSource,
+  LabelsLayer,
+  type LabelsRenderContext,
+  type PositionProvider,
+} from "./layer.ts";
 export { type LabelData, LabelManager, type VisibleLabel } from "./manager.ts";
 export { DEFAULT_LABEL_CONFIG, type LabelConfig } from "./config.ts";
 export {

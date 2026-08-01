@@ -17,6 +17,7 @@ export { CardDriver } from "./driver.ts";
 export type { CardDriverOptions, CardPlacement } from "./driver.ts";
 
 export {
+  CARD_DRAG_HANDLE_ATTRIBUTE,
   DEFAULT_CARD_SIZE,
   DEFAULT_GESTURE_IDLE_MS,
   DEFAULT_MAX_CARDS,
@@ -24,6 +25,7 @@ export {
   DomCardOverlay,
 } from "./overlay.ts";
 export type {
+  CardDragSink,
   CardNodeSource,
   CardSyncEntry,
   DomCardOverlayOptions,

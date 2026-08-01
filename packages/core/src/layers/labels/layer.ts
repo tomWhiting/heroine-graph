@@ -18,7 +18,7 @@ import type { Layer } from "../types.ts";
 import type { FontAtlas } from "./atlas.ts";
 import { loadDefaultFontAtlas } from "./atlas.ts";
 import { type LabelData, LabelManager } from "./manager.ts";
-import type { PositionProvider } from "./manager.ts";
+import type { LabelNodeSource } from "./manager.ts";
 import { DEFAULT_LABEL_CONFIG, type LabelConfig, parseColor } from "./config.ts";
 import { type LabelViewState, shouldRebuildLabels } from "./cache.ts";
 
@@ -26,8 +26,8 @@ import { type LabelViewState, shouldRebuildLabels } from "./cache.ts";
 import labelVertexShader from "./shaders/label.vert.wgsl";
 import labelFragmentShader from "./shaders/label.frag.wgsl";
 
-// Re-export PositionProvider for convenience
-export type { PositionProvider } from "./manager.ts";
+// Re-export the node-reading seam for convenience
+export type { LabelNodeSource, PositionProvider } from "./manager.ts";
 
 /**
  * Render context for the labels layer
@@ -43,8 +43,14 @@ export interface LabelsRenderContext {
   canvasWidth: number;
   /** Canvas height */
   canvasHeight: number;
-  /** Optional position provider for dynamic node positions */
-  positionProvider?: PositionProvider;
+  /** Optional live per-node readings: positions, radii, LOD/card suppression */
+  nodeSource?: LabelNodeSource;
+  /**
+   * Counter the host bumps when {@link LabelsRenderContext.nodeSource} would
+   * answer differently for some node — an LOD transition, a proxy inflation, a
+   * card mounting. Positions are excluded: they are sampled directly.
+   */
+  nodeStateVersion?: number;
 }
 
 /**
@@ -394,12 +400,13 @@ export class LabelsLayer implements Layer {
     }
 
     const { device } = this.context;
-    const { viewportX, viewportY, scale, canvasWidth, canvasHeight, positionProvider } =
+    const { viewportX, viewportY, scale, canvasWidth, canvasHeight, nodeSource } =
       this.renderContext;
 
     // Re-run culling/measurement/glyph generation only when the cached
-    // layout went stale (labels/config changed, node positions moved, or
-    // the camera moved beyond the rebuild thresholds).
+    // layout went stale (labels/config changed, node positions moved, the LOD
+    // cut or card set changed, or the camera moved beyond the rebuild
+    // thresholds).
     const viewState: LabelViewState = {
       viewportX,
       viewportY,
@@ -407,7 +414,8 @@ export class LabelsLayer implements Layer {
       canvasWidth,
       canvasHeight,
       labelsVersion: this.manager.version,
-      positionFingerprint: this.manager.positionFingerprint(positionProvider),
+      positionFingerprint: this.manager.positionFingerprint(nodeSource),
+      nodeStateVersion: this.renderContext.nodeStateVersion ?? 0,
     };
 
     if (shouldRebuildLabels(this.cachedViewState, viewState)) {
@@ -468,18 +476,19 @@ export class LabelsLayer implements Layer {
   private rebuildGlyphs(viewState: LabelViewState): void {
     const { device } = this.context;
     const { viewportX, viewportY, scale, canvasWidth, canvasHeight } = viewState;
-    const positionProvider = this.renderContext?.positionProvider;
+    const nodeSource = this.renderContext?.nodeSource;
 
     this.cachedViewState = viewState;
 
-    // Get visible labels with culling (use position provider for dynamic positions)
+    // Get visible labels with culling (live positions, radii and suppression
+    // come from the node source when the host supplied one)
     const visibleLabels = this.manager.getVisibleLabels(
       viewportX,
       viewportY,
       scale,
       canvasWidth,
       canvasHeight,
-      positionProvider,
+      nodeSource,
     );
 
     if (visibleLabels.length === 0) {

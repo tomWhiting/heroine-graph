@@ -34,6 +34,13 @@ export interface LabelViewState {
   labelsVersion: number;
   /** Fingerprint of (sampled) node positions feeding the labels */
   positionFingerprint: number;
+  /**
+   * Counter bumped when the per-node label inputs other than position change:
+   * the LOD cut, the collapsed-proxy radii, and the card set. Compared for
+   * inequality rather than order, so a host that composes it from several
+   * counters need only guarantee that it changes.
+   */
+  nodeStateVersion: number;
 }
 
 /**
@@ -63,6 +70,7 @@ export function shouldRebuildLabels(
 
   if (prev.labelsVersion !== next.labelsVersion) return true;
   if (prev.positionFingerprint !== next.positionFingerprint) return true;
+  if (prev.nodeStateVersion !== next.nodeStateVersion) return true;
   if (prev.canvasWidth !== next.canvasWidth || prev.canvasHeight !== next.canvasHeight) {
     return true;
   }

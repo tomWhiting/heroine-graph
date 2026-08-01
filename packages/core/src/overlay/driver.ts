@@ -119,6 +119,20 @@ export class CardDriver<TState = unknown> {
   }
 
   /**
+   * The node whose card container is `element`, or `undefined`.
+   *
+   * A scan rather than a reverse index: it runs once per pointer gesture over
+   * at most `maxCards` entries, and a second map would be one more thing that
+   * can disagree with this one.
+   */
+  nodeForContainer(element: Element): NodeId | undefined {
+    for (const [nodeId, card] of this.cards) {
+      if (card.container === element) return nodeId;
+    }
+    return undefined;
+  }
+
+  /**
    * Offer a node to `provider.prefetch`. Ignored if the node was already
    * offered in this epoch, still has a live prefetch, or is already carded,
    * which is what makes the call safe to issue for every node in the ring on

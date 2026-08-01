@@ -112,6 +112,33 @@ export interface CardSyncEntry {
 }
 
 /**
+ * Attribute a provider puts on one of its own elements to make that element
+ * drag the card's node.
+ *
+ * Opt-in, and read rather than written: core never creates a handle, because
+ * everything inside a card container belongs to the provider (SC-004). It also
+ * has to be opt-in for a second reason — a card whose whole surface dragged
+ * the node would have no selectable text, which is most of why cards exist.
+ */
+export const CARD_DRAG_HANDLE_ATTRIBUTE = "data-graphmother-drag";
+
+/**
+ * Where a card drag is routed.
+ *
+ * The overlay resolves the gesture and converts it to graph units; what a
+ * dragged node *does* — pin, position write, `node:drag*` events — belongs to
+ * the graph, and is the same path a node dragged on the canvas takes.
+ */
+export interface CardDragSink {
+  /** Gesture started on `node`, which is at `position`. */
+  begin(node: NodeId, position: Vec2): void;
+  /** Pointer moved: `node` should now be at `position`. */
+  move(node: NodeId, position: Vec2): void;
+  /** Gesture finished with `node` at `position`. The node stays pinned. */
+  end(node: NodeId, position: Vec2): void;
+}
+
+/**
  * The two timer functions the gesture debounce needs.
  *
  * Injected so a test can end a gesture without waiting on wall-clock time;
@@ -141,6 +168,11 @@ export interface DomCardOverlayOptions {
   readonly viewport: () => ViewportState;
   /** Graph data the cards read through. */
   readonly nodes: CardNodeSource;
+  /**
+   * Where a drag on a card's handle is routed. Omit and cards do not drag
+   * their nodes; the handle attribute is then inert.
+   */
+  readonly drag?: CardDragSink;
   /**
    * Initial card budget. Defaults to {@link DEFAULT_MAX_CARDS}, and is a
    * {@link DomOverlayConfig} field from then on — `setLodConfig` keeps it
@@ -180,10 +212,27 @@ interface Candidate {
   readonly mounted: boolean;
 }
 
+/** A card drag in flight. */
+interface CardDrag {
+  readonly node: NodeId;
+  readonly pointerId: number;
+  /** Where the pointer went down, in client pixels. */
+  readonly clientX: number;
+  readonly clientY: number;
+  /** Where the node was then, in graph units. */
+  readonly originX: number;
+  readonly originY: number;
+  /** Element holding the pointer capture, if the host granted one. */
+  readonly captured: Element | null;
+  /** Last position handed to the sink, so the end call is consistent with it. */
+  position: Vec2;
+}
+
 export class DomCardOverlay {
   readonly #canvas: HTMLCanvasElement;
   readonly #viewport: () => ViewportState;
   readonly #nodes: CardNodeSource;
+  readonly #dragSink: CardDragSink | null;
   readonly #gestureIdleMs: number;
   readonly #now: () => number;
   readonly #timers: OverlayTimers;
@@ -210,11 +259,14 @@ export class DomCardOverlay {
   #transform = "";
   #gestureHandle: number | null = null;
   #gestureActive = false;
+  #drag: CardDrag | null = null;
+  #cardEpoch = 0;
 
   constructor(options: DomCardOverlayOptions) {
     this.#canvas = options.canvas;
     this.#viewport = options.viewport;
     this.#nodes = options.nodes;
+    this.#dragSink = options.drag ?? null;
     this.#config = clampBudget({
       ...DEFAULT_DOM_OVERLAY_CONFIG,
       maxCards: options.maxCards ?? DEFAULT_MAX_CARDS,
@@ -233,6 +285,26 @@ export class DomCardOverlay {
   /** Mounted cards. */
   get cardCount(): number {
     return this.#cards.size;
+  }
+
+  /**
+   * Counter bumped whenever a card mounts or is released.
+   *
+   * Exists for the label path, which must suppress the GPU label under a card
+   * and needs to know when to re-cull rather than asking every frame.
+   */
+  get cardEpoch(): number {
+    return this.#cardEpoch;
+  }
+
+  /** Whether a node currently holds a mounted card. */
+  hasCard(node: NodeId): boolean {
+    return this.#cards.has(node);
+  }
+
+  /** The node being dragged by its card handle, or `null`. */
+  get draggingNode(): NodeId | null {
+    return this.#drag?.node ?? null;
   }
 
   /**
@@ -428,7 +500,9 @@ export class DomCardOverlay {
 
   /** Release every card and abandon every prefetch, keeping the container. */
   releaseAll(): void {
+    this.#endDrag();
     this.#driver?.releaseAll();
+    if (this.#cards.size > 0) this.#cardEpoch++;
     this.#cards.clear();
     this.#views.clear();
     this.#ring = new Set();
@@ -474,6 +548,14 @@ export class DomCardOverlay {
     this.#driver = this.#createDriver(container, pool, config);
 
     container.addEventListener("wheel", this.#onWheel, { passive: false });
+    // Delegated: cards switch pointer events back on, so their events bubble
+    // to the container even though the container itself is transparent to
+    // hit-testing. Nothing here acts on an event that did not start inside a
+    // card, so a gesture on empty overlay area reaches the canvas untouched.
+    container.addEventListener("pointerdown", this.#onPointerDown);
+    container.addEventListener("pointermove", this.#onPointerMove);
+    container.addEventListener("pointerup", this.#onPointerUp);
+    container.addEventListener("pointercancel", this.#onPointerUp);
 
     this.#transform = "";
     this.#applyTransform();
@@ -504,6 +586,10 @@ export class DomCardOverlay {
     }
     this.#gestureActive = false;
     container.removeEventListener("wheel", this.#onWheel);
+    container.removeEventListener("pointerdown", this.#onPointerDown);
+    container.removeEventListener("pointermove", this.#onPointerMove);
+    container.removeEventListener("pointerup", this.#onPointerUp);
+    container.removeEventListener("pointercancel", this.#onPointerUp);
     container.remove();
 
     this.#pool?.clear();
@@ -574,13 +660,19 @@ export class DomCardOverlay {
     // Registered before the provider runs: `CardNode.size()` reads this record
     // and mount() is exactly where a provider lays its content out.
     this.#cards.set(node, record);
+    this.#cardEpoch++;
 
     const anchor = this.#nodes.position(node);
     driver.mount(record.card, cardPlacementAt(anchor, record.width, record.height, record.opacity));
   }
 
   #release(node: NodeId): void {
+    // The handle is about to be detached, so the gesture has no target left;
+    // ending it leaves the node pinned where the drag put it, exactly as a
+    // pointer-up would.
+    if (this.#drag?.node === node) this.#endDrag();
     this.#cards.delete(node);
+    this.#cardEpoch++;
     this.#driver?.release(node);
     if (!this.#ring.has(node)) this.#views.delete(node);
   }
@@ -663,6 +755,146 @@ export class DomCardOverlay {
     event.preventDefault();
     canvas.dispatchEvent(cloneWheelEvent(event as WheelEvent, canvas.ownerDocument.defaultView));
   };
+
+  /**
+   * Begin a card drag, if the gesture started on a provider-declared handle.
+   *
+   * Deliberately silent otherwise: a pointer event that landed on card *text*
+   * belongs to the browser (selection, links, focus), and one that landed on
+   * empty overlay area never reaches here at all — the container is
+   * transparent to hit-testing, so the canvas got it instead.
+   */
+  readonly #onPointerDown = (event: Event): void => {
+    const sink = this.#dragSink;
+    if (sink === null || this.#drag !== null) return;
+
+    const pointer = event as PointerEvent;
+    if (pointer.button > 0) return;
+    const target = this.#resolveTarget(pointer.target);
+    if (target === null || !target.onHandle) return;
+
+    // Suppress the browser's own drag/selection gesture on the handle only.
+    event.preventDefault();
+
+    const origin = this.#nodes.position(target.node);
+    this.#drag = {
+      node: target.node,
+      pointerId: pointer.pointerId,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      originX: origin.x,
+      originY: origin.y,
+      // Capture keeps the rest of the gesture on the card, which is what stops
+      // the canvas from seeing it as a pan. Hosts without it (a DOM shim) still
+      // work as long as the pointer stays over the card.
+      captured: capturePointer(target.element, pointer.pointerId),
+      position: { x: origin.x, y: origin.y },
+    };
+    sink.begin(target.node, origin);
+  };
+
+  readonly #onPointerMove = (event: Event): void => {
+    const drag = this.#drag;
+    if (drag === null) return;
+    const pointer = event as PointerEvent;
+    if (pointer.pointerId !== drag.pointerId) return;
+
+    drag.position = this.#dragPosition(drag, pointer.clientX, pointer.clientY);
+    // The node is the authority: the card is re-placed from its position on
+    // the next frame, in graph units, by the same path that follows the
+    // simulation. Nothing here writes CSS.
+    this.#dragSink?.move(drag.node, drag.position);
+  };
+
+  readonly #onPointerUp = (event: Event): void => {
+    const drag = this.#drag;
+    if (drag === null) return;
+    const pointer = event as PointerEvent;
+    if (pointer.pointerId !== drag.pointerId) return;
+
+    drag.position = this.#dragPosition(drag, pointer.clientX, pointer.clientY);
+    this.#endDrag();
+  };
+
+  /** Finish the drag in flight, if any. The node keeps its pin. */
+  #endDrag(): void {
+    const drag = this.#drag;
+    if (drag === null) return;
+    this.#drag = null;
+    releasePointer(drag.captured, drag.pointerId);
+    this.#dragSink?.end(drag.node, drag.position);
+  }
+
+  /**
+   * Where the dragged node goes for a pointer at `(clientX, clientY)`.
+   *
+   * Offset-preserving rather than centring the node under the pointer: the
+   * grab point stays under the finger, so a card does not jump when it is
+   * picked up by an edge. Client pixels divide by the live zoom, so a drag
+   * survives a zoom mid-gesture.
+   */
+  #dragPosition(drag: CardDrag, clientX: number, clientY: number): Vec2 {
+    const { scale } = this.#viewport();
+    if (!Number.isFinite(scale) || scale <= 0) return drag.position;
+    return {
+      x: drag.originX + (clientX - drag.clientX) / scale,
+      y: drag.originY + (clientY - drag.clientY) / scale,
+    };
+  }
+
+  /**
+   * Resolve an event target to the card container it sits in, and whether the
+   * path from it crossed a drag handle.
+   *
+   * One walk answers both, and stopping at the container is what keeps a
+   * handle inside one card from being seen by another.
+   */
+  #resolveTarget(
+    target: EventTarget | null,
+  ): { node: NodeId; element: Element; onHandle: boolean } | null {
+    const container = this.#container;
+    const driver = this.#driver;
+    if (container === null || driver === null) return null;
+
+    let element = target as Element | null;
+    let onHandle = false;
+    while (element !== null && element !== container) {
+      if (element.hasAttribute?.(CARD_DRAG_HANDLE_ATTRIBUTE) === true) onHandle = true;
+      const parent: Element | null = element.parentElement;
+      if (parent === container) {
+        const node = driver.nodeForContainer(element);
+        return node === undefined ? null : { node, element, onHandle };
+      }
+      element = parent;
+    }
+    return null;
+  }
+}
+
+/**
+ * Route the rest of a gesture to `element`, and report whether it took.
+ *
+ * `setPointerCapture` is absent from every DOM shim the tests can reach, and
+ * present but throwing in a browser when the pointer is already gone.
+ */
+function capturePointer(element: Element, pointerId: number): Element | null {
+  if (typeof element.setPointerCapture !== "function") return null;
+  try {
+    element.setPointerCapture(pointerId);
+    return element;
+  } catch {
+    return null;
+  }
+}
+
+/** Undo {@link capturePointer}. A capture the host already dropped is fine. */
+function releasePointer(element: Element | null, pointerId: number): void {
+  if (element === null || typeof element.releasePointerCapture !== "function") return;
+  try {
+    element.releasePointerCapture(pointerId);
+  } catch {
+    // The host released it first: pointercancel, or the element left the DOM.
+  }
 }
 
 /**

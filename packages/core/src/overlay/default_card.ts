@@ -14,6 +14,7 @@
  * @module
  */
 
+import { CARD_DRAG_HANDLE_ATTRIBUTE } from "./overlay.ts";
 import type { CardChange, CardNode, CardProvider } from "./types.ts";
 
 /** Everything the default renderer keeps between `mount` and `release`. */
@@ -59,13 +60,23 @@ function createRoot(document: Document): HTMLElement {
   return root;
 }
 
+/**
+ * The title row, which doubles as the card's drag handle.
+ *
+ * The title is the one part of a card whose text nobody wants to select, and a
+ * title bar is the conventional place to pick a panel up by — so the readouts
+ * below stay selectable while the card as a whole is draggable.
+ */
 function createLabel(document: Document): HTMLElement {
   const label = document.createElement("div");
+  label.setAttribute(CARD_DRAG_HANDLE_ATTRIBUTE, "");
   Object.assign(label.style, {
     fontWeight: "600",
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+    cursor: "grab",
+    touchAction: "none",
   });
   return label;
 }

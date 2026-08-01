@@ -508,6 +508,7 @@ export type {
   FontAtlas,
   LabelConfig,
   LabelData,
+  LabelNodeSource,
   LabelsRenderContext,
   PositionProvider as LabelPositionProvider,
   VisibleLabel,
@@ -601,6 +602,7 @@ export type {
 // =============================================================================
 
 export {
+  CARD_DRAG_HANDLE_ATTRIBUTE,
   CardContainerPool,
   CardDriver,
   cardPlacementAt,
@@ -620,6 +622,7 @@ export {
 } from "./src/overlay/mod.ts";
 export type {
   CardChange,
+  CardDragSink,
   CardDriverOptions,
   CardNode,
   CardNodeSource,

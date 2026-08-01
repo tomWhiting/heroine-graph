@@ -26,6 +26,7 @@ function state(overrides: Partial<LabelViewState> = {}): LabelViewState {
     canvasHeight: 600,
     labelsVersion: 1,
     positionFingerprint: 12345.5,
+    nodeStateVersion: 7,
     ...overrides,
   };
 }
@@ -41,6 +42,12 @@ Deno.test("shouldRebuildLabels: identical state -> cached", () => {
 Deno.test("shouldRebuildLabels: label set or position changes force a rebuild", () => {
   assert(shouldRebuildLabels(state(), state({ labelsVersion: 2 })));
   assert(shouldRebuildLabels(state(), state({ positionFingerprint: 12345.75 })));
+});
+
+Deno.test("shouldRebuildLabels: an LOD cut or card-set change forces a rebuild", () => {
+  // The cut and the card set decide which nodes get a GPU label at all, and
+  // neither moves a node — so nothing else in the view state would notice.
+  assert(shouldRebuildLabels(state(), state({ nodeStateVersion: 8 })));
 });
 
 Deno.test("shouldRebuildLabels: canvas resize forces a rebuild", () => {
