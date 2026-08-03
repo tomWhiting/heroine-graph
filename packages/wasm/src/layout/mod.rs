@@ -6,8 +6,8 @@
 
 pub mod bubble;
 pub mod codebase;
-pub mod edge_aggregation;
 pub mod community;
+pub mod edge_aggregation;
 pub mod tidy_tree;
 
 pub use bubble::BubbleConfig;

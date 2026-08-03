@@ -311,8 +311,8 @@ mod tests {
     #[test]
     fn a_wholly_hidden_tree_has_no_visible_ancestor() {
         // 0 -> 1 -> 2, nothing visible.
-        let parent = compute_bubble_hierarchy(&[0, 1, 1, 2], 3, None, &BubbleConfig::default())
-            .parent;
+        let parent =
+            compute_bubble_hierarchy(&[0, 1, 1, 2], 3, None, &BubbleConfig::default()).parent;
         let ancestor = lowest_visible_ancestors(&parent, &[0, 0, 0]);
         assert_eq!(ancestor, vec![NO_VISIBLE_ANCESTOR; 3]);
     }
@@ -326,8 +326,7 @@ mod tests {
             edges.extend_from_slice(&[i, i + 1]);
         }
         let count = depth as usize + 1;
-        let parent =
-            compute_bubble_hierarchy(&edges, count, None, &BubbleConfig::default()).parent;
+        let parent = compute_bubble_hierarchy(&edges, count, None, &BubbleConfig::default()).parent;
         let mut visible = vec![0u8; count];
         visible[0] = 1;
 
@@ -426,7 +425,10 @@ mod tests {
         assert!(!collapsed.bundle_sources.is_empty());
 
         let expanded = aggregate_edges(&sources, &targets, &parent, &[1u8; 11]);
-        assert!(expanded.bundle_sources.is_empty(), "nothing is hidden, nothing bundles");
+        assert!(
+            expanded.bundle_sources.is_empty(),
+            "nothing is hidden, nothing bundles"
+        );
         assert_eq!(expanded.live_edges, vec![0, 1, 2, 3, 4]);
 
         // The source arrays are inputs, never a workspace: aggregation is
@@ -503,7 +505,10 @@ mod tests {
 
         // Strictly ascending by (source, target) — so deduplication is total.
         for k in 1..aggregation.bundle_sources.len() {
-            let previous = (aggregation.bundle_sources[k - 1], aggregation.bundle_targets[k - 1]);
+            let previous = (
+                aggregation.bundle_sources[k - 1],
+                aggregation.bundle_targets[k - 1],
+            );
             let current = (aggregation.bundle_sources[k], aggregation.bundle_targets[k]);
             assert!(previous < current, "bundles out of order at {k}");
         }
@@ -518,7 +523,10 @@ mod tests {
             }
         }
         assert_eq!(aggregation.bundle_weights.iter().sum::<u32>(), crossing);
-        assert!(aggregation.bundle_sources.len() < crossing as usize, "bundling must compress");
+        assert!(
+            aggregation.bundle_sources.len() < crossing as usize,
+            "bundling must compress"
+        );
     }
 
     #[test]
@@ -536,7 +544,10 @@ mod tests {
         let bundle_count = data[1] as usize;
         assert_eq!(live_count, aggregation.live_edges.len());
         assert_eq!(bundle_count, aggregation.bundle_sources.len());
-        assert!(live_count > 0 && bundle_count > 0, "the fixture must exercise both");
+        assert!(
+            live_count > 0 && bundle_count > 0,
+            "the fixture must exercise both"
+        );
         assert_eq!(
             data.len(),
             EDGE_AGGREGATION_HEADER + live_count + bundle_count * EDGE_BUNDLE_STRIDE
