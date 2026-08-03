@@ -63,8 +63,8 @@ if (!adapter) {
   console.warn(`[gpu] ${GPU_SKIP_MESSAGE}`);
 }
 
-/** The Karras tree layout needs 10 storage buffers; production asks for that. */
-const REQUIRED_STORAGE_BUFFERS = 10;
+/** The Karras tree layout binds 8 storage buffers, the WebGPU default. */
+const REQUIRED_STORAGE_BUFFERS = 8;
 const barnesHutSupported = adapter !== null &&
   adapter.limits.maxStorageBuffersPerShaderStage >= REQUIRED_STORAGE_BUFFERS;
 

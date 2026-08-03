@@ -43,11 +43,10 @@ if (!adapter) {
 function gpuTest(
   name: string,
   fn: (device: GPUDevice) => Promise<void>,
-  options: { ignore?: boolean } = {},
 ): void {
   Deno.test({
     name,
-    ignore: adapter === null || options.ignore === true,
+    ignore: adapter === null,
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {

@@ -374,10 +374,10 @@ gpuTest(
   "GPU bind group parity: Barnes-Hut matches per-tick rebuilds",
   async (device) => {
     // Barnes-Hut binds positions in its bounds, Morton, tree-build and
-    // traversal passes, so a wrong parity index is immediately visible. It
-    // needs 10 storage buffers per compute stage for the Karras tree layout —
-    // on a device that cannot supply them the pipelines are invalid and every
-    // submit is silently discarded, so skip rather than assert on a frozen run.
+    // traversal passes, so a wrong parity index is immediately visible. Its
+    // widest pass binds 8 storage buffers, the WebGPU default — on a device
+    // below that the pipelines are invalid and every submit is silently
+    // discarded, so skip rather than assert on a frozen run.
     if (device.limits.maxStorageBuffersPerShaderStage < HARNESS_STORAGE_BUFFERS_PER_STAGE) {
       console.warn(
         `[gpu] skipping Barnes-Hut parity: device supports only ` +

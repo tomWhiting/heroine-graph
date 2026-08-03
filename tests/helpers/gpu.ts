@@ -700,20 +700,22 @@ export const GPU_SKIP_MESSAGE = "WebGPU adapter unavailable — GPU integration 
  * Storage buffers per compute stage the production device asks for
  * (DEFAULT_REQUIRED_LIMITS in packages/core/src/webgpu/context.ts).
  *
- * `adapter.requestDevice()` with no requiredLimits gives the WebGPU *default*
- * of 8 even when the adapter supports far more, which silently invalidates
- * Barnes-Hut's 10-buffer Karras tree layout and Relativity Atlas's 9-buffer
- * sibling pass. An invalid bind group poisons the compute pass, which poisons
- * the command encoder, so the whole tick's command buffer is discarded and the
- * simulation looks inert rather than erroring. Every GPU test therefore takes
- * its device from {@link requestHarnessDevice}.
+ * Since the flat multi-region buffer merges this is the WebGPU default of 8 —
+ * the widest passes (Barnes-Hut Karras tree, Relativity Atlas sibling,
+ * integration) bind exactly 8 — so every GPU test runs at the limit a
+ * default-limit adapter would supply. A pass that regresses past 8 makes its
+ * bind group invalid, which poisons the compute pass and then the command
+ * encoder, so the whole tick's command buffer is discarded and the simulation
+ * looks inert rather than erroring; running the suite at 8 is what catches
+ * that. Every GPU test therefore takes its device from
+ * {@link requestHarnessDevice}.
  */
-export const HARNESS_STORAGE_BUFFERS_PER_STAGE = 10;
+export const HARNESS_STORAGE_BUFFERS_PER_STAGE = 8;
 
 /**
  * Request a device with production's limits, clamped to what the adapter can
  * actually supply (so a weaker adapter still yields a device rather than a
- * rejected request — the tests that need 10 check `device.limits` themselves).
+ * rejected request).
  */
 export function requestHarnessDevice(adapter: GPUAdapter): Promise<GPUDevice> {
   return adapter.requestDevice({

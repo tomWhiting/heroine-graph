@@ -41,8 +41,8 @@ function gpuTest(name: string, fn: (device: GPUDevice) => Promise<void>): void {
     sanitizeResources: false,
     sanitizeOps: false,
     async fn() {
-      // The sibling shader binds 9 storage buffers; the WebGPU default limit
-      // is 8. requestHarnessDevice asks for the same limit production does.
+      // The sibling shader binds 8 storage buffers, the WebGPU default limit.
+      // requestHarnessDevice asks for the same limit production does.
       const device = await requestHarnessDevice(adapter!);
       try {
         await fn(device);
