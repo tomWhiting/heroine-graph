@@ -42,8 +42,8 @@ export interface ForceAlgorithmInfo {
   /** Time complexity description */
   readonly complexity: string;
   /**
-   * Storage buffers per compute stage this algorithm's bind group layouts
-   * need, when that is more than the WebGPU default of 8.
+   * Storage buffers per compute stage this algorithm's widest bind group
+   * layout needs.
    *
    * Exceeding the device limit does not fail loudly: the bind group layout is
    * invalid, binding it poisons the compute pass, the poisoned pass poisons
@@ -53,7 +53,11 @@ export interface ForceAlgorithmInfo {
    * {@link ForceAlgorithm.createPipelines} guards and the registry's
    * device-aware selection read it (see supportsAlgorithmOnDevice).
    *
-   * Omitted when the algorithm fits inside the 8-buffer default.
+   * Omitted only by algorithms with room to spare. An algorithm whose widest
+   * layout sits exactly ON the 8-buffer default states 8 rather than omitting
+   * the field: the declaration is what a test asserts against, so adding a
+   * ninth binding fails loudly instead of silently un-selecting the algorithm
+   * on every default-limit adapter.
    */
   readonly minStorageBuffersPerShaderStage?: number;
 }
@@ -217,20 +221,30 @@ export interface AlgorithmRenderContext {
    */
   lodEdgesActive?: boolean | undefined;
   /**
-   * Source edges with both endpoints in the visible cut (u32 per entry;
-   * pipeline.ts `liveEdgeIndices`), and the aggregated cross-boundary edges
-   * standing in for everything else (three u32 per bundle — source, target,
-   * weight; pipeline.ts `edgeBundles`).
+   * The source edges with both endpoints in the visible cut, followed by the
+   * aggregated cross-boundary edges standing in for everything else — one
+   * buffer, two regions (pipeline.ts `lodEdgeSet`; the region map is stated
+   * above `uploadEdgeBundles` there).
+   *
+   * One buffer rather than two so that a per-edge pass binding it stays inside
+   * the WebGPU default of eight storage buffers per stage. At nine an
+   * algorithm is not merely slower, it is unselectable — see
+   * {@link ForceAlgorithmInfo.minStorageBuffersPerShaderStage}.
    *
    * An algorithm that supplies its own attraction (`handlesSprings`) MUST
-   * consume these under a cut. Skipping an edge because an endpoint is hidden
+   * consume this under a cut. Skipping an edge because an endpoint is hidden
    * does not defer that edge's pull, it deletes it: a collapsed module would
    * exert nothing on the modules it imports, and the collapsed layout would
    * stop resembling the expanded one (SC-002).
    */
-  liveEdgeIndices?: GPUBuffer | undefined;
-  edgeBundles?: GPUBuffer | undefined;
-  /** Entries of each of the two lists above; meaningful while lodEdgesActive. */
+  lodEdgeSet?: GPUBuffer | undefined;
+  /**
+   * Entries of each region above; meaningful while lodEdgesActive.
+   *
+   * `activeEdgeCount` is also the bundle region's base, so a pass that bounds
+   * its first loop with it already holds everything it needs to address the
+   * second.
+   */
   activeEdgeCount?: number | undefined;
   bundleCount?: number | undefined;
 }

@@ -38,21 +38,21 @@ export class AlgorithmLodFallbacks implements AlgorithmBuffers {
     /** All zero: no slot dead, pinned or hidden. */
     readonly nodeFlags: GPUBuffer,
     /**
-     * A single zeroed `u32` standing in for both LOD edge lists. Never read:
-     * the bundled entry points are dispatched only when the host declares an
-     * aggregation, and declaring one means supplying the real buffers. It
-     * exists so the bundled bind group can be built unconditionally, which
-     * keeps bind-group construction independent of per-frame state (the
-     * ForceAlgorithm.createBindGroups contract).
+     * A single zeroed `u32` standing in for the combined LOD edge set. Never
+     * read: the bundled entry points are dispatched only when the host
+     * declares an aggregation, and declaring one means supplying the real
+     * buffer. It exists so the bundled bind group can be built
+     * unconditionally, which keeps bind-group construction independent of
+     * per-frame state (the ForceAlgorithm.createBindGroups contract).
      */
-    readonly emptyEdgeList: GPUBuffer,
+    readonly emptyEdgeSet: GPUBuffer,
   ) {}
 
   destroy(): void {
     this.liveIndices.destroy();
     this.nodeMass.destroy();
     this.nodeFlags.destroy();
-    this.emptyEdgeList.destroy();
+    this.emptyEdgeSet.destroy();
   }
 }
 
@@ -90,13 +90,13 @@ export function createAlgorithmLodFallbacks(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  const emptyEdgeList = device.createBuffer({
-    label: `${label} Fallback LOD Edge List`,
+  const emptyEdgeSet = device.createBuffer({
+    label: `${label} Fallback LOD Edge Set`,
     size: 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  return new AlgorithmLodFallbacks(liveIndices, nodeMass, nodeFlags, emptyEdgeList);
+  return new AlgorithmLodFallbacks(liveIndices, nodeMass, nodeFlags, emptyEdgeSet);
 }
 
 /** The active-index list to gather from, or the identity list. */
@@ -137,7 +137,7 @@ export function lodActiveCount(context: AlgorithmRenderContext): number {
 
 /** How a per-edge pass is dispatched this frame. */
 export interface LodEdgeDispatch {
-  /** Entries of `liveEdgeIndices` covered. */
+  /** Entries of the live-edge region covered. */
   readonly activeEdgeCount: number;
   /** Bundles after them. */
   readonly bundleCount: number;
@@ -161,18 +161,17 @@ export function lodEdgeDispatch(context: AlgorithmRenderContext): LodEdgeDispatc
   return { activeEdgeCount, bundleCount, total: activeEdgeCount + bundleCount };
 }
 
-/** The LOD active-edge list, or the never-read placeholder. */
-export function lodLiveEdgeIndices(
+/**
+ * The combined LOD edge set — active-edge list then bundle table — or the
+ * never-read placeholder.
+ *
+ * The two regions arrive as one buffer so that a bundled per-edge pass stays
+ * within the WebGPU default of eight storage buffers per stage. Region bases
+ * are in the map above `uploadEdgeBundles` in simulation/pipeline.ts.
+ */
+export function lodEdgeSet(
   context: AlgorithmRenderContext,
   fallbacks: AlgorithmLodFallbacks,
 ): GPUBuffer {
-  return context.liveEdgeIndices ?? fallbacks.emptyEdgeList;
-}
-
-/** The LOD bundle table, or the never-read placeholder. */
-export function lodEdgeBundles(
-  context: AlgorithmRenderContext,
-  fallbacks: AlgorithmLodFallbacks,
-): GPUBuffer {
-  return context.edgeBundles ?? fallbacks.emptyEdgeList;
+  return context.lodEdgeSet ?? fallbacks.emptyEdgeSet;
 }

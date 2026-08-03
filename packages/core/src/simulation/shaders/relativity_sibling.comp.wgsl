@@ -30,6 +30,10 @@ struct SiblingUniforms {
     orbit_radius_base: f32,         // Base orbit distance from parent
     bubble_mode: u32,               // 0 = off, 1 = use wellRadius for phantom zones + orbit
     orbit_scale: f32,               // Bubble mode: orbit radius = parent_wellRadius * scale
+    // First element of csr_inverse's source region; see the region map below.
+    // Lands in what was the struct's implicit tail padding, so this stays 64
+    // bytes — the size relativity-atlas.ts allocates.
+    csr_inverse_sources_base: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SiblingUniforms;
@@ -40,26 +44,48 @@ struct SiblingUniforms {
 // Force accumulators - vec2<f32> per node
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Inverse CSR: incoming edges (parents)
-// For node i, csr_inverse_offsets[i]..csr_inverse_offsets[i+1] are parent indices
-@group(0) @binding(3) var<storage, read> csr_inverse_offsets: array<u32>;
-@group(0) @binding(4) var<storage, read> csr_inverse_sources: array<u32>;
+// Inverse CSR: incoming edges (parents).
+//
+// INVERSE CSR REGION MAP (S = uniforms.csr_inverse_sources_base, the ALLOCATED
+// offset-row length, not node_count + 1 — the regions must not move when the
+// live node count does), in u32 elements:
+//   [0, S)      offset row: node i's parents are the source entries
+//               [csr_inverse[i], csr_inverse[i+1])
+//   [S, ...)    source row: the slot each incoming edge comes from
+//
+// One binding rather than two: this is the widest pass in the algorithm, and
+// with the two rows apart it binds nine storage buffers against a WebGPU
+// default of eight, which makes the layout invalid and discards every frame
+// recorded against it — see
+// ForceAlgorithmInfo.minStorageBuffersPerShaderStage. The host sizes, fills
+// and states the same map at csrInverseSourcesBase in
+// simulation/algorithms/relativity-atlas.ts.
+@group(0) @binding(3) var<storage, read> csr_inverse: array<u32>;
 
 // Forward CSR: outgoing edges (children)
 // For parent p, csr_offsets[p]..csr_offsets[p+1] are child indices (siblings of each other)
-@group(0) @binding(5) var<storage, read> csr_offsets: array<u32>;
-@group(0) @binding(6) var<storage, read> csr_targets: array<u32>;
+@group(0) @binding(4) var<storage, read> csr_offsets: array<u32>;
+@group(0) @binding(5) var<storage, read> csr_targets: array<u32>;
 
 // Node masses (for mass-weighted repulsion)
-@group(0) @binding(7) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(6) var<storage, read> node_mass: array<f32>;
 
 // Well radii (bubble mode: subtree-based collision boundaries)
-@group(0) @binding(8) var<storage, read> well_radius: array<f32>;
+@group(0) @binding(7) var<storage, read> well_radius: array<f32>;
 
 // Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD)
-@group(0) @binding(9) var<storage, read> node_flags: array<u32>;
+@group(0) @binding(8) var<storage, read> node_flags: array<u32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
+
+fn csr_inverse_offset(node_idx: u32) -> u32 {
+    return csr_inverse[node_idx];
+}
+
+fn csr_inverse_source(entry_idx: u32) -> u32 {
+    return csr_inverse[uniforms.csr_inverse_sources_base + entry_idx];
+}
+
 const EPSILON: f32 = 0.0001;
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
@@ -217,8 +243,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var force = vec2<f32>(0.0, 0.0);
 
     // Get this node's parents (incoming edges)
-    let parent_start = csr_inverse_offsets[node_idx];
-    let parent_end = csr_inverse_offsets[node_idx + 1u];
+    let parent_start = csr_inverse_offset(node_idx);
+    let parent_end = csr_inverse_offset(node_idx + 1u);
 
     // ================================================================
     // PHASE 1: Sibling repulsion + orbital forces (1-hop: same parent)
@@ -227,7 +253,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     //   B. Tangential-amplified sibling repulsion: spread children angularly
     // ================================================================
     for (var p = parent_start; p < parent_end; p++) {
-        let parent_idx = csr_inverse_sources[p];
+        let parent_idx = csr_inverse_source(p);
 
         if (parent_idx >= uniforms.node_count) {
             continue;
@@ -299,13 +325,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // then each uncle/aunt's children (cousins).
         // ================================================================
         if (uniforms.cousin_enabled != 0u) {
-            let gp_start = csr_inverse_offsets[parent_idx];
-            let gp_end = csr_inverse_offsets[parent_idx + 1u];
+            let gp_start = csr_inverse_offset(parent_idx);
+            let gp_end = csr_inverse_offset(parent_idx + 1u);
 
             var cousin_count = 0u;
 
             for (var g = gp_start; g < gp_end; g++) {
-                let grandparent_idx = csr_inverse_sources[g];
+                let grandparent_idx = csr_inverse_source(g);
 
                 if (grandparent_idx >= uniforms.node_count) {
                     continue;

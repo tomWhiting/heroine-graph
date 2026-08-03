@@ -82,8 +82,7 @@ interface SimulationBuffers {
   nodeMass: GPUBuffer;
   nodeDepth: GPUBuffer;
   liveIndices: GPUBuffer;
-  liveEdgeIndices: GPUBuffer;
-  edgeBundles: GPUBuffer;
+  lodEdgeSet: GPUBuffer;
   readback: GPUBuffer;
   nodeCount: number;
   activeCount: number;
@@ -804,12 +803,11 @@ export interface SimHarness {
   readonly liveIndicesBuffer: GPUBuffer;
   readonly activeCount: number;
   /**
-   * The live LOD edge aggregation buffers and their counts. Exposed for the
+   * The live LOD edge aggregation buffer and its two counts. Exposed for the
    * same reason as the node-side pair: a band transition must move the counts
    * without ever changing a buffer identity.
    */
-  readonly liveEdgeIndicesBuffer: GPUBuffer;
-  readonly edgeBundlesBuffer: GPUBuffer;
+  readonly lodEdgeSetBuffer: GPUBuffer;
   readonly activeEdgeCount: number;
   readonly bundleCount: number;
   /**
@@ -1005,11 +1003,8 @@ export async function createSimHarness(
     get activeCount() {
       return buffers.activeCount;
     },
-    get liveEdgeIndicesBuffer() {
-      return buffers.liveEdgeIndices;
-    },
-    get edgeBundlesBuffer() {
-      return buffers.edgeBundles;
+    get lodEdgeSetBuffer() {
+      return buffers.lodEdgeSet;
     },
     get activeEdgeCount() {
       return buffers.activeEdgeCount;
@@ -1118,8 +1113,7 @@ function destroySimulationBufferSet(buffers: SimulationBuffers): void {
       buffers.prevForces,
       buffers.edgeSources,
       buffers.edgeTargets,
-      buffers.liveEdgeIndices,
-      buffers.edgeBundles,
+      buffers.lodEdgeSet,
       buffers.clearUniforms,
       buffers.repulsionUniforms,
       buffers.springUniforms,
@@ -1162,8 +1156,7 @@ interface HarnessAlgorithmContext {
   liveIndices?: GPUBuffer | undefined;
   activeCount?: number | undefined;
   lodEdgesActive?: boolean | undefined;
-  liveEdgeIndices?: GPUBuffer | undefined;
-  edgeBundles?: GPUBuffer | undefined;
+  lodEdgeSet?: GPUBuffer | undefined;
   activeEdgeCount?: number | undefined;
   bundleCount?: number | undefined;
 }
@@ -1344,8 +1337,7 @@ export async function createAlgorithmSimHarness(
     liveIndices: view.liveIndices,
     activeCount: view.activeCount,
     lodEdgesActive: view.lodEdgesActive,
-    liveEdgeIndices: view.liveEdgeIndices,
-    edgeBundles: view.edgeBundles,
+    lodEdgeSet: view.lodEdgeSet,
     activeEdgeCount: view.activeEdgeCount,
     bundleCount: view.bundleCount,
   });
@@ -1409,11 +1401,8 @@ export async function createAlgorithmSimHarness(
     get activeCount() {
       return buffers.activeCount;
     },
-    get liveEdgeIndicesBuffer() {
-      return buffers.liveEdgeIndices;
-    },
-    get edgeBundlesBuffer() {
-      return buffers.edgeBundles;
+    get lodEdgeSetBuffer() {
+      return buffers.lodEdgeSet;
     },
     get activeEdgeCount() {
       return buffers.activeEdgeCount;

@@ -45,10 +45,9 @@ import {
   type AlgorithmLodFallbacks,
   createAlgorithmLodFallbacks,
   lodActiveCount,
-  lodEdgeBundles,
   type LodEdgeDispatch,
   lodEdgeDispatch,
-  lodLiveEdgeIndices,
+  lodEdgeSet,
   lodLiveIndices,
   lodNodeFlags,
   lodNodeMass,
@@ -189,15 +188,15 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       },
     });
 
-    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
-    // the bundle table and the per-node mass each arriving pull is divided by.
+    // Bundled attraction: the un-cut bindings plus the combined LOD edge set
+    // and the per-node mass each arriving pull is divided by. Seven storage
+    // buffers, inside the WebGPU default of eight.
     const attractionBundledLayout = device.createBindGroupLayout({
       label: "t-FDP Attraction Layout (LOD bundles)",
       entries: [
         ...attractionEntries,
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -302,9 +301,8 @@ export class TFdpAlgorithm implements ForceAlgorithm {
       layout: tfdpPipelines.attractionBundledLayout,
       entries: [
         ...attractionEntries,
-        { binding: 6, resource: { buffer: lodLiveEdgeIndices(context, buffers.fallbacks) } },
-        { binding: 7, resource: { buffer: lodEdgeBundles(context, buffers.fallbacks) } },
-        { binding: 8, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
+        { binding: 6, resource: { buffer: lodEdgeSet(context, buffers.fallbacks) } },
+        { binding: 7, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 

@@ -26,7 +26,11 @@ struct ForceUniforms {
     // do — so the gather shortens only the traversal, which is where the cost
     // is.
     active_count: u32,
-    _pad3: u32,
+    // Particle capacity the bound buffers were ALLOCATED at — the strides of
+    // the tree_links and node_attrs region maps below. Fixed for the lifetime
+    // of a buffer set, unlike particle_count, so region bases never move
+    // between frames. The same value the tree passes get in TreeUniforms.
+    node_capacity: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: ForceUniforms;
@@ -37,27 +41,86 @@ struct ForceUniforms {
 // Output forces (accumulated) - vec2<f32> per particle
 @group(0) @binding(2) var<storage, read_write> forces: array<vec2<f32>>;
 
-// Tree structure (from Karras build)
-@group(0) @binding(3) var<storage, read> left_child: array<i32>;
-@group(0) @binding(4) var<storage, read> right_child: array<i32>;
+// TREE_LINKS REGION MAP (C = uniforms.node_capacity, I = max(C - 1, 1) the
+// internal-node capacity, T = 2C - 1 the tree-node capacity), in i32 elements.
+// A negative child reference is the leaf -(leaf_idx + 1); a non-negative one
+// is an internal node index.
+//
+//   [0, I)              left_child: left child of internal node i
+//   [I, 2I)             right_child: right child of internal node i
+//   [2I, 2I + T)        parent: parent of tree node i — written by the tree
+//                       passes, never read here; the traversal only descends
+//
+// Regions are CONCATENATED, not interleaved: the descent reads left and right
+// of one node together, and each region keeps the access pattern it had as a
+// standalone buffer. Merged because this pass is the widest layout in the
+// algorithm and, kept apart, it binds ten storage buffers in one stage against
+// a WebGPU default of eight — see minStorageBuffersPerShaderStage in
+// algorithms/barnes-hut.ts, which sizes this buffer (treeLinksElements) and
+// states the same map. karras_tree.comp.wgsl writes it through that map.
+@group(0) @binding(3) var<storage, read> tree_links: array<i32>;
 
-// Node properties (2N-1 total: internal + leaves)
-@group(0) @binding(5) var<storage, read> node_com: array<vec2<f32>>;
-@group(0) @binding(6) var<storage, read> node_mass: array<f32>;
-@group(0) @binding(7) var<storage, read> node_size: array<f32>;
+// Node centres of mass, one per tree node (2N-1: internal 0..N-2, then leaves
+// N-1..2N-2). Kept out of node_attrs because it is vec2<f32>.
+@group(0) @binding(4) var<storage, read> node_com: array<vec2<f32>>;
+
+// NODE_ATTRS REGION MAP (T = 2 * uniforms.node_capacity - 1, the tree-node
+// capacity), in f32 elements, indexed by tree node exactly as node_com is:
+//
+//   [0, T)              node_mass: aggregate mass of the subtree at node i
+//   [T, 2T)             node_size: geometric extent of the subtree at node i,
+//                       the numerator of the theta criterion below
+//
+// Sized alongside tree_links in algorithms/barnes-hut.ts (nodeAttrsElements),
+// which states the same map; karras_tree.comp.wgsl writes it through that map.
+@group(0) @binding(5) var<storage, read> node_attrs: array<f32>;
 
 // Node state flags (bit 0 = dead slot, bit 2 = hidden by LOD) — see pipeline.ts
-@group(0) @binding(8) var<storage, read> node_flags: array<u32>;
+@group(0) @binding(6) var<storage, read> node_flags: array<u32>;
 
 // Per-particle simulation mass (f32 per slot), the same buffer init_leaves
 // seeds the tree from. Read here only to know how much of the coincident mass
 // is this particle's own leaf.
-@group(0) @binding(9) var<storage, read> particle_mass: array<f32>;
+@group(0) @binding(7) var<storage, read> particle_mass: array<f32>;
 
 // Active-index list: the first active_count entries are the slots taking part
 // in this tick, ascending. `active` is a reserved WGSL identifier, hence the
 // name.
-@group(0) @binding(10) var<storage, read> live_idx: array<u32>;
+@group(0) @binding(8) var<storage, read> live_idx: array<u32>;
+
+// --- Flat-buffer region accessors -------------------------------------------
+// Every read of a merged region goes through these, so the offset arithmetic
+// exists once. The strides are derived from node_capacity rather than
+// published separately: two uniform words would be two things to keep in step
+// with one allocation.
+
+// Elements per child region of tree_links; matches internalNodeCapacity() in
+// algorithms/barnes-hut.ts.
+fn internal_stride() -> u32 {
+    return max(uniforms.node_capacity - 1u, 1u);
+}
+
+// Elements per per-tree-node region; matches treeNodeCapacity() in
+// algorithms/barnes-hut.ts.
+fn tree_stride() -> u32 {
+    return 2u * uniforms.node_capacity - 1u;
+}
+
+fn left_child(i: u32) -> i32 {
+    return tree_links[i];
+}
+
+fn right_child(i: u32) -> i32 {
+    return tree_links[internal_stride() + i];
+}
+
+fn node_mass(i: u32) -> f32 {
+    return node_attrs[i];
+}
+
+fn node_size(i: u32) -> f32 {
+    return node_attrs[tree_stride() + i];
+}
 
 // Stack depth for tree traversal. For a balanced binary tree with N nodes the
 // maximum stack depth needed is log₂(N) — 23 levels at the 8,388,480-node
@@ -180,7 +243,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let node_idx = stack[stack_ptr];
 
         // Get node properties
-        let cell_mass = node_mass[node_idx];
+        let cell_mass = node_mass(node_idx);
 
         // Skip empty nodes
         if (cell_mass <= 0.0) {
@@ -188,7 +251,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         let cell_com = node_com[node_idx];
-        let cell_size = node_size[node_idx];
+        let cell_size = node_size(node_idx);
 
         // Distance from particle to cell center of mass
         let delta = pos - cell_com;
@@ -221,8 +284,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
         } else {
             // Cell is too close - examine children (binary tree: 2 children)
-            let left = left_child[node_idx];
-            let right = right_child[node_idx];
+            let left = left_child(node_idx);
+            let right = right_child(node_idx);
 
             // Push children onto stack if space available
             if (stack_ptr + 2u <= MAX_STACK_DEPTH) {

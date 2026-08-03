@@ -72,8 +72,12 @@ import TRAVERSE_WGSL from "../shaders/barnes_hut_binary.comp.wgsl";
  *     `maxComputeWorkgroupsPerDimension` of 65,535 (the WebGPU default, and
  *     what every adapter we target reports): 2N-1 <= 16,776,960, so
  *     N <= 8,388,480.
- *  4. `nodeCom` is a (2N-1) * 8-byte storage binding against the 128 MiB
- *     default `maxStorageBufferBindingSize`: N <= 8,388,608.
+ *  4. The widest storage bindings against the 128 MiB default
+ *     `maxStorageBufferBindingSize`. All three land on the same bound of
+ *     N <= 8,388,608: `nodeCom` is (2N-1) * 8 bytes, `treeLinks` is
+ *     (2(N-1) + 2N-1) * 4 = 16N - 12 bytes and `nodeAttrs` is
+ *     2(2N-1) * 4 = 16N - 8 bytes. Merging the tree arrays into flat
+ *     multi-region buffers therefore did not move this constraint.
  *
  * (3) binds by 128 particles, so that is the number. 64x the old ceiling.
  */
@@ -89,10 +93,97 @@ const BARNES_HUT_ALGORITHM_INFO: ForceAlgorithmInfo = {
   minNodes: 100,
   maxNodes: MAX_BARNES_HUT_NODES,
   complexity: "O(N log N)",
-  // The Karras tree layout binds 10 storage buffers (bindings 4-10 read_write
-  // plus 1-3 read-only); the WebGPU default is 8.
-  minStorageBuffersPerShaderStage: 10,
+  // Traversal is the widest pass and sits exactly on the WebGPU default of 8:
+  // positions, forces, treeLinks, nodeCom, nodeAttrs, nodeFlags, particleMass,
+  // liveIdx. The Karras tree layout is 7 (morton codes, sorted indices,
+  // positions, treeLinks, nodeCom, nodeAttrs, aggReady) and init_leaves' own
+  // layout is 6. Getting there took two flat multi-region buffers — treeLinks
+  // (left/right/parent) and nodeAttrs (mass/size) — documented at their
+  // bindings in karras_tree.comp.wgsl; see {@link treeLinksElements} and
+  // {@link nodeAttrsElements}.
+  //
+  // 8 is declared deliberately rather than omitted: with no headroom left, a
+  // ninth binding must fail this declaration visibly instead of silently
+  // costing the algorithm every default-limit adapter.
+  minStorageBuffersPerShaderStage: 8,
 };
+
+/**
+ * Elements in each child region of {@link BarnesHutBuffers.treeLinks} for a
+ * buffer set allocated at `maxNodes` particles.
+ *
+ * Only the N-1 internal nodes have children. Floored at one element so that a
+ * degenerate capacity still produces a non-empty region — WebGPU rejects a
+ * zero-sized storage binding.
+ */
+function internalNodeCapacity(maxNodes: number): number {
+  return Math.max(maxNodes - 1, 1);
+}
+
+/**
+ * Elements in each per-tree-node region for a buffer set allocated at
+ * `maxNodes` particles: N-1 internal nodes followed by N leaves.
+ */
+function treeNodeCapacity(maxNodes: number): number {
+  return 2 * maxNodes - 1;
+}
+
+/**
+ * `i32` elements in {@link BarnesHutBuffers.treeLinks}.
+ *
+ * ## TREE_LINKS REGION MAP
+ *
+ * One buffer, three regions, in `i32` elements (I = {@link
+ * internalNodeCapacity}, T = {@link treeNodeCapacity}):
+ *
+ * ```text
+ *   [0, I)          left_child: left child of internal node i
+ *   [I, 2I)         right_child: right child of internal node i
+ *   [2I, 2I+T)      parent: parent of tree node i, -1 at the root
+ * ```
+ *
+ * Concatenated rather than interleaved: each region keeps the contiguous
+ * per-index access pattern, and the coalescing, it had as its own buffer.
+ *
+ * Merged because the traversal pass reads the children alongside positions,
+ * forces, nodeCom, nodeAttrs, nodeFlags, particleMass and liveIdx, and with
+ * the three arrays apart that is ten storage bindings in one stage against a
+ * WebGPU default of eight — an invalid layout, which discards every frame
+ * recorded against it. `agg_ready` is deliberately NOT merged in: it is
+ * `atomic<u32>` and cannot share an `array<i32>` binding.
+ *
+ * The strides are the ALLOCATED capacities, not the live node count, so a
+ * frame with fewer particles rewrites the regions in place and never moves
+ * them. They are published to both shaders as the single `node_capacity`
+ * uniform word, which each derives I and T from; karras_tree.comp.wgsl and
+ * barnes_hut_binary.comp.wgsl state this same map at their `tree_links`
+ * bindings.
+ */
+function treeLinksElements(maxNodes: number): number {
+  return 2 * internalNodeCapacity(maxNodes) + treeNodeCapacity(maxNodes);
+}
+
+/**
+ * `f32` elements in {@link BarnesHutBuffers.nodeAttrs}.
+ *
+ * ## NODE_ATTRS REGION MAP
+ *
+ * One buffer, two regions, in `f32` elements (T = {@link treeNodeCapacity}),
+ * indexed by tree node exactly as `nodeCom` is:
+ *
+ * ```text
+ *   [0, T)          node_mass: aggregate mass of the subtree at node i
+ *   [T, 2T)         node_size: geometric extent of the subtree at node i
+ * ```
+ *
+ * Merged for the same binding-count reason as {@link treeLinksElements}, and
+ * addressed off the same `node_capacity` uniform word. `nodeCom` stays its own
+ * buffer: it is `vec2<f32>`, so folding it in here would cost a bitcast at
+ * every access to buy a binding slot nothing needs.
+ */
+function nodeAttrsElements(maxNodes: number): number {
+  return 2 * treeNodeCapacity(maxNodes);
+}
 
 // Configuration constants
 const WORKGROUP_SIZE = 256;
@@ -163,14 +254,12 @@ class BarnesHutBuffers implements AlgorithmBuffers {
     public traverseUniforms: GPUBuffer,
     // Shared radix sort buffers (keys = morton codes, values = node indices)
     public sortBuffers: RadixSortBuffers,
-    // Tree structure (N-1 internal nodes)
-    public leftChild: GPUBuffer,
-    public rightChild: GPUBuffer,
-    public parent: GPUBuffer,
+    /** Left-child, right-child then parent regions — see {@link treeLinksElements}. */
+    public treeLinks: GPUBuffer,
     // Node properties (2N-1 total: internal + leaves)
     public nodeCom: GPUBuffer, // vec2<f32> per node (center of mass)
-    public nodeMass: GPUBuffer,
-    public nodeSize: GPUBuffer,
+    /** Node-mass then node-size regions — see {@link nodeAttrsElements}. */
+    public nodeAttrs: GPUBuffer,
     // Aggregation readiness stamps (atomic u32 per tree node)
     public visitCount: GPUBuffer,
     // Zeroed (= all alive) flags used when the context provides none
@@ -191,13 +280,9 @@ class BarnesHutBuffers implements AlgorithmBuffers {
 
     destroyRadixSortBuffers(this.sortBuffers);
 
-    this.leftChild.destroy();
-    this.rightChild.destroy();
-    this.parent.destroy();
-
+    this.treeLinks.destroy();
     this.nodeCom.destroy();
-    this.nodeMass.destroy();
-    this.nodeSize.destroy();
+    this.nodeAttrs.destroy();
 
     this.visitCount.destroy();
     this.fallbackNodeFlags.destroy();
@@ -281,6 +366,8 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     });
 
     // === Karras Tree Layout ===
+    // 7 storage buffers: morton codes, sorted indices, positions, treeLinks,
+    // nodeCom, nodeAttrs, aggReady.
     const treeLayout = device.createBindGroupLayout({
       label: "Karras Tree Layout",
       entries: [
@@ -292,33 +379,32 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
     // === Leaf Init Layout ===
-    // init_leaves alone reads the per-particle mass buffer, and the shared
-    // tree layout is already at the 10 storage buffers per stage the device is
-    // asked for. A pipeline layout only has to cover the bindings its entry
-    // point statically uses, so init_leaves gets its own narrower layout
-    // (7 storage buffers) and the other three tree passes keep treeLayout.
+    // init_leaves is the only tree pass that reads the per-particle mass
+    // buffer. A pipeline layout only has to cover the bindings its entry point
+    // statically uses, so init_leaves gets its own layout (6 storage buffers,
+    // including particleMass) and the other three passes' shared treeLayout
+    // does not carry a binding they never use.
     const leafLayout = device.createBindGroupLayout({
       label: "Karras Leaf Init Layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
     // === Traversal Layout ===
+    // The widest pass in the algorithm, and exactly on the WebGPU default of 8
+    // storage buffers: positions, forces, treeLinks, nodeCom, nodeAttrs,
+    // nodeFlags, particleMass, liveIdx.
     const traverseLayout = device.createBindGroupLayout({
       label: "Barnes-Hut Traversal Layout",
       entries: [
@@ -331,8 +417,6 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -405,8 +489,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
   createBuffers(device: GPUDevice, maxNodes: number): AlgorithmBuffers {
     const safeMaxNodes = Math.max(maxNodes, 4);
 
-    const treeNodeBytes = (2 * safeMaxNodes - 1) * 4;
-    const internalNodeBytes = Math.max((safeMaxNodes - 1) * 4, 4);
+    const treeNodeBytes = treeNodeCapacity(safeMaxNodes) * 4;
 
     // Uniform buffers
     const mortonUniforms = device.createBuffer({
@@ -438,20 +521,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     // Shared radix sort buffers (keys = morton codes, values = node indices)
     const sortBuffers = createRadixSortBuffers(device, safeMaxNodes, "BH");
 
-    // Tree structure buffers (N-1 internal nodes)
-    const leftChild = device.createBuffer({
-      label: "BH Left Child",
-      size: internalNodeBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const rightChild = device.createBuffer({
-      label: "BH Right Child",
-      size: internalNodeBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const parent = device.createBuffer({
-      label: "BH Parent",
-      size: treeNodeBytes,
+    // Tree topology: left-child, right-child and parent regions in one buffer
+    const treeLinks = device.createBuffer({
+      label: "BH Tree Links",
+      size: treeLinksElements(safeMaxNodes) * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -461,14 +534,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       size: treeNodeBytes * 2, // vec2<f32> = 8 bytes per node
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    const nodeMass = device.createBuffer({
-      label: "BH Node Mass",
-      size: treeNodeBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const nodeSize = device.createBuffer({
-      label: "BH Node Size",
-      size: treeNodeBytes,
+    // Node-mass and node-size regions in one buffer
+    const nodeAttrs = device.createBuffer({
+      label: "BH Node Attrs",
+      size: nodeAttrsElements(safeMaxNodes) * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -506,12 +575,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       treeUniformsStaging,
       traverseUniforms,
       sortBuffers,
-      leftChild,
-      rightChild,
-      parent,
+      treeLinks,
       nodeCom,
-      nodeMass,
-      nodeSize,
+      nodeAttrs,
       visitCount,
       fallbackNodeFlags,
       fallbackNodeMass,
@@ -552,42 +618,31 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     // Shared radix sort bind groups
     const sort = createRadixSortBindGroups(device, p.sort, b.sortBuffers);
 
-    // After 8 passes (even number), results are in keysA/valuesA
+    // Tree bind group entries, parameterised by which half of the sort's
+    // ping-pong pair holds its output: 8 passes (even) leave it in keysA/
+    // valuesA, the 1-pass simple sort in keysB/valuesB.
+    const treeEntries = (
+      mortonCodes: GPUBuffer,
+      sortedIndices: GPUBuffer,
+    ): GPUBindGroupEntry[] => [
+      { binding: 0, resource: { buffer: b.treeUniforms } },
+      { binding: 1, resource: { buffer: mortonCodes } },
+      { binding: 2, resource: { buffer: sortedIndices } },
+      { binding: 3, resource: { buffer: context.positions } },
+      { binding: 4, resource: { buffer: b.treeLinks } },
+      { binding: 5, resource: { buffer: b.nodeCom } },
+      { binding: 6, resource: { buffer: b.nodeAttrs } },
+      { binding: 7, resource: { buffer: b.visitCount } },
+    ];
     const tree = device.createBindGroup({
       label: "BH Tree Bind Group (Full Sort)",
       layout: p.treeLayout,
-      entries: [
-        { binding: 0, resource: { buffer: b.treeUniforms } },
-        { binding: 1, resource: { buffer: b.sortBuffers.keysA } },
-        { binding: 2, resource: { buffer: b.sortBuffers.valuesA } },
-        { binding: 3, resource: { buffer: context.positions } },
-        { binding: 4, resource: { buffer: b.leftChild } },
-        { binding: 5, resource: { buffer: b.rightChild } },
-        { binding: 6, resource: { buffer: b.parent } },
-        { binding: 7, resource: { buffer: b.nodeCom } },
-        { binding: 8, resource: { buffer: b.nodeMass } },
-        { binding: 9, resource: { buffer: b.nodeSize } },
-        { binding: 10, resource: { buffer: b.visitCount } },
-      ],
+      entries: treeEntries(b.sortBuffers.keysA, b.sortBuffers.valuesA),
     });
-
-    // For simple sort (1 pass), results are in keysB/valuesB
     const treeSimpleSort = device.createBindGroup({
       label: "BH Tree Bind Group (Simple Sort)",
       layout: p.treeLayout,
-      entries: [
-        { binding: 0, resource: { buffer: b.treeUniforms } },
-        { binding: 1, resource: { buffer: b.sortBuffers.keysB } },
-        { binding: 2, resource: { buffer: b.sortBuffers.valuesB } },
-        { binding: 3, resource: { buffer: context.positions } },
-        { binding: 4, resource: { buffer: b.leftChild } },
-        { binding: 5, resource: { buffer: b.rightChild } },
-        { binding: 6, resource: { buffer: b.parent } },
-        { binding: 7, resource: { buffer: b.nodeCom } },
-        { binding: 8, resource: { buffer: b.nodeMass } },
-        { binding: 9, resource: { buffer: b.nodeSize } },
-        { binding: 10, resource: { buffer: b.visitCount } },
-      ],
+      entries: treeEntries(b.sortBuffers.keysB, b.sortBuffers.valuesB),
     });
 
     // Leaf init bind groups, one per sort output, over the narrower layout
@@ -595,11 +650,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       { binding: 0, resource: { buffer: b.treeUniforms } },
       { binding: 2, resource: { buffer: sortedIndices } },
       { binding: 3, resource: { buffer: context.positions } },
-      { binding: 7, resource: { buffer: b.nodeCom } },
-      { binding: 8, resource: { buffer: b.nodeMass } },
-      { binding: 9, resource: { buffer: b.nodeSize } },
-      { binding: 10, resource: { buffer: b.visitCount } },
-      { binding: 11, resource: { buffer: nodeMass } },
+      { binding: 5, resource: { buffer: b.nodeCom } },
+      { binding: 6, resource: { buffer: b.nodeAttrs } },
+      { binding: 7, resource: { buffer: b.visitCount } },
+      { binding: 8, resource: { buffer: nodeMass } },
     ];
     const leaf = device.createBindGroup({
       label: "BH Leaf Init Bind Group (Full Sort)",
@@ -620,14 +674,12 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: b.traverseUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
-        { binding: 3, resource: { buffer: b.leftChild } },
-        { binding: 4, resource: { buffer: b.rightChild } },
-        { binding: 5, resource: { buffer: b.nodeCom } },
-        { binding: 6, resource: { buffer: b.nodeMass } },
-        { binding: 7, resource: { buffer: b.nodeSize } },
-        { binding: 8, resource: { buffer: nodeFlags } },
-        { binding: 9, resource: { buffer: nodeMass } },
-        { binding: 10, resource: { buffer: lodLiveIndices(context, b.lodFallbacks) } },
+        { binding: 3, resource: { buffer: b.treeLinks } },
+        { binding: 4, resource: { buffer: b.nodeCom } },
+        { binding: 5, resource: { buffer: b.nodeAttrs } },
+        { binding: 6, resource: { buffer: nodeFlags } },
+        { binding: 7, resource: { buffer: nodeMass } },
+        { binding: 8, resource: { buffer: lodLiveIndices(context, b.lodFallbacks) } },
       ],
     });
 
@@ -709,7 +761,10 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     // for clear/topology/leaves; record i >= 1 is for the i-th aggregation
     // dispatch (aggregation_pass = i + 1; leaves are stamped 1).
     // struct TreeUniforms { node_count: u32, bounds_min_x: f32, bounds_min_y: f32, bounds_max_x: f32,
-    //                       bounds_max_y: f32, root_size: f32, aggregation_pass: u32, _padding: u32 }
+    //                       bounds_max_y: f32, root_size: f32, aggregation_pass: u32, node_capacity: u32 }
+    // Every record carries node_capacity, not just record 0: the aggregation
+    // dispatches read whichever record was copied in, and a zero there would
+    // fold the tree_links and node_attrs regions onto region 0.
     const treeData = new ArrayBuffer(TREE_UNIFORMS_RECORDS * TREE_UNIFORMS_SIZE);
     const treeView = new DataView(treeData);
     for (let rec = 0; rec < TREE_UNIFORMS_RECORDS; rec++) {
@@ -721,7 +776,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
       treeView.setFloat32(base + 16, boundsMaxY, true);
       treeView.setFloat32(base + 20, rootSize, true);
       treeView.setUint32(base + 24, rec === 0 ? 0 : rec + 1, true); // aggregation_pass
-      treeView.setUint32(base + 28, 0, true);
+      treeView.setUint32(base + 28, b.maxNodes, true); // node_capacity
     }
     device.queue.writeBuffer(b.treeUniformsStaging, 0, treeData);
     // Seed the live uniform with record 0 for the setup phases; the
@@ -730,7 +785,7 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
 
     // Traverse uniforms (32 bytes)
     // struct ForceUniforms { particle_count: u32, repulsion_strength: f32, theta: f32, min_distance: f32,
-    //                        leaf_size: f32, max_distance: f32, active_count: u32, _pad3: u32 }
+    //                        leaf_size: f32, max_distance: f32, active_count: u32, node_capacity: u32 }
     const leafSize = rootSize / 256.0; // Approximate leaf size
     // The traversal dispatch and the shader's bound must both come from this
     // one number, or threads read past the end of the list.
@@ -744,7 +799,9 @@ export class BarnesHutForceAlgorithm implements ForceAlgorithm {
     traverseView.setFloat32(16, leafSize, true);
     traverseView.setFloat32(20, context.forceConfig.repulsionDistanceMax, true);
     traverseView.setUint32(24, this.lastActiveCount, true); // active_count
-    traverseView.setUint32(28, 0, true);
+    // The same region strides the tree passes were built with; the traversal
+    // reads treeLinks and nodeAttrs through the identical maps.
+    traverseView.setUint32(28, b.maxNodes, true); // node_capacity
     device.queue.writeBuffer(b.traverseUniforms, 0, traverseData);
 
     // Radix sort uniforms (scan + per-pass staging)

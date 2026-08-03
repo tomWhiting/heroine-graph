@@ -25,7 +25,7 @@
  *   repelled every survivor outward from a point where nothing was drawn.
  */
 
-import { assert, assertEquals } from "jsr:@std/assert@^1";
+import { assert, assertEquals, assertStrictEquals } from "jsr:@std/assert@^1";
 import {
   createAlgorithmSimHarness,
   GPU_SKIP_MESSAGE,
@@ -119,8 +119,7 @@ const FORBIDDEN_IN_BASELINE = [
   "* count",
   "inv_mass",
   "node_mass[",
-  "live_edge_idx[",
-  "bundles[",
+  "lod_edge_set[",
 ];
 
 const ATTRACTION_SHADERS: readonly AttractionShader[] = [
@@ -1243,3 +1242,90 @@ gpuTest("barnes-hut: the traversal dispatch is the active list", async (device) 
     "the remaining particles must still be traversed",
   );
 });
+
+// =============================================================================
+// Section 8 — the flat LOD edge set: one buffer, two regions
+// =============================================================================
+
+/**
+ * Each bundled attraction shader addresses the bundle table at an offset equal
+ * to the live-edge count, because the two lists share one storage buffer:
+ * apart they put the pass at nine storage buffers against a WebGPU default of
+ * eight, which is not slower but unselectable. Every shader carries its own
+ * copy of that arithmetic (`bundle_base`), so every shader needs its own proof.
+ *
+ * The proof is a base shift. `twoModules()` collapsed leaves no edge with two
+ * visible endpoints, so an active-edge list naming every source edge is
+ * gathered, masked and contributes nothing at all — not a zero added to a sum.
+ * Running once with an empty live region and once with a full one therefore
+ * changes only where the bundle sits in the buffer, and the two runs must
+ * agree BIT FOR BIT: one bundle means one contribution per node, so the
+ * force-accumulation CAS loop has nothing to reorder. A base stuck at zero
+ * reads live-edge indices as `[source, target, weight]` triples instead, and
+ * attracts whichever slots they happen to name.
+ *
+ * Relativity Atlas is covered by the force-atlas2 case: it runs the same
+ * fa2_attraction.comp.wgsl module.
+ */
+for (const plugin of PLUGINS) {
+  gpuTest(
+    `flat layout: ${plugin.id} bases the bundle region at the live-edge count`,
+    async (device) => {
+      const algorithm = await plugin.load();
+      const fixture = twoModules();
+      const graph: HarnessGraphData = {
+        nodeCount: fixture.nodeCount,
+        positionsX: fixture.positionsX,
+        positionsY: fixture.positionsY,
+        edgeSources: fixture.edgeSources,
+        edgeTargets: fixture.edgeTargets,
+        depths: fixture.depths,
+        flags: fixture.collapsedFlags,
+        mass: fixture.collapsedMass,
+      };
+      const aggregation = aggregate(fixture.edgeSources, fixture.edgeTargets, fixture);
+      assertEquals(aggregation.liveEdges.length, 0, "the collapse must leave no visible edge");
+
+      const run = async (liveEdges: Uint32Array): Promise<PositionSnapshot> => {
+        const harness = await createAlgorithmSimHarness(
+          device,
+          algorithm,
+          graph,
+          PLUGIN_CONFIG,
+        );
+        try {
+          harness.setEdgeBundles(liveEdges, aggregation.bundles);
+          assertEquals(harness.activeEdgeCount, liveEdges.length);
+          assertEquals(harness.bundleCount, 1);
+          await harness.tick(8);
+          return await harness.readPositions();
+        } finally {
+          harness.dispose();
+        }
+      };
+
+      // Every source edge: each has a hidden endpoint under this cut, so the
+      // whole list is inert and only the bundle's region base moves.
+      const inert = new Uint32Array(fixture.edgeSources.length);
+      for (let e = 0; e < inert.length; e++) inert[e] = e;
+      assert(inert.length > 0, "the shifted run needs a non-empty live-edge region");
+
+      const based = await run(new Uint32Array(0));
+      const shifted = await run(inert);
+
+      assertEquals(countNonFinite(based.x, based.y), 0);
+      for (let slot = 0; slot < fixture.nodeCount; slot++) {
+        assertStrictEquals(
+          shifted.x[slot],
+          based.x[slot],
+          `slot ${slot} x moved when the bundle region shifted by ${inert.length} words`,
+        );
+        assertStrictEquals(
+          shifted.y[slot],
+          based.y[slot],
+          `slot ${slot} y moved when the bundle region shifted by ${inert.length} words`,
+        );
+      }
+    },
+  );
+}

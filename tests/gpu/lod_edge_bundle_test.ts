@@ -569,7 +569,7 @@ function stripBundling(shipped: string): string {
 
   // Code references, not mentions: the uniform struct's comment still names
   // the fields the bundled entry point reads.
-  for (const survivor of ["* weight", "inv_mass", "node_mass[", "live_edge_idx[", "bundles["]) {
+  for (const survivor of ["* weight", "inv_mass", "node_mass[", "lod_edge_set["]) {
     assert(!source.includes(survivor), `"${survivor}" must not survive in the reference`);
   }
   return source;
@@ -833,8 +833,7 @@ gpuTest("activeEdges: with 90% hidden the spring pass covers the cut, not the gr
     flags: cut.flags,
   }, SC005_CONFIG);
   try {
-    const bundleBuffer = harness.edgeBundlesBuffer;
-    const liveEdgeBuffer = harness.liveEdgeIndicesBuffer;
+    const edgeSetBuffer = harness.lodEdgeSetBuffer;
 
     harness.setEdgeBundles(aggregation.liveEdges, aggregation.bundles);
     const dispatched = harness.activeEdgeCount + harness.bundleCount;
@@ -849,8 +848,7 @@ gpuTest("activeEdges: with 90% hidden the spring pass covers the cut, not the gr
     harness.clearEdgeBundles();
     assertEquals(harness.activeEdgeCount, 0);
     assertEquals(harness.bundleCount, 0);
-    assertStrictEquals(harness.edgeBundlesBuffer, bundleBuffer);
-    assertStrictEquals(harness.liveEdgeIndicesBuffer, liveEdgeBuffer);
+    assertStrictEquals(harness.lodEdgeSetBuffer, edgeSetBuffer);
   } finally {
     harness.dispose();
   }
@@ -898,4 +896,81 @@ gpuTest("activeEdges: a stale live-edge list is slower, never wrong", async (dev
     observed <= Math.max(floor * FLOOR_MARGIN, ABSOLUTE_FLOOR),
     `the stale list changed the layout by ${observed}, beyond the pipeline's own ${floor}`,
   );
+});
+
+// =============================================================================
+// The flat layout: one buffer, two regions
+// =============================================================================
+
+/**
+ * The active-edge list and the bundle table share one storage buffer, packed
+ * head to tail, because a per-edge pass that binds both separately is at nine
+ * storage buffers against a WebGPU default of eight — see the region map above
+ * `uploadEdgeBundles` in simulation/pipeline.ts.
+ *
+ * That packing makes the bundle region's base the live-edge COUNT, so an
+ * addressing error is invisible whenever the live list happens to be empty and
+ * catastrophic as soon as it is not: with a base stuck at zero the shader
+ * reads live-edge indices as `[source, target, weight]` triples and springs
+ * between whatever slots they name.
+ *
+ * The fixture makes that separable. `twoModules(false)` has every edge running
+ * leaf-to-leaf with both endpoints hidden, so an active-edge list naming all of
+ * them is gathered, masked and contributes exactly nothing — no accumulation
+ * at all, not a zero added to one. The only force in the frame is the single
+ * bundle, so both runs must agree BIT FOR BIT, not within a tolerance: the
+ * accumulation set is one contribution per node either way, leaving no room
+ * for the CAS loop to reorder anything.
+ */
+gpuTest("flat layout: the bundle region is based at the live-edge count", async (device) => {
+  const fixture = twoModules(false);
+  const graph = {
+    nodeCount: fixture.nodeCount,
+    positionsX: fixture.positionsX,
+    positionsY: fixture.positionsY,
+    edgeSources: fixture.edgeSources,
+    edgeTargets: fixture.edgeTargets,
+    depths: fixture.depths,
+    flags: fixture.collapsedFlags,
+    mass: fixture.collapsedMass,
+  };
+  const bundle = Uint32Array.from([1, 2, LEAVES]);
+
+  const run = async (liveEdges: Uint32Array): Promise<PositionSnapshot> => {
+    const harness = await createSimHarness(device, graph, SPRING_ONLY);
+    try {
+      harness.setEdgeBundles(liveEdges, bundle);
+      assertEquals(harness.activeEdgeCount, liveEdges.length);
+      assertEquals(harness.bundleCount, 1);
+      await harness.tick(8);
+      return await harness.readPositions();
+    } finally {
+      harness.dispose();
+    }
+  };
+
+  const inert = identityEdgeList(fixture.edgeSources.length);
+  assert(inert.length > 0, "the shifted run needs a non-empty live-edge region");
+
+  const based = await run(new Uint32Array(0));
+  const shifted = await run(inert);
+
+  // The bundle did something, or the comparison below is vacuous.
+  assert(
+    Math.abs(based.x[2] - based.x[1]) < HALF_SEPARATION * 2,
+    "the bundle must have pulled the two proxies together",
+  );
+
+  for (let slot = 0; slot < fixture.nodeCount; slot++) {
+    assertStrictEquals(
+      shifted.x[slot],
+      based.x[slot],
+      `slot ${slot} x moved when the bundle region shifted by ${inert.length} words`,
+    );
+    assertStrictEquals(
+      shifted.y[slot],
+      based.y[slot],
+      `slot ${slot} y moved when the bundle region shifted by ${inert.length} words`,
+    );
+  }
 });

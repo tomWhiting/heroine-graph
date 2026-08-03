@@ -200,16 +200,15 @@ export interface SimulationBuffers {
   // Edge data
   edgeSources: GPUBuffer;
   edgeTargets: GPUBuffer;
-  // Active-edge list (u32 per edge): liveEdgeIndices[0, activeEdgeCount) are
-  // the source edges with both endpoints in the LOD cut, ascending. The twin
-  // of liveIndices on the node side, and allocated at edgeCapacity for the
-  // same reason: a transition is a contents write, never a reallocation.
-  liveEdgeIndices: GPUBuffer;
-  // Aggregated cross-boundary edges, three u32 per bundle
-  // ([source, target, weight]) over bundleCount entries. A bundle count can
-  // never exceed the source edge count — every bundle stands for at least one
-  // edge — so edgeCapacity bundles is a hard bound, not a heuristic.
-  edgeBundles: GPUBuffer;
+  // The LOD active-edge list and the bundle table, one behind the other in one
+  // buffer — see the LOD EDGE SET REGION MAP above uploadEdgeBundles. One
+  // buffer rather than two because a per-edge pass that binds both is at nine
+  // storage buffers, one past the WebGPU default of eight, which makes every
+  // algorithm carrying such a pass unselectable on a default-limit adapter.
+  // The twin of liveIndices on the node side, and allocated at edgeCapacity
+  // for the same reason: a transition is a contents write, never a
+  // reallocation.
+  lodEdgeSet: GPUBuffer;
   // Uniform buffers for each stage
   clearUniforms: GPUBuffer;
   repulsionUniforms: GPUBuffer;
@@ -249,8 +248,9 @@ export interface SimulationBuffers {
   // edge inside a collapsed subtree, and that must dispatch nothing rather
   // than fall back to springing every edge in the graph.
   lodEdgesActive: boolean;
-  // Entries of liveEdgeIndices and edgeBundles the bundled spring pass covers,
-  // meaningful only while lodEdgesActive.
+  // Entries of lodEdgeSet's two regions the bundled spring pass covers,
+  // meaningful only while lodEdgesActive. activeEdgeCount doubles as the
+  // bundle region's base — see the region map above uploadEdgeBundles.
   // See uploadEdgeBundles / releaseEdgeBundles / lodEdgeDispatchCount.
   activeEdgeCount: number;
   bundleCount: number;
@@ -543,9 +543,9 @@ export function createSimulationBindGroups(
     ],
   });
 
-  // Springs bind group under a live cut (bindings 0-8): the un-cut bindings
-  // plus the active-edge list, the bundle table and the per-node mass each
-  // arriving spring is divided by.
+  // Springs bind group under a live cut (bindings 0-7): the un-cut bindings
+  // plus the combined LOD edge set and the per-node mass each arriving spring
+  // is divided by.
   const springsBundled = device.createBindGroup({
     label: "Springs Bind Group (LOD bundles)",
     layout: pipeline.pipelines.springsBundled.getBindGroupLayout(0),
@@ -556,9 +556,8 @@ export function createSimulationBindGroups(
       { binding: 3, resource: { buffer: buffers.edgeSources } },
       { binding: 4, resource: { buffer: buffers.edgeTargets } },
       { binding: 5, resource: { buffer: buffers.nodeFlags } },
-      { binding: 6, resource: { buffer: buffers.liveEdgeIndices } },
-      { binding: 7, resource: { buffer: buffers.edgeBundles } },
-      { binding: 8, resource: { buffer: buffers.nodeMass } },
+      { binding: 6, resource: { buffer: buffers.lodEdgeSet } },
+      { binding: 7, resource: { buffer: buffers.nodeMass } },
     ],
   });
 
@@ -672,25 +671,58 @@ export function uploadLiveIndices(
 }
 
 /**
- * `u32`s per bundle in {@link SimulationBuffers.edgeBundles}: source, target,
- * weight. Mirrors `BUNDLE_STRIDE` in springs_simple.comp.wgsl — WGSL has no
- * preprocessor, so the constant is stated on both sides.
+ * `u32`s per bundle in the bundle region: source, target, weight. Mirrors
+ * `BUNDLE_STRIDE` in springs_simple.comp.wgsl, fa2_attraction.comp.wgsl and
+ * linlog_attraction.comp.wgsl — WGSL has no preprocessor, so the constant is
+ * stated on both sides.
  */
 export const EDGE_BUNDLE_STRIDE = 3;
+
+/**
+ * `u32`s of {@link SimulationBuffers.lodEdgeSet} per edge of capacity: one
+ * live-edge index plus one whole bundle record.
+ *
+ * Both regions are separately bounded by the source edge count — the active
+ * list is a subset of the source edges, and every bundle stands for at least
+ * one of them — so a buffer holding a full-capacity list AND a full-capacity
+ * bundle table can never overflow. Exact, not generous.
+ */
+export const LOD_EDGE_SET_WORDS_PER_EDGE = 1 + EDGE_BUNDLE_STRIDE;
 
 /**
  * Replace the LOD active-edge list and bundle table, and set the two counts
  * the bundled spring pass dispatches over.
  *
- * Contents only: both buffers are allocated at edge capacity, so a transition
- * never changes a buffer identity and never invalidates a bind group. The
- * counts move with the contents, in one call, so a caller cannot leave the
- * dispatch covering entries it did not write.
+ * ## LOD EDGE SET REGION MAP
+ *
+ * The two lists share one buffer, packed head to tail (A = `activeEdgeCount`,
+ * B = `bundleCount`, S = {@link EDGE_BUNDLE_STRIDE}), in `u32` elements:
+ *
+ * ```text
+ *   [0, A)          live edge indices: source-edge indices, ascending
+ *   [A, A + B*S)    bundle records, S words each: source, target, weight
+ * ```
+ *
+ * The bundle region's base is A itself rather than a fixed capacity offset,
+ * so no consumer needs a layout constant it does not already hold: every
+ * bundled entry point already carries A as a uniform to bound its first loop.
+ * The shaders read the map from `BUNDLE_BASE`/`BUNDLE_STRIDE` in
+ * springs_simple.comp.wgsl, fa2_attraction.comp.wgsl and
+ * linlog_attraction.comp.wgsl.
+ *
+ * Contents only: the buffer is allocated at
+ * `edgeCapacity * LOD_EDGE_SET_WORDS_PER_EDGE`, so a transition never changes
+ * a buffer identity and never invalidates a bind group. The counts move with
+ * the contents, in one call, so a caller cannot leave the dispatch covering
+ * entries it did not write.
  *
  * `liveEdges` holds source edge indices, ascending. `bundles` is
- * `[source, target, weight]` per bundle. Entries naming a slot that is flagged
- * inert are tolerated and skipped by the shader's mask, so a list that has not
- * caught up with a flag change costs a wasted thread rather than a wrong force.
+ * `[source, target, weight]` per bundle. The two are uploaded as two writes
+ * into the one buffer rather than concatenated first: the aggregation hands
+ * over views into the WASM result, and a concatenating copy would pay for the
+ * boundary twice. Entries naming a slot that is flagged inert are tolerated
+ * and skipped by the shader's mask, so a list that has not caught up with a
+ * flag change costs a wasted thread rather than a wrong force.
  *
  * @throws GraphMotherError if either list exceeds the allocated capacity.
  */
@@ -716,12 +748,12 @@ export function uploadEdgeBundles(
   buffers.activeEdgeCount = liveEdges.length;
   buffers.bundleCount = bundleCount;
   if (liveEdges.length > 0) {
-    device.queue.writeBuffer(buffers.liveEdgeIndices, 0, toArrayBuffer(liveEdges));
+    device.queue.writeBuffer(buffers.lodEdgeSet, 0, toArrayBuffer(liveEdges));
   }
   if (bundleCount > 0) {
     device.queue.writeBuffer(
-      buffers.edgeBundles,
-      0,
+      buffers.lodEdgeSet,
+      liveEdges.length * Uint32Array.BYTES_PER_ELEMENT,
       toArrayBuffer(bundles.subarray(0, bundleCount * EDGE_BUNDLE_STRIDE)),
     );
   }
@@ -731,7 +763,8 @@ export function uploadEdgeBundles(
  * Return the spring pass to the whole source edge list.
  *
  * Clearing the flag is the whole release: the un-bundled entry point binds
- * neither list, so their contents become unreachable rather than merely unused.
+ * neither region, so their contents become unreachable rather than merely
+ * unused.
  */
 export function releaseEdgeBundles(buffers: SimulationBuffers): void {
   buffers.lodEdgesActive = false;
@@ -826,20 +859,14 @@ export function createSimulationBuffers(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  // LOD edge aggregation, allocated at edge capacity so that a band transition
-  // is a contents write and never a reallocation — a reallocation would
-  // invalidate every prebuilt ping-pong bind group. Both bounds are exact
-  // rather than generous: the active-edge list is a subset of the source edges,
-  // and every bundle stands for at least one source edge.
+  // LOD edge aggregation — active-edge list then bundle table, one buffer; see
+  // the region map above uploadEdgeBundles. Allocated at edge capacity so that
+  // a band transition is a contents write and never a reallocation, which
+  // would invalidate every prebuilt ping-pong bind group.
   // COPY_SRC is for test readback only, the same allowance nodeAlpha makes.
-  const liveEdgeIndices = device.createBuffer({
-    label: "Sim Live Edge Indices",
-    size: edgeBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  const edgeBundles = device.createBuffer({
-    label: "Sim Edge Bundles",
-    size: edgeBytes * EDGE_BUNDLE_STRIDE,
+  const lodEdgeSet = device.createBuffer({
+    label: "Sim LOD Edge Set",
+    size: edgeBytes * LOD_EDGE_SET_WORDS_PER_EDGE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
 
@@ -943,8 +970,7 @@ export function createSimulationBuffers(
     prevForces,
     edgeSources,
     edgeTargets,
-    liveEdgeIndices,
-    edgeBundles,
+    lodEdgeSet,
     clearUniforms,
     repulsionUniforms,
     springUniforms,

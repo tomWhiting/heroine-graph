@@ -44,8 +44,7 @@ const BUFFER_FIELDS = [
   "nodeMass",
   "nodeDepth",
   "liveIndices",
-  "liveEdgeIndices",
-  "edgeBundles",
+  "lodEdgeSet",
   "readback",
 ] as const;
 

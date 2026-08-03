@@ -15,9 +15,10 @@ struct SpringUniforms {
     edge_count: u32,
     spring_strength: f32,
     rest_length: f32,
-    // Entries of live_edge_idx the bundled entry point gathers, and the number
-    // of LOD bundles after them. Both zero unless an LOD cut is live; `main`
-    // never reads either, which is what keeps the un-cut path unchanged.
+    // Entries of lod_edge_set's live-edge region the bundled entry point
+    // gathers, and the number of bundles after them. The first also bases the
+    // bundle region (see bundle_base). Both zero unless an LOD cut is live;
+    // `main` never reads either, which keeps the un-cut path unchanged.
     active_edge_count: u32,
     bundle_count: u32,
     _padding0: u32,
@@ -43,26 +44,43 @@ struct SpringUniforms {
 
 // --- LOD edge aggregation (main_bundled only; `main` binds none of these) ---
 
-// Indices of the source edges whose endpoints are both in the visible cut.
-// The twin of live_idx on the node side: springs dispatch over this list
-// instead of over every edge, so hiding a subtree is work that is not done
-// rather than threads that return early.
-@group(0) @binding(6) var<storage, read> live_edge_idx: array<u32>;
-
-// Aggregated cross-boundary edges, three u32 per bundle:
-// [visible_source, visible_target, weight]. `weight` is how many source edges
-// the bundle stands for and scales the spring by exactly that factor — the
-// proxy pair then sits where the two subtrees' centres of attraction sat when
-// they were expanded.
-@group(0) @binding(7) var<storage, read> bundles: array<u32>;
+// LOD EDGE SET REGION MAP (A = uniforms.active_edge_count,
+// B = uniforms.bundle_count, S = BUNDLE_STRIDE), in u32 elements:
+//   [0, A)         indices of the source edges whose endpoints are both in the
+//                  visible cut, ascending. The twin of live_idx on the node
+//                  side: springs dispatch over this list instead of over every
+//                  edge, so hiding a subtree is work that is not done rather
+//                  than threads that return early.
+//   [A, A + B*S)   aggregated cross-boundary edges, S words each:
+//                  [visible_source, visible_target, weight]. `weight` is how
+//                  many source edges the bundle stands for and scales the
+//                  spring by exactly that factor — the proxy pair then sits
+//                  where the two subtrees' centres of attraction sat when they
+//                  were expanded.
+//
+// The two regions share one binding so that this pass binds eight storage
+// buffers rather than nine. Nine exceeds the WebGPU default, which makes the
+// layout invalid and discards every frame recorded against it — see
+// ForceAlgorithmInfo.minStorageBuffersPerShaderStage. The host sizes and fills
+// the buffer in simulation/pipeline.ts (uploadEdgeBundles,
+// LOD_EDGE_SET_WORDS_PER_EDGE), where the same map is stated.
+@group(0) @binding(6) var<storage, read> lod_edge_set: array<u32>;
 
 // Per-node simulation mass (1.0 = one body). A proxy carries the mass of the
 // subtree it replaces, and the integrator has no mass term, so a spring
 // arriving at a proxy is divided by it: the proxy then accelerates like the
 // centre of mass of the bodies it stands for rather than like one of them.
-@group(0) @binding(8) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(7) var<storage, read> node_mass: array<f32>;
 
 const BUNDLE_STRIDE: u32 = 3u;
+
+// First element of the bundle region. The live-edge region is exactly
+// [0, active_edge_count), so the count that bounds the first loop is the
+// offset that addresses the second — no separate layout uniform can drift
+// out of step with it.
+fn bundle_base() -> u32 {
+    return uniforms.active_edge_count;
+}
 
 // Reciprocal of the mass an arriving spring is shared over.
 //
@@ -179,7 +197,7 @@ fn main_bundled(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
 
     if (idx < uniforms.active_edge_count) {
-        let edge_idx = live_edge_idx[idx];
+        let edge_idx = lod_edge_set[idx];
         let source_idx = edge_sources[edge_idx];
         let target_idx = edge_targets[edge_idx];
         apply_spring(
@@ -204,13 +222,13 @@ fn main_bundled(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // SC-002 forbids. What the two ends do NOT share is the *acceleration* —
     // each divides by its own mass, so a five-node module and a five-thousand
     // node one respond to the same bundle as their centres of mass would.
-    let base = bundle_idx * BUNDLE_STRIDE;
-    let source_idx = bundles[base];
-    let target_idx = bundles[base + 1u];
+    let base = bundle_base() + bundle_idx * BUNDLE_STRIDE;
+    let source_idx = lod_edge_set[base];
+    let target_idx = lod_edge_set[base + 1u];
     apply_spring(
         source_idx,
         target_idx,
-        f32(bundles[base + 2u]),
+        f32(lod_edge_set[base + 2u]),
         inverse_mass(source_idx),
         inverse_mass(target_idx),
     );

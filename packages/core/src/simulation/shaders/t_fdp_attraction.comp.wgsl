@@ -27,7 +27,7 @@
 // - main:         one thread per source edge, bindings 0-5. The un-cut path,
 //                 unchanged: it passes compile-time 1.0s for every LOD term.
 // - main_bundled: one thread per entry of the LOD active-edge list, then one
-//                 per aggregated bundle; bindings 0-8.
+//                 per aggregated bundle; bindings 0-7.
 //
 // Uses vec2<f32> layout for consolidated position/force data.
 
@@ -36,9 +36,10 @@ struct TFdpAttractionUniforms {
     alpha: f32,          // Linear spring weight (paper default: 0.1)
     beta: f32,           // Attractive t-force weight (paper default: 8.0)
     dist_scale: f32,     // world units per t-kernel unit (matches t_fdp)
-    // Entries of live_edge_idx the bundled entry point gathers, and the number
-    // of LOD bundles after them. Both zero unless an LOD cut is live; `main`
-    // never reads either, which is what keeps the un-cut path unchanged.
+    // Entries of lod_edge_set's live-edge region the bundled entry point
+    // gathers, and the number of bundles after them. The first also bases the
+    // bundle region (see bundle_base). Both zero unless an LOD cut is live;
+    // `main` never reads either, which keeps the un-cut path unchanged.
     active_edge_count: u32,
     bundle_count: u32,
     _padding0: u32,
@@ -61,20 +62,33 @@ const MIN_DISTANCE: f32 = 0.0001;
 
 // --- LOD edge aggregation (main_bundled only; `main` binds none of these) ---
 
-// Indices of the source edges whose endpoints are both in the visible cut.
-// Dispatching over this list rather than over every edge is what makes hiding a
-// subtree work that is not done rather than threads that return early.
-@group(0) @binding(6) var<storage, read> live_edge_idx: array<u32>;
-
-// Aggregated cross-boundary edges, three u32 per bundle:
-// [visible_source, visible_target, weight]. Same table springs_simple reads.
-@group(0) @binding(7) var<storage, read> bundles: array<u32>;
+// LOD EDGE SET REGION MAP (A = uniforms.active_edge_count,
+// B = uniforms.bundle_count, S = BUNDLE_STRIDE), in u32 elements:
+//   [0, A)         indices of the source edges whose endpoints are both in the
+//                  visible cut, ascending. Dispatching over this list rather
+//                  than over every edge is what makes hiding a subtree work
+//                  that is not done rather than threads that return early.
+//   [A, A + B*S)   aggregated cross-boundary edges, S words each:
+//                  [visible_source, visible_target, weight].
+//
+// The same buffer, map and contents springs_simple.comp.wgsl reads. The host
+// sizes and fills it in simulation/pipeline.ts (uploadEdgeBundles,
+// LOD_EDGE_SET_WORDS_PER_EDGE), where the same map is stated.
+@group(0) @binding(6) var<storage, read> lod_edge_set: array<u32>;
 
 // Per-node simulation mass (1.0 = one body); a proxy carries the mass of the
 // subtree it replaces. See inverse_mass.
-@group(0) @binding(8) var<storage, read> node_mass: array<f32>;
+@group(0) @binding(7) var<storage, read> node_mass: array<f32>;
 
 const BUNDLE_STRIDE: u32 = 3u;
+
+// First element of the bundle region. The live-edge region is exactly
+// [0, active_edge_count), so the count that bounds the first loop is the
+// offset that addresses the second — no separate layout uniform can drift
+// out of step with it.
+fn bundle_base() -> u32 {
+    return uniforms.active_edge_count;
+}
 
 const NODE_FLAG_DEAD: u32 = 1u;
 const NODE_FLAG_HIDDEN_LOD: u32 = 4u;
@@ -213,7 +227,7 @@ fn main_bundled(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
 
     if (idx < uniforms.active_edge_count) {
-        let edge_idx = live_edge_idx[idx];
+        let edge_idx = lod_edge_set[idx];
         let src = edge_sources[edge_idx];
         let tgt = edge_targets[edge_idx];
         apply_attraction(src, tgt, 1.0, inverse_mass(src), inverse_mass(tgt));
@@ -229,13 +243,13 @@ fn main_bundled(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // because the two ends also repel with the mass of the subtrees they stand
     // for: capping attraction alone would leave repulsion unopposed and move
     // the equilibrium the expanded layout had.
-    let base = bundle_idx * BUNDLE_STRIDE;
-    let src = bundles[base];
-    let tgt = bundles[base + 1u];
+    let base = bundle_base() + bundle_idx * BUNDLE_STRIDE;
+    let src = lod_edge_set[base];
+    let tgt = lod_edge_set[base + 1u];
     apply_attraction(
         src,
         tgt,
-        f32(bundles[base + 2u]),
+        f32(lod_edge_set[base + 2u]),
         inverse_mass(src),
         inverse_mass(tgt),
     );

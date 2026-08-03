@@ -22,7 +22,7 @@
  *   agrees with direct summation.
  */
 
-import { assert, assertEquals, assertThrows } from "jsr:@std/assert@^1";
+import { assert, assertEquals } from "jsr:@std/assert@^1";
 import {
   createAlgorithmSimHarness,
   GPU_SKIP_MESSAGE,
@@ -44,14 +44,15 @@ if (!adapter) {
   console.warn(`[gpu] ${GPU_SKIP_MESSAGE}`);
 }
 
-// The Karras tree bind group uses 10 storage buffers; production requests
-// this limit in webgpu/context.ts (default is 8), so the tests must too.
-const REQUIRED_STORAGE_BUFFERS = 10;
+// The traversal pass is Barnes-Hut's widest bind group at 8 storage buffers,
+// which is the WebGPU default, so every conformant adapter clears this.
+const REQUIRED_STORAGE_BUFFERS = 8;
 const limitSupported = adapter !== null &&
   adapter.limits.maxStorageBuffersPerShaderStage >= REQUIRED_STORAGE_BUFFERS;
 if (adapter && !limitSupported) {
   console.warn(
-    "[gpu] adapter supports fewer than 10 storage buffers per stage — Barnes-Hut tests skipped",
+    `[gpu] adapter supports fewer than ${REQUIRED_STORAGE_BUFFERS} storage buffers per stage ` +
+      "— Barnes-Hut tests skipped",
   );
 }
 
@@ -530,31 +531,33 @@ gpuTest(
 );
 
 Deno.test({
-  name: "GPU Barnes-Hut: an under-limit device is refused by name, not left frozen",
+  name: "GPU Barnes-Hut: a default-limit device builds every pipeline",
   ignore: adapter === null,
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
-    // The failure this guards is silent: the Karras tree layout binds 10
-    // storage buffers, so on an 8-buffer device the LAYOUT is invalid, the
-    // bind group poisons the compute pass, the pass poisons the encoder, and
-    // submit() drops the whole frame — springs and integration with it. The
-    // simulation then looks inert rather than broken (this is what made
-    // Barnes-Hut appear to produce zero motion in the parity harness, whose
-    // device had the default limit).
+    // The failure this guards is silent: a bind group layout over more storage
+    // buffers than the device supplies is INVALID, binding it poisons the
+    // compute pass, the pass poisons the encoder, and submit() drops the whole
+    // frame — springs and integration with it. The simulation then looks inert
+    // rather than broken, which is what made Barnes-Hut appear to produce zero
+    // motion in the parity harness, whose device had the default limit.
+    //
+    // The flat tree_links / node_attrs layouts brought the widest pass down to
+    // exactly the default of 8, so the correct assertion is now that a
+    // default-limit device is served rather than refused. `assertAlgorithmSup-
+    // portedOnDevice`'s refusal path is covered without a GPU in
+    // tests/unit/algorithm_device_limits_test.ts, which is the only way to
+    // reach it: wgpu clamps a below-default requiredLimits request back up to
+    // the default, so no real device reports fewer than 8.
     const device = await adapter!.requestDevice({
       requiredLimits: { maxStorageBuffersPerShaderStage: 8 },
     });
     try {
       assertEquals(device.limits.maxStorageBuffersPerShaderStage, 8);
       const bh = await loadBarnesHut();
-      const error = assertThrows(
-        () => bh.createPipelines({ device }),
-        Error,
-        "maxStorageBuffersPerShaderStage",
-      );
-      assertEquals(error.name, "GraphMotherError");
-      assert(error.message.includes("10"), "the error must name the requirement");
+      const pipelines = bh.createPipelines({ device });
+      assert(pipelines !== undefined, "every Barnes-Hut pipeline must build at the default limit");
     } finally {
       device.destroy();
     }

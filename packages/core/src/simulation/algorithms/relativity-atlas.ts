@@ -32,10 +32,9 @@ import type {
 import {
   type AlgorithmLodFallbacks,
   createAlgorithmLodFallbacks,
-  lodEdgeBundles,
   type LodEdgeDispatch,
   lodEdgeDispatch,
-  lodLiveEdgeIndices,
+  lodEdgeSet,
   lodNodeMass,
 } from "./lod_bindings.ts";
 
@@ -57,8 +56,15 @@ const RELATIVITY_ATLAS_INFO: ForceAlgorithmInfo = {
   minNodes: 100,
   maxNodes: -1, // Unlimited
   complexity: "O(N + E)",
-  // The sibling-repulsion pass binds 9 storage buffers; the default is 8.
-  minStorageBuffersPerShaderStage: 9,
+  // Two passes tie for the widest layout and both sit exactly on the WebGPU
+  // default. Sibling repulsion binds positions, forces, the merged inverse
+  // CSR, the forward CSR's two rows, node mass, well radius and node flags;
+  // bundled attraction binds its six un-cut buffers plus the merged LOD edge
+  // set and node mass. Each was 9 before its merge, and 9 is not slower but
+  // unselectable — the layout is invalid on a default-limit adapter. Declared
+  // rather than omitted so a ninth binding fails a test instead of silently
+  // costing the algorithm those adapters.
+  minStorageBuffersPerShaderStage: 8,
 };
 
 // Configuration constants
@@ -141,11 +147,35 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   densityLayout: GPUBindGroupLayout;
 }
 
+/** Byte size of FA2AttractionUniforms in fa2_attraction.comp.wgsl. */
+const RA_ATTRACTION_UNIFORM_BYTES = 32;
+
+/**
+ * First element of the source region of {@link RelativityAtlasBuffers.csrInverse}.
+ *
+ * ## INVERSE CSR REGION MAP
+ *
+ * One buffer, two regions, in `u32` elements (N = `maxNodes`, E = `maxEdges`):
+ *
+ * ```text
+ *   [0, N+1)              offset row: incoming edges of node i are the source
+ *                         entries [offsets[i], offsets[i+1])
+ *   [N+1, N+1+E)          source row: the slot each incoming edge comes from
+ * ```
+ *
+ * The base is the allocated offset-row length, not the live node count, so a
+ * graph change rewrites the regions in place and never moves them. It is
+ * uploaded to the shaders as `csr_inverse_sources_base`, which
+ * relativity_degrees.comp.wgsl and relativity_sibling.comp.wgsl state the same
+ * map against.
+ */
+function csrInverseSourcesBase(maxNodes: number): number {
+  return maxNodes + 1;
+}
+
 /**
  * Relativity Atlas algorithm-specific buffers
  */
-/** Byte size of FA2AttractionUniforms in fa2_attraction.comp.wgsl. */
-const RA_ATTRACTION_UNIFORM_BYTES = 32;
 
 export class RelativityAtlasBuffers implements AlgorithmBuffers {
   constructor(
@@ -157,9 +187,18 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
     // CSR edge data (outgoing edges)
     public csrOffsets: GPUBuffer,
     public csrTargets: GPUBuffer,
-    // Inverse CSR (incoming edges / parents)
-    public csrInverseOffsets: GPUBuffer,
-    public csrInverseSources: GPUBuffer,
+    /**
+     * Inverse CSR (incoming edges / parents): the offset row then the source
+     * row, one buffer, two regions — see {@link csrInverseSourcesBase}.
+     *
+     * Merged because the sibling pass reads both and, with them apart, binds
+     * nine storage buffers in one stage against a WebGPU default of eight,
+     * which makes Relativity Atlas unselectable on a default-limit adapter.
+     * The forward pair is deliberately NOT merged: no pass is over the limit
+     * because of it, and merging it would put a second region base in three
+     * more uniform structs to buy headroom nothing needs.
+     */
+    public csrInverse: GPUBuffer,
     // Computed data
     public degrees: GPUBuffer, // [out_deg, in_deg] pairs
     public mass: GPUBuffer, // Ping buffer
@@ -204,8 +243,7 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
 
     this.csrOffsets.destroy();
     this.csrTargets.destroy();
-    this.csrInverseOffsets.destroy();
-    this.csrInverseSources.destroy();
+    this.csrInverse.destroy();
 
     this.degrees.destroy();
     this.mass.destroy();
@@ -301,9 +339,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // csr_inverse
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
 
@@ -330,13 +367,12 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // csr_inverse
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // well_radius
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // well_radius
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }, // node_flags
       ],
     });
 
@@ -403,17 +439,16 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       bindGroupLayouts: [attractionLayout],
     });
 
-    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
-    // the bundle table and the per-node mass each arriving pull is divided by.
-    // Nine storage buffers in one stage — exactly the limit the sibling pass
-    // already forces this algorithm to declare.
+    // Bundled attraction: the un-cut bindings plus the combined LOD edge set
+    // and the per-node mass each arriving pull is divided by. Eight storage
+    // buffers, the WebGPU default, exactly — the same ceiling the sibling pass
+    // sits on.
     const attractionBundledLayout = device.createBindGroupLayout({
       label: "RA Attraction Layout (LOD bundles)",
       entries: [
         ...attractionEntries,
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -588,15 +623,10 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    const csrInverseOffsets = device.createBuffer({
-      label: "RA CSR Inverse Offsets",
-      size: offsetBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    const csrInverseSources = device.createBuffer({
-      label: "RA CSR Inverse Sources",
-      size: edgeBytes,
+    // Offset row then source row; see csrInverseSourcesBase for the map.
+    const csrInverse = device.createBuffer({
+      label: "RA CSR Inverse",
+      size: offsetBytes + edgeBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -688,8 +718,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       gravityUniforms,
       csrOffsets,
       csrTargets,
-      csrInverseOffsets,
-      csrInverseSources,
+      csrInverse,
       degrees,
       mass,
       massOut,
@@ -728,9 +757,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: b.degreesUniforms } },
         { binding: 1, resource: { buffer: b.csrOffsets } },
         { binding: 2, resource: { buffer: b.csrTargets } },
-        { binding: 3, resource: { buffer: b.csrInverseOffsets } },
-        { binding: 4, resource: { buffer: b.csrInverseSources } },
-        { binding: 5, resource: { buffer: b.degrees } },
+        { binding: 3, resource: { buffer: b.csrInverse } },
+        { binding: 4, resource: { buffer: b.degrees } },
       ],
     });
 
@@ -790,13 +818,12 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         { binding: 0, resource: { buffer: b.siblingUniforms } },
         { binding: 1, resource: { buffer: context.positions } },
         { binding: 2, resource: { buffer: context.forces } },
-        { binding: 3, resource: { buffer: b.csrInverseOffsets } },
-        { binding: 4, resource: { buffer: b.csrInverseSources } },
-        { binding: 5, resource: { buffer: b.csrOffsets } },
-        { binding: 6, resource: { buffer: b.csrTargets } },
-        { binding: 7, resource: { buffer: b.massOut } }, // Final mass is in massOut
-        { binding: 8, resource: { buffer: b.wellRadius } },
-        { binding: 9, resource: { buffer: nodeFlags } },
+        { binding: 3, resource: { buffer: b.csrInverse } },
+        { binding: 4, resource: { buffer: b.csrOffsets } },
+        { binding: 5, resource: { buffer: b.csrTargets } },
+        { binding: 6, resource: { buffer: b.massOut } }, // Final mass is in massOut
+        { binding: 7, resource: { buffer: b.wellRadius } },
+        { binding: 8, resource: { buffer: nodeFlags } },
       ],
     });
 
@@ -847,9 +874,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       layout: p.attractionBundledLayout,
       entries: [
         ...attractionEntries,
-        { binding: 7, resource: { buffer: lodLiveEdgeIndices(context, b.lodFallbacks) } },
-        { binding: 8, resource: { buffer: lodEdgeBundles(context, b.lodFallbacks) } },
-        { binding: 9, resource: { buffer: lodNodeMass(context, b.lodFallbacks) } },
+        { binding: 7, resource: { buffer: lodEdgeSet(context, b.lodFallbacks) } },
+        { binding: 8, resource: { buffer: lodNodeMass(context, b.lodFallbacks) } },
       ],
     });
 
@@ -911,12 +937,13 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     const edgeCount = context.edgeCount;
 
     // Degrees uniforms (16 bytes)
-    // Struct layout: { node_count: u32, edge_count: u32, _padding: vec2<u32> }
+    // Struct layout: { node_count: u32, edge_count: u32,
+    //                  csr_inverse_sources_base: u32, _padding: u32 }
     const degreesData = new ArrayBuffer(16);
     const degreesView = new DataView(degreesData);
     degreesView.setUint32(0, context.nodeCount, true);
     degreesView.setUint32(4, edgeCount, true);
-    degreesView.setUint32(8, 0, true); // padding
+    degreesView.setUint32(8, csrInverseSourcesBase(b.maxNodes), true);
     degreesView.setUint32(12, 0, true); // padding
     device.queue.writeBuffer(b.degreesUniforms, 0, degreesData);
 
@@ -941,7 +968,10 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     //                  cousin_enabled: u32, cousin_strength: f32,
     //                  phantom_enabled: u32, phantom_multiplier: f32,
     //                  orbit_strength: f32, tangential_multiplier: f32,
-    //                  orbit_radius_base: f32, bubble_mode: u32, orbit_scale: f32 }
+    //                  orbit_radius_base: f32, bubble_mode: u32, orbit_scale: f32,
+    //                  csr_inverse_sources_base: u32 }
+    // The last field lands in what used to be the struct's implicit tail
+    // padding, so the buffer stays 64 bytes.
     const siblingData = new ArrayBuffer(64);
     const siblingView = new DataView(siblingData);
     siblingView.setUint32(0, context.nodeCount, true);
@@ -959,6 +989,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     siblingView.setFloat32(48, context.forceConfig.relativityOrbitRadius, true);
     siblingView.setUint32(52, context.forceConfig.relativityBubbleMode ? 1 : 0, true); // bubble_mode
     siblingView.setFloat32(56, context.forceConfig.relativityBubbleOrbitScale, true); // orbit_scale
+    siblingView.setUint32(60, csrInverseSourcesBase(b.maxNodes), true);
     device.queue.writeBuffer(b.siblingUniforms, 0, siblingData);
 
     // Gravity uniforms (32 bytes)
@@ -1467,15 +1498,21 @@ export function uploadRelativityAtlasEdges(
     device.queue.writeBuffer(b.csrTargets, 0, forwardTargetBuffer);
   }
 
-  // Upload inverse CSR offsets
+  // Upload the inverse CSR's two regions into the one buffer they share; see
+  // csrInverseSourcesBase for the map. Two writes rather than a concatenated
+  // one: the regions are allocated at capacity, so the source row starts at a
+  // fixed offset whatever the live offset row's length.
   const inverseOffsetBuffer = new ArrayBuffer(inverseCSR.offsets.byteLength);
   new Uint32Array(inverseOffsetBuffer).set(inverseCSR.offsets);
-  device.queue.writeBuffer(b.csrInverseOffsets, 0, inverseOffsetBuffer);
+  device.queue.writeBuffer(b.csrInverse, 0, inverseOffsetBuffer);
 
-  // Upload inverse CSR sources
   if (inverseCSR.indices.length > 0) {
     const inverseSourceBuffer = new ArrayBuffer(inverseCSR.indices.byteLength);
     new Uint32Array(inverseSourceBuffer).set(inverseCSR.indices);
-    device.queue.writeBuffer(b.csrInverseSources, 0, inverseSourceBuffer);
+    device.queue.writeBuffer(
+      b.csrInverse,
+      csrInverseSourcesBase(b.maxNodes) * Uint32Array.BYTES_PER_ELEMENT,
+      inverseSourceBuffer,
+    );
   }
 }

@@ -30,7 +30,12 @@ struct TreeUniforms {
     bounds_max_y: f32,
     root_size: f32,
     aggregation_pass: u32,  // Current aggregate_pass dispatch (2, 3, ...); leaves are stamped 1
-    _padding: u32,
+    // Particle capacity the bound buffers were ALLOCATED at, which is what the
+    // region strides of tree_links and node_attrs below are derived from. It
+    // is fixed for the lifetime of a buffer set, unlike node_count, so region
+    // bases never move between frames. Every TreeUniforms record the host
+    // stages carries it — a zero here would fold every region onto region 0.
+    node_capacity: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: TreeUniforms;
@@ -45,18 +50,50 @@ struct TreeUniforms {
 // Original particle positions - vec2<f32> per particle
 @group(0) @binding(3) var<storage, read> positions: array<vec2<f32>>;
 
-// Tree structure (N-1 internal nodes)
-// Negative values indicate leaf index: child = -(leaf_idx + 1)
-@group(0) @binding(4) var<storage, read_write> left_child: array<i32>;
-@group(0) @binding(5) var<storage, read_write> right_child: array<i32>;
-@group(0) @binding(6) var<storage, read_write> parent: array<i32>;
+// TREE_LINKS REGION MAP (C = uniforms.node_capacity, I = max(C - 1, 1) the
+// internal-node capacity, T = 2C - 1 the tree-node capacity), in i32 elements.
+// Child references are the Karras encoding throughout: a negative value is the
+// leaf -(leaf_idx + 1), a non-negative value is an internal node index.
+//
+//   [0, I)              left_child: left child of internal node i
+//   [I, 2I)             right_child: right child of internal node i
+//   [2I, 2I + T)        parent: parent of tree node i (internal 0..N-2, then
+//                       leaves N-1..2N-2), -1 at the root and on clear
+//
+// Regions are CONCATENATED, not interleaved: each keeps the contiguous
+// per-index access pattern (and coalescing) it had as a standalone buffer.
+// The two child regions are the shorter I because only internal nodes have
+// children, while every tree node has a parent slot.
+//
+// Merged because the four tree passes read the three arrays together and, kept
+// apart, this layout binds ten storage buffers in one stage against a WebGPU
+// default of eight — which makes the layout invalid and discards every frame
+// recorded against it, so Barnes-Hut would be unselectable on a default-limit
+// adapter. See ForceAlgorithmInfo.minStorageBuffersPerShaderStage.
+//
+// The host sizes the buffer in algorithms/barnes-hut.ts (treeLinksElements),
+// where the same map is stated. The traversal shader
+// barnes_hut_binary.comp.wgsl binds the same buffer and reads the same map.
+@group(0) @binding(4) var<storage, read_write> tree_links: array<i32>;
 
-// Node properties (2N-1 total: N-1 internal + N leaves)
-// Internal nodes: indices 0..N-2
-// Leaf nodes: indices N-1..2N-2
-@group(0) @binding(7) var<storage, read_write> node_com: array<vec2<f32>>;
-@group(0) @binding(8) var<storage, read_write> node_mass: array<f32>;
-@group(0) @binding(9) var<storage, read_write> node_size: array<f32>;
+// Node centres of mass, one per tree node (2N-1 total: N-1 internal at
+// 0..N-2, then N leaves at N-1..2N-2). Left out of node_attrs because it is
+// vec2<f32> and sharing an array<f32> binding would cost a bitcast at every
+// access for a binding slot nothing needs.
+@group(0) @binding(5) var<storage, read_write> node_com: array<vec2<f32>>;
+
+// NODE_ATTRS REGION MAP (T = 2 * uniforms.node_capacity - 1, the tree-node
+// capacity), in f32 elements, indexed by tree node exactly as node_com is:
+//
+//   [0, T)              node_mass: aggregate mass of the subtree at node i;
+//                       0 for an inert leaf or a not-yet-aggregated node
+//   [T, 2T)             node_size: geometric extent of the subtree at node i,
+//                       the numerator of the Barnes-Hut theta criterion
+//
+// Concatenated for the same reason as tree_links, and sized alongside it in
+// algorithms/barnes-hut.ts (nodeAttrsElements), which states the same map.
+// barnes_hut_binary.comp.wgsl reads it through the identical map.
+@group(0) @binding(6) var<storage, read_write> node_attrs: array<f32>;
 
 // Aggregation readiness stamps, one per tree node (2N-1). 0 = not aggregated;
 // leaves are stamped 1 by init_leaves; internal nodes are stamped with the
@@ -64,16 +101,76 @@ struct TreeUniforms {
 // while other invocations of the same dispatch may store them — the VALUE
 // read is race-free, and node data is only consumed for stamps from earlier
 // dispatches (or this thread's own writes), never same-pass strangers.
-@group(0) @binding(10) var<storage, read_write> agg_ready: array<atomic<u32>>;
+// atomic<u32> cannot share a region map with array<i32> or array<f32>, so this
+// stays a binding of its own.
+@group(0) @binding(7) var<storage, read_write> agg_ready: array<atomic<u32>>;
 
 // Per-particle simulation mass (f32 per slot, 1.0 = one body), seeding the
-// leaves the bottom-up aggregation sums. Bindings 1-10 already exhaust the 10
-// storage buffers per stage the device is asked for, so only init_leaves' own
-// pipeline layout declares this one — the shared tree layout stays at 10.
-@group(0) @binding(11) var<storage, read> particle_mass: array<f32>;
+// leaves the bottom-up aggregation sums. init_leaves is the only tree pass
+// that reads it, so only init_leaves' own pipeline layout declares it and the
+// other three passes' shared layout does not carry a binding they never use.
+@group(0) @binding(8) var<storage, read> particle_mass: array<f32>;
 
 const WORKGROUP_SIZE: u32 = 256u;
 const DEAD_INDEX_BIT: u32 = 0x80000000u;
+
+// --- Flat-buffer region accessors -------------------------------------------
+// Every read and write of the merged regions goes through these, so the offset
+// arithmetic exists once. The strides are derived from node_capacity rather
+// than published separately: two uniform words would be two things to keep in
+// step with one allocation.
+
+// Elements per child region of tree_links; matches internalNodeCapacity() in
+// algorithms/barnes-hut.ts.
+fn internal_stride() -> u32 {
+    return max(uniforms.node_capacity - 1u, 1u);
+}
+
+// Elements per per-tree-node region; matches treeNodeCapacity() in
+// algorithms/barnes-hut.ts.
+fn tree_stride() -> u32 {
+    return 2u * uniforms.node_capacity - 1u;
+}
+
+fn left_child(i: u32) -> i32 {
+    return tree_links[i];
+}
+
+fn set_left_child(i: u32, value: i32) {
+    tree_links[i] = value;
+}
+
+fn right_child(i: u32) -> i32 {
+    return tree_links[internal_stride() + i];
+}
+
+fn set_right_child(i: u32, value: i32) {
+    tree_links[internal_stride() + i] = value;
+}
+
+fn parent_of(i: u32) -> i32 {
+    return tree_links[2u * internal_stride() + i];
+}
+
+fn set_parent(i: u32, value: i32) {
+    tree_links[2u * internal_stride() + i] = value;
+}
+
+fn node_mass(i: u32) -> f32 {
+    return node_attrs[i];
+}
+
+fn set_node_mass(i: u32, value: f32) {
+    node_attrs[i] = value;
+}
+
+fn node_size(i: u32) -> f32 {
+    return node_attrs[tree_stride() + i];
+}
+
+fn set_node_size(i: u32, value: f32) {
+    node_attrs[tree_stride() + i] = value;
+}
 
 // Count leading zeros in common prefix
 fn clz(x: u32) -> u32 {
@@ -182,30 +279,30 @@ fn build_topology(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Left child
     if (min(i, j) == split) {
         // Left child is a leaf (leaf index = split)
-        left_child[idx] = -(split + 1);  // Negative indicates leaf
+        set_left_child(idx, -(split + 1));  // Negative indicates leaf
         // Set parent of leaf
-        parent[u32(n - 1 + split)] = i32(idx);
+        set_parent(u32(n - 1 + split), i32(idx));
     } else {
         // Left child is internal node
-        left_child[idx] = split;
-        parent[u32(split)] = i32(idx);
+        set_left_child(idx, split);
+        set_parent(u32(split), i32(idx));
     }
 
     // Right child
     if (max(i, j) == split + 1) {
         // Right child is a leaf (leaf index = split + 1)
-        right_child[idx] = -(split + 2);  // Negative indicates leaf
+        set_right_child(idx, -(split + 2));  // Negative indicates leaf
         // Set parent of leaf
-        parent[u32(n - 1 + split + 1)] = i32(idx);
+        set_parent(u32(n - 1 + split + 1), i32(idx));
     } else {
         // Right child is internal node
-        right_child[idx] = split + 1;
-        parent[u32(split + 1)] = i32(idx);
+        set_right_child(idx, split + 1);
+        set_parent(u32(split + 1), i32(idx));
     }
 
     // Root has no parent
     if (idx == 0u) {
-        parent[0] = -1;
+        set_parent(0u, -1);
     }
 }
 
@@ -236,11 +333,11 @@ fn init_leaves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     node_com[node_idx] = pos;
     // Inert slots stay massless; active ones carry whatever mass they were given,
     // which is 1.0 unless a collapsed LOD subtree rolled up into this slot.
-    node_mass[node_idx] = select(particle_mass[particle_idx], 0.0, is_dead);
+    set_node_mass(node_idx, select(particle_mass[particle_idx], 0.0, is_dead));
 
     // Leaf size: minimum floor to prevent zero-size leaves breaking the
     // theta criterion (size/distance < theta would always pass with size=0).
-    node_size[node_idx] = max(1.0, uniforms.root_size / 256.0);
+    set_node_size(node_idx, max(1.0, uniforms.root_size / 256.0));
 
     // Leaves are ready for aggregation from stamp 1 (aggregate passes are 2+)
     atomicStore(&agg_ready[node_idx], 1u);
@@ -283,8 +380,8 @@ fn aggregate_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // upward steps cover any well-formed tree; the cap breaks pointer cycles
     // from corrupted topology.
     for (var step = 0u; step < 64u; step += 1u) {
-        let left_idx = child_to_node_idx(left_child[node], n);
-        let right_idx = child_to_node_idx(right_child[node], n);
+        let left_idx = child_to_node_idx(left_child(node), n);
+        let right_idx = child_to_node_idx(right_child(node), n);
 
         // A child is consumable if this thread wrote it (own_child) or it was
         // stamped in an earlier dispatch (0 < stamp < p). Same-pass stamps
@@ -304,31 +401,32 @@ fn aggregate_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
             return;
         }
 
-        let left_mass = node_mass[left_idx];
-        let right_mass = node_mass[right_idx];
+        let left_mass = node_mass(left_idx);
+        let right_mass = node_mass(right_idx);
 
         if (left_mass <= 0.0) {
             // Left subtree is all dead slots — inherit the right child so a
             // dead cluster contributes neither mass nor spurious extent
             node_com[node] = node_com[right_idx];
-            node_mass[node] = right_mass;
-            node_size[node] = node_size[right_idx];
+            set_node_mass(node, right_mass);
+            set_node_size(node, node_size(right_idx));
         } else if (right_mass <= 0.0) {
             node_com[node] = node_com[left_idx];
-            node_mass[node] = left_mass;
-            node_size[node] = node_size[left_idx];
+            set_node_mass(node, left_mass);
+            set_node_size(node, node_size(left_idx));
         } else {
             let left_com = node_com[left_idx];
             let right_com = node_com[right_idx];
             let total_mass = left_mass + right_mass;
             node_com[node] = (left_com * left_mass + right_com * right_mass) / total_mass;
-            node_mass[node] = total_mass;
+            set_node_mass(node, total_mass);
 
             // Node size = distance between children's centers + max child extent.
             // This gives a proper geometric measure of the subtree's spatial span
-            // without requiring extra AABB buffers (WebGPU limits: 10 storage buffers).
+            // without requiring extra AABB buffers, which the traversal pass has
+            // no binding slot left for (see barnes_hut_binary.comp.wgsl).
             let child_dist = length(left_com - right_com);
-            node_size[node] = child_dist + max(node_size[left_idx], node_size[right_idx]);
+            set_node_size(node, child_dist + max(node_size(left_idx), node_size(right_idx)));
         }
 
         atomicStore(&agg_ready[node], p);
@@ -336,7 +434,7 @@ fn aggregate_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Walk up: this node's data is now program-order visible to this
         // thread; the parent can be aggregated if its other child is ready
         // from an earlier pass.
-        let par = parent[node];
+        let par = parent_of(node);
         if (par < 0) {
             return;
         }
@@ -365,8 +463,8 @@ fn clear_tree(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     node_com[idx] = vec2<f32>(0.0, 0.0);
-    node_mass[idx] = 0.0;
-    node_size[idx] = 0.0;
+    set_node_mass(idx, 0.0);
+    set_node_size(idx, 0.0);
 
     // Readiness stamps cover ALL nodes (internal + leaves)
     atomicStore(&agg_ready[idx], 0u);
@@ -374,11 +472,11 @@ fn clear_tree(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // CRITICAL: Initialize parent for ALL nodes (internal + leaves)
     // Without this, aggregation can follow garbage parent pointers
     // and enter an infinite loop. Leaves start at index n-1.
-    parent[idx] = -1;
+    set_parent(idx, -1);
 
     // Clear internal node structure (children)
     if (idx < n - 1u) {
-        left_child[idx] = 0;
-        right_child[idx] = 0;
+        set_left_child(idx, 0);
+        set_right_child(idx, 0);
     }
 }

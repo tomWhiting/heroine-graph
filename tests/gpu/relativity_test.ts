@@ -270,9 +270,13 @@ gpuTest(
     for (let i = 1; i <= nodeCount; i++) csrOffsets[i] = childCount;
     // Inverse CSR: parent has no parents, each child <- parent 0
     // offsets = [0, 0, 1, 2, ..., childCount]
-    const invOffsets = new Uint32Array(nodeCount + 1);
-    for (let i = 2; i <= nodeCount; i++) invOffsets[i] = i - 1;
-    const invSources = new Uint32Array(childCount); // all zeros (parent slot)
+    // The two rows share one buffer: offset row then source row, with the
+    // source row based at the offset row's length. See csrInverseSourcesBase
+    // in simulation/algorithms/relativity-atlas.ts.
+    const invSourcesBase = nodeCount + 1;
+    const csrInverse = new Uint32Array(invSourcesBase + childCount);
+    for (let i = 2; i <= nodeCount; i++) csrInverse[i] = i - 1;
+    // Source row is all zeros already: every child's only parent is slot 0.
 
     // SiblingUniforms (64 bytes). Orbit spring, parent-child repulsion,
     // phantom zones, cousins, and tangential amplification are all
@@ -295,6 +299,7 @@ gpuTest(
     view.setFloat32(48, 25, true); // orbit_radius_base
     view.setUint32(52, 0, true); // bubble_mode off
     view.setFloat32(56, 0.6, true); // orbit_scale
+    view.setUint32(60, invSourcesBase, true); // csr_inverse_sources_base
     const uniforms = device.createBuffer({
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -307,8 +312,7 @@ gpuTest(
       new Float32Array(nodeCount * 2),
       GPUBufferUsage.COPY_SRC,
     );
-    const invOffBuf = createStorageBuffer(device, invOffsets);
-    const invSrcBuf = createStorageBuffer(device, invSources);
+    const invBuf = createStorageBuffer(device, csrInverse);
     const offBuf = createStorageBuffer(device, csrOffsets);
     const tgtBuf = createStorageBuffer(device, csrTargets);
     const massBuf = createStorageBuffer(device, masses);
@@ -323,13 +327,12 @@ gpuTest(
           { binding: 0, resource: { buffer: uniforms } },
           { binding: 1, resource: { buffer: posBuf } },
           { binding: 2, resource: { buffer: forceBuf } },
-          { binding: 3, resource: { buffer: invOffBuf } },
-          { binding: 4, resource: { buffer: invSrcBuf } },
-          { binding: 5, resource: { buffer: offBuf } },
-          { binding: 6, resource: { buffer: tgtBuf } },
-          { binding: 7, resource: { buffer: massBuf } },
-          { binding: 8, resource: { buffer: wellBuf } },
-          { binding: 9, resource: { buffer: flagBuf } },
+          { binding: 3, resource: { buffer: invBuf } },
+          { binding: 4, resource: { buffer: offBuf } },
+          { binding: 5, resource: { buffer: tgtBuf } },
+          { binding: 6, resource: { buffer: massBuf } },
+          { binding: 7, resource: { buffer: wellBuf } },
+          { binding: 8, resource: { buffer: flagBuf } },
         ],
         forceBuf,
         nodeCount,
@@ -372,8 +375,7 @@ gpuTest(
           uniforms,
           posBuf,
           forceBuf,
-          invOffBuf,
-          invSrcBuf,
+          invBuf,
           offBuf,
           tgtBuf,
           massBuf,

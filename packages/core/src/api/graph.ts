@@ -113,7 +113,7 @@ import {
   createSimulationBuffers,
   createSimulationPipeline,
   DEAD_SLOT_RADIUS,
-  EDGE_BUNDLE_STRIDE,
+  LOD_EDGE_SET_WORDS_PER_EDGE,
   lodEdgeDispatchCount,
   NODE_FLAG_DEAD,
   NODE_FLAG_HIDDEN_LOD,
@@ -4237,8 +4237,7 @@ export class GraphMother {
     // === Simulation edge buffers ===
     this.simBuffers.edgeSources.destroy();
     this.simBuffers.edgeTargets.destroy();
-    this.simBuffers.liveEdgeIndices.destroy();
-    this.simBuffers.edgeBundles.destroy();
+    this.simBuffers.lodEdgeSet.destroy();
 
     const edgeBytes = Math.max(newCapacity * 4, 4);
     this.simBuffers.edgeSources = device.createBuffer({
@@ -4254,14 +4253,9 @@ export class GraphMother {
     // Not an LOD operation: the aggregation named the edge set that just
     // changed, so it is released rather than carried, and the next band
     // transition recomputes it against the new one.
-    this.simBuffers.liveEdgeIndices = device.createBuffer({
-      label: "Sim Live Edge Indices",
-      size: edgeBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-    this.simBuffers.edgeBundles = device.createBuffer({
-      label: "Sim Edge Bundles",
-      size: edgeBytes * EDGE_BUNDLE_STRIDE,
+    this.simBuffers.lodEdgeSet = device.createBuffer({
+      label: "Sim LOD Edge Set",
+      size: edgeBytes * LOD_EDGE_SET_WORDS_PER_EDGE,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
     releaseEdgeBundles(this.simBuffers);
@@ -4492,8 +4486,7 @@ export class GraphMother {
       liveIndices: view.liveIndices,
       activeCount: view.activeCount,
       lodEdgesActive: view.lodEdgesActive,
-      liveEdgeIndices: view.liveEdgeIndices,
-      edgeBundles: view.edgeBundles,
+      lodEdgeSet: view.lodEdgeSet,
       activeEdgeCount: view.activeEdgeCount,
       bundleCount: view.bundleCount,
     };
@@ -7969,8 +7962,7 @@ export class GraphMother {
       this.simBuffers.nodeMass.destroy();
       this.simBuffers.edgeSources.destroy();
       this.simBuffers.edgeTargets.destroy();
-      this.simBuffers.liveEdgeIndices.destroy();
-      this.simBuffers.edgeBundles.destroy();
+      this.simBuffers.lodEdgeSet.destroy();
       this.simBuffers.clearUniforms.destroy();
       this.simBuffers.repulsionUniforms.destroy();
       this.simBuffers.springUniforms.destroy();

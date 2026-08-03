@@ -31,10 +31,9 @@ import {
   type AlgorithmLodFallbacks,
   createAlgorithmLodFallbacks,
   lodActiveCount,
-  lodEdgeBundles,
   type LodEdgeDispatch,
   lodEdgeDispatch,
-  lodLiveEdgeIndices,
+  lodEdgeSet,
   lodLiveIndices,
   lodNodeMass,
 } from "./lod_bindings.ts";
@@ -54,12 +53,15 @@ const LINLOG_ALGORITHM_INFO: ForceAlgorithmInfo = {
   minNodes: 0,
   maxNodes: 50000,
   complexity: "O(n²)",
-  // The bundled attraction pass binds nine storage buffers in one stage: the
-  // six the un-cut pass uses, plus the LOD active-edge list, the bundle table
-  // and per-node mass. Without them a collapse DELETES a module's cross-cutting
-  // imports rather than transferring them to the proxy, so this is the price of
-  // the layout being the same layout at every zoom level, not an optimisation.
-  minStorageBuffersPerShaderStage: 9,
+  // The bundled attraction pass is the widest layout here and sits exactly on
+  // the WebGPU default: the six storage buffers the un-cut pass binds
+  // (positions, forces, edge sources, edge targets, edge weights, node flags)
+  // plus the combined LOD edge set and per-node mass. The active-edge list and
+  // the bundle table are one buffer with two regions precisely so this is 8
+  // and not 9 — at 9 the layout is invalid on a default-limit adapter and the
+  // algorithm is unselectable. Declared rather than omitted so a ninth binding
+  // fails a test instead of silently costing the algorithm those adapters.
+  minStorageBuffersPerShaderStage: 8,
 };
 
 /** Byte size of LinLogUniforms, shared by both LinLog shaders. */
@@ -201,15 +203,15 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       },
     });
 
-    // Bundled attraction: the un-cut bindings plus the LOD active-edge list,
-    // the bundle table and the per-node mass each arriving pull is divided by.
+    // Bundled attraction: the un-cut bindings plus the combined LOD edge set
+    // and the per-node mass each arriving pull is divided by. Eight storage
+    // buffers, the WebGPU default, exactly.
     const attractionBundledLayout = device.createBindGroupLayout({
       label: "LinLog Attraction Layout (LOD bundles)",
       entries: [
         ...attractionEntries,
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
 
@@ -334,9 +336,8 @@ export class LinLogAlgorithm implements ForceAlgorithm {
       layout: llPipelines.attractionBundledLayout,
       entries: [
         ...attractionEntries,
-        { binding: 7, resource: { buffer: lodLiveEdgeIndices(context, buffers.fallbacks) } },
-        { binding: 8, resource: { buffer: lodEdgeBundles(context, buffers.fallbacks) } },
-        { binding: 9, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
+        { binding: 7, resource: { buffer: lodEdgeSet(context, buffers.fallbacks) } },
+        { binding: 8, resource: { buffer: lodNodeMass(context, buffers.fallbacks) } },
       ],
     });
 
