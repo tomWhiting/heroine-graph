@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/monorepo",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "workspace": [
     "./packages/core",
     "./packages/react",
