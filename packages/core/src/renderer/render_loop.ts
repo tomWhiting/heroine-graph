@@ -66,15 +66,28 @@ export const DEFAULT_RENDER_LOOP_CONFIG: {
  * Render loop state
  */
 export interface RenderLoop {
-  /** Whether the loop is running */
+  /**
+   * Whether the loop has been started and not stopped. Independent of
+   * `isPaused`: frames are presented only while `isRunning && !isPaused`.
+   */
   readonly isRunning: boolean;
+  /**
+   * Whether presentation is suspended. A latch, not a lifecycle state — it
+   * survives `stop`/`start`, so a loop paused before it was ever started stays
+   * paused when something else starts it.
+   */
+  readonly isPaused: boolean;
   /** Current frame statistics */
   readonly stats: FrameStats;
   /** Start the render loop */
   start: () => void;
   /** Stop the render loop */
   stop: () => void;
-  /** Request a single frame render (when paused) */
+  /** Suspend presentation, keeping frame timing and stats continuous */
+  pause: () => void;
+  /** Resume presentation suspended by `pause` */
+  resume: () => void;
+  /** Request a single frame render (when not presenting) */
   requestFrame: () => void;
   /** Update configuration */
   setConfig: (config: Partial<RenderLoopConfig>) => void;
@@ -95,11 +108,14 @@ export function createRenderLoop(
 
   // State
   let isRunning = false;
+  let isPaused = false;
   let animationFrameId: number | null = null;
   let lastFrameTime = 0;
   let startTime = 0;
   let frameCount = 0;
   let lastStatsTime = 0;
+  /** Timestamp of the `pause` that owns the current suspension. */
+  let pausedAt = 0;
 
   // Frame time buffer for averaging
   const frameTimes: number[] = [];
@@ -121,7 +137,7 @@ export function createRenderLoop(
    * Main render loop function
    */
   function loop(currentTime: number): void {
-    if (!isRunning) return;
+    if (!isRunning || isPaused) return;
 
     // Schedule next frame first for consistent timing
     animationFrameId = requestAnimationFrame(loop);
@@ -186,21 +202,9 @@ export function createRenderLoop(
   }
 
   /**
-   * Start the render loop
+   * Cancel the frame this loop has in flight, if any
    */
-  function start(): void {
-    if (isRunning) return;
-
-    isRunning = true;
-    lastFrameTime = 0;
-    animationFrameId = requestAnimationFrame(loop);
-  }
-
-  /**
-   * Stop the render loop
-   */
-  function stop(): void {
-    isRunning = false;
+  function cancelPendingFrame(): void {
     if (animationFrameId !== null) {
       cancelAnimationFrame(animationFrameId);
       animationFrameId = null;
@@ -208,10 +212,71 @@ export function createRenderLoop(
   }
 
   /**
-   * Request a single frame render (when paused)
+   * Start the render loop
+   *
+   * Honours an outstanding `pause`: starting a paused loop arms it without
+   * presenting, so whoever paused stays in control of when frames resume.
+   */
+  function start(): void {
+    if (isRunning) return;
+
+    isRunning = true;
+    lastFrameTime = 0;
+    if (!isPaused) animationFrameId = requestAnimationFrame(loop);
+  }
+
+  /**
+   * Stop the render loop
+   */
+  function stop(): void {
+    isRunning = false;
+    cancelPendingFrame();
+  }
+
+  /**
+   * Suspend presentation
+   *
+   * Unlike `stop`, this preserves the loop's timing origin so `elapsed` and the
+   * frame-time average survive the suspension instead of restarting.
+   */
+  function pause(): void {
+    if (isPaused) return;
+
+    isPaused = true;
+    pausedAt = performance.now();
+    cancelPendingFrame();
+  }
+
+  /**
+   * Resume presentation suspended by `pause`
+   *
+   * The paused interval is neither a frame time nor elapsed run time, so it is
+   * discounted from both rather than landing on the first frame back as a
+   * multi-second delta.
+   */
+  function resume(): void {
+    if (!isPaused) return;
+
+    isPaused = false;
+    // A loop that never ran a frame has no timing origin to preserve; its first
+    // frame will seed one, as after `start`.
+    if (lastFrameTime !== 0) {
+      const now = performance.now();
+      const suspended = now - pausedAt;
+      startTime += suspended;
+      lastStatsTime += suspended;
+      lastFrameTime = now;
+    }
+    if (isRunning && animationFrameId === null) {
+      animationFrameId = requestAnimationFrame(loop);
+    }
+  }
+
+  /**
+   * Request a single frame render (when not presenting)
    */
   function requestFrame(): void {
-    if (isRunning) return;
+    if (isRunning && !isPaused) return;
 
     const now = performance.now();
     const deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 16.67; // Default to ~60fps
@@ -239,11 +304,16 @@ export function createRenderLoop(
     get isRunning() {
       return isRunning;
     },
+    get isPaused() {
+      return isPaused;
+    },
     get stats() {
       return { ...stats };
     },
     start,
     stop,
+    pause,
+    resume,
     requestFrame,
     setConfig,
   };

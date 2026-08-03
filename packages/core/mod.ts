@@ -248,6 +248,8 @@ export type {
   RenderLoop,
   RenderLoopConfig,
 } from "./src/renderer/render_loop.ts";
+export { RenderPauseGate } from "./src/renderer/render_pause.ts";
+export type { RenderPauseTarget } from "./src/renderer/render_pause.ts";
 
 // =============================================================================
 // GPU Commands

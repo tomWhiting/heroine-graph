@@ -126,6 +126,12 @@ graph.restartSimulation();
 Simulation control is on the instance: `startSimulation()`, `pauseSimulation()`,
 `stopSimulation()`, `restartSimulation()`, `setSimulationAlpha()`.
 
+Rendering pauses on its own axis: `pauseRendering()`, `resumeRendering()`,
+`isRenderingPaused()`. Use it when the host knows the canvas is not being seen
+while the page still is — occluded by other UI, in a collapsed panel — which
+`document.hidden` cannot report. The simulation keeps running unless paused too,
+and only `resumeRendering()` lifts a host pause.
+
 ## Layers
 
 ```ts

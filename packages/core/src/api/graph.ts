@@ -95,6 +95,7 @@ import {
   type NodeBorderConfig as _NodeBorderConfig,
 } from "../config/node_border.ts";
 import { createRenderLoop, type FrameStats, type RenderLoop } from "../renderer/render_loop.ts";
+import { RenderPauseGate } from "../renderer/render_pause.ts";
 import { createSimulationController, type SimulationController } from "../simulation/controller.ts";
 import {
   DEFAULT_FORCE_CONFIG,
@@ -772,9 +773,11 @@ export class GraphMother {
   // Default intensity buffer (all 1.0 values for density mode)
   private defaultIntensityBuffer: GPUBuffer | null = null;
 
-  // Visibility change handling - pause simulation when tab hidden
+  // Visibility change handling - pause simulation and rendering when tab hidden
   private visibilityChangeHandler: (() => void) | null = null;
   private wasRunningBeforeHidden: boolean = false;
+  /** Arbitrates the host's render pause against the visibility-driven one. */
+  private renderPause: RenderPauseGate;
 
   constructor(config: GraphMotherConfig) {
     this.gpuContext = config.gpuContext;
@@ -820,6 +823,16 @@ export class GraphMother {
     // Create render loop
     this.renderLoop = createRenderLoop((deltaTime, stats) => {
       this.renderFrame(deltaTime, stats);
+    });
+
+    // Nothing marks the scene dirty while frames are not being presented, so
+    // the first frame back must be a full draw rather than a dirty-gate skip.
+    this.renderPause = new RenderPauseGate({
+      pause: () => this.renderLoop.pause(),
+      resume: () => {
+        this.renderLoop.resume();
+        this.markRenderDirty();
+      },
     });
 
     // Create simulation controller
@@ -996,13 +1009,20 @@ export class GraphMother {
   }
 
   /**
-   * Set up visibility change handling to pause simulation when tab is hidden.
-   * This saves resources when the user switches tabs.
+   * Set up visibility change handling to pause simulation and rendering when
+   * the tab is hidden. This saves resources when the user switches tabs.
+   *
+   * A hidden tab gets throttled or stopped rAF callbacks anyway; the point of
+   * pausing rendering here is that the two suspensions stay consistent, and
+   * that the gate holds the pause across a `load` that restarts the loop.
    */
   private setupVisibilityChangeHandler(): void {
     if (typeof document === "undefined") return;
 
     this.visibilityChangeHandler = () => {
+      // The gate keeps a host pause outstanding across both edges.
+      this.renderPause.setHidden(document.hidden);
+
       if (document.hidden) {
         // Tab became hidden - pause simulation if running
         if (this.simulationController.state.status === "running") {
@@ -4965,6 +4985,50 @@ export class GraphMother {
 
     // Reheat simulation so cluster forces can take effect
     this.simulationController.setAlpha(1.0);
+  }
+
+  // ==========================================================================
+  // Public API - Render Control
+  // ==========================================================================
+
+  /**
+   * Stop presenting frames.
+   *
+   * For hosts that know the graph surface is not being seen while the page
+   * itself is visible: a canvas covered by other UI, or in a collapsed panel,
+   * still receives requestAnimationFrame callbacks and `document.hidden` stays
+   * false, so nothing inside the engine can detect the occlusion. The host can.
+   *
+   * Independent of the simulation — physics keeps converging unless
+   * {@link pauseSimulation} is called as well, and a paused renderer will show
+   * the settled layout on resume. Idempotent, and it survives anything that
+   * restarts the render loop internally: a {@link load} while paused stays
+   * paused. Only {@link resumeRendering} lifts it, never a visibility change.
+   */
+  pauseRendering(): void {
+    this.renderPause.pauseByHost();
+  }
+
+  /**
+   * Resume presenting frames after {@link pauseRendering}.
+   *
+   * The next frame is a full redraw, since nothing marks the scene dirty while
+   * presentation is suspended. A no-op when the host has not paused; if the
+   * page is hidden, frames stay suspended until it is visible again.
+   */
+  resumeRendering(): void {
+    this.renderPause.resumeByHost();
+  }
+
+  /**
+   * Whether presentation is currently suspended.
+   *
+   * True for either cause — an explicit {@link pauseRendering} or a hidden
+   * page — because what a host polling this wants to know is whether frames
+   * are reaching the screen, not who stopped them.
+   */
+  isRenderingPaused(): boolean {
+    return this.renderPause.isPaused;
   }
 
   // ==========================================================================
