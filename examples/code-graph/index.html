@@ -9,247 +9,247 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23f5a623'/%3E%3C/svg%3E"
     >
     <style>
-    :root {
-      --bg: #0b0d13;
-      --panel: #12151f;
-      --line: #232838;
-      --text: #e4e7f0;
-      --muted: #8b93a8;
-      --accent: #6ea8ff;
-      --font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      --mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
+      :root {
+        --bg: #0b0d13;
+        --panel: #12151f;
+        --line: #232838;
+        --text: #e4e7f0;
+        --muted: #8b93a8;
+        --accent: #6ea8ff;
+        --font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
 
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-    body {
-      height: 100vh;
-      display: grid;
-      grid-template-columns: 1fr 300px;
-      background: var(--bg);
-      color: var(--text);
-      font: var(--font);
-      overflow: hidden;
-    }
+      body {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        background: var(--bg);
+        color: var(--text);
+        font: var(--font);
+        overflow: hidden;
+      }
 
-    /* ---- Stage: canvas + DOM card overlay ---- */
+      /* ---- Stage: canvas + DOM card overlay ---- */
 
-    #stage {
-      position: relative;
-      overflow: hidden;
-    }
+      #stage {
+        position: relative;
+        overflow: hidden;
+      }
 
-    #canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
+      #canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
 
-    #hud {
-      position: absolute;
-      top: 12px;
-      left: 12px;
-      display: flex;
-      gap: 2px;
-      padding: 6px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(11, 13, 19, 0.82);
-      backdrop-filter: blur(6px);
-      pointer-events: none;
-    }
+      #hud {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        display: flex;
+        gap: 2px;
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(11, 13, 19, 0.82);
+        backdrop-filter: blur(6px);
+        pointer-events: none;
+      }
 
-    .hud-cell {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-width: 58px;
-      padding: 2px 8px;
-    }
+      .hud-cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 58px;
+        padding: 2px 8px;
+      }
 
-    .hud-cell + .hud-cell {
-      border-left: 1px solid var(--line);
-    }
+      .hud-cell + .hud-cell {
+        border-left: 1px solid var(--line);
+      }
 
-    .hud-value {
-      font: var(--mono);
-      font-size: 14px;
-      font-variant-numeric: tabular-nums;
-    }
+      .hud-value {
+        font: var(--mono);
+        font-size: 14px;
+        font-variant-numeric: tabular-nums;
+      }
 
-    .hud-caption {
-      color: var(--muted);
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
+      .hud-caption {
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
 
-    #status {
-      position: absolute;
-      inset: 0;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      background: rgba(11, 13, 19, 0.86);
-      color: var(--muted);
-    }
+      #status {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(11, 13, 19, 0.86);
+        color: var(--muted);
+      }
 
-    #status.is-visible {
-      display: flex;
-    }
+      #status.is-visible {
+        display: flex;
+      }
 
-    /* ---- Cards: core owns the container, this owns its contents ---- */
+      /* ---- Cards: core owns the container, this owns its contents ---- */
 
-    .card-container {
-      font: var(--font);
-    }
+      .card-container {
+        font: var(--font);
+      }
 
-    .card {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(18, 21, 31, 0.95);
-      overflow: hidden;
-    }
+      .card {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(18, 21, 31, 0.95);
+        overflow: hidden;
+      }
 
-    .card.is-hovered {
-      border-color: #3b4560;
-    }
+      .card.is-hovered {
+        border-color: #3b4560;
+      }
 
-    .card.is-selected {
-      border-color: var(--accent);
-    }
+      .card.is-selected {
+        border-color: var(--accent);
+      }
 
-    .card-title {
-      font-weight: 600;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      cursor: grab;
-      touch-action: none;
-    }
+      .card-title {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: grab;
+        touch-action: none;
+      }
 
-    .card-path {
-      font: var(--mono);
-      color: var(--muted);
-      overflow-wrap: anywhere;
-    }
+      .card-path {
+        font: var(--mono);
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
 
-    .card-stats {
-      color: var(--muted);
-      font-size: 11px;
-    }
+      .card-stats {
+        color: var(--muted);
+        font-size: 11px;
+      }
 
-    /* ---- Panel ---- */
+      /* ---- Panel ---- */
 
-    #panel {
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-      padding: 18px 16px;
-      border-left: 1px solid var(--line);
-      background: var(--panel);
-      overflow-y: auto;
-    }
+      #panel {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        padding: 18px 16px;
+        border-left: 1px solid var(--line);
+        background: var(--panel);
+        overflow-y: auto;
+      }
 
-    #panel > header {
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 12px;
-    }
+      #panel > header {
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
 
-    #panel h1 {
-      font-size: 14px;
-      font-weight: 600;
-    }
+      #panel h1 {
+        font-size: 14px;
+        font-weight: 600;
+      }
 
-    #panel header p {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 11px;
-    }
+      #panel header p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+      }
 
-    .knob {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
+      .knob {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
 
-    .knob-label {
-      color: var(--muted);
-      font-size: 11px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
+      .knob-label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
 
-    .knob-hint {
-      color: var(--muted);
-      font-size: 11px;
-      opacity: 0.75;
-    }
+      .knob-hint {
+        color: var(--muted);
+        font-size: 11px;
+        opacity: 0.75;
+      }
 
-    .knob-inline {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+      .knob-inline {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
 
-    .knob-inline input[type="range"] {
-      flex: 1;
-      min-width: 0;
-      accent-color: var(--accent);
-    }
+      .knob-inline input[type="range"] {
+        flex: 1;
+        min-width: 0;
+        accent-color: var(--accent);
+      }
 
-    .knob-inline input[type="checkbox"] {
-      accent-color: var(--accent);
-    }
+      .knob-inline input[type="checkbox"] {
+        accent-color: var(--accent);
+      }
 
-    .knob-select {
-      width: 100%;
-      padding: 6px 8px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--bg);
-      color: var(--text);
-      font: var(--font);
-    }
+      .knob-select {
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        font: var(--font);
+      }
 
-    .knob-value {
-      min-width: 38px;
-      font: var(--mono);
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-    }
+      .knob-value {
+        min-width: 38px;
+        font: var(--mono);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
 
-    .knob-button {
-      flex: 1;
-      padding: 6px 10px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--bg);
-      color: var(--text);
-      font: var(--font);
-      cursor: pointer;
-    }
+      .knob-button {
+        flex: 1;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        font: var(--font);
+        cursor: pointer;
+      }
 
-    .knob-button:hover:not(:disabled) {
-      border-color: var(--accent);
-    }
+      .knob-button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
 
-    .knob-button:disabled,
-    .knob-select:disabled,
-    input:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
+      .knob-button:disabled,
+      .knob-select:disabled,
+      input:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
     </style>
   </head>
   <body>
@@ -262,8 +262,8 @@
       <header>
         <h1>GraphMother — Code Graph</h1>
         <p>
-          Nested-bubble layout over a repository tree. Click a node to card it, double-click to
-          fold or unfold its subtree, drag a card by its title.
+          Nested-bubble layout over a repository tree. Click a node to card it, double-click to fold
+          or unfold its subtree, drag a card by its title.
         </p>
       </header>
     </aside>
