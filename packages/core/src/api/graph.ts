@@ -5928,6 +5928,22 @@ export class GraphMother {
   }
 
   /**
+   * Whether `node` is on screen standing in for a subtree that is folded away.
+   *
+   * This is the question a click handler has to ask. A proxy looks like an
+   * ordinary node — it is the parent itself, drawn at its subtree's radius — so
+   * a host that acts on the node's own type alone will treat a folded directory
+   * as a directory the user asked to open, rather than as a cluster the user
+   * asked to expand.
+   *
+   * False whenever LOD is off or has not evaluated yet, so the check is safe to
+   * make unconditionally.
+   */
+  isCollapsed(node: NodeId): boolean {
+    return this.lodController?.isCollapsed(node) ?? false;
+  }
+
+  /**
    * The lowest ancestor of `node` that is in the cut — `node` itself when it is
    * visible, or -1 when nothing on its root path is.
    */
