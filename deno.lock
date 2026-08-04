@@ -5,9 +5,9 @@
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/path@*": "1.1.4",
     "npm:@chromatic-com/storybook@^4.1.3": "4.1.3_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_@types+react@19.2.17_react@19.2.3",
-    "npm:@graphmother/wasm@0.2": "0.2.0",
+    "npm:@graphmother/wasm@0.3": "0.3.0",
     "npm:@storybook/addon-a11y@^10.1.11": "10.5.0_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_@types+react@19.2.17_react@19.2.3",
-    "npm:@storybook/addon-docs@^10.1.11": "10.5.0_@types+react@19.2.17_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_react@19.2.3_esbuild@0.24.2_@types+react-dom@19.2.3__@types+react@19.2.17_react-dom@19.2.3__react@19.2.3_@types+node@25.9.5",
+    "npm:@storybook/addon-docs@^10.1.11": "10.5.0_@types+react@19.2.17_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_react@19.2.3_esbuild@0.24.2_react-dom@19.2.3__react@19.2.3_@types+node@25.9.5",
     "npm:@storybook/addon-vitest@^10.1.11": "10.5.0_@vitest+browser-playwright@4.1.10__playwright@1.61.1__vitest@4.1.10___@types+node@25.9.5___@vitest+browser-playwright@4.1.10___@vitest+coverage-v8@4.1.10____vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____playwright@1.61.1____esbuild@0.24.2____@vitest+browser@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____esbuild@0.24.2_____vite@8.1.4___vite@8.1.4___playwright@1.61.1___esbuild@0.24.2__@types+node@25.9.5__@vitest+coverage-v8@4.1.10___vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10____vite@8.1.4____playwright@1.61.1____esbuild@0.24.2___@types+node@25.9.5___@vitest+browser-playwright@4.1.10___playwright@1.61.1___esbuild@0.24.2___@vitest+browser@4.1.10____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____vite@8.1.4_____playwright@1.61.1_____esbuild@0.24.2____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10____esbuild@0.24.2____vite@8.1.4__@vitest+browser@4.1.10___vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____playwright@1.61.1_____esbuild@0.24.2_____@vitest+browser@4.1.10____vite@8.1.4____playwright@1.61.1____esbuild@0.24.2____@vitest+browser@4.1.10___@types+node@25.9.5___@vitest+browser-playwright@4.1.10___@vitest+coverage-v8@4.1.10____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____vite@8.1.4_____playwright@1.61.1_____esbuild@0.24.2____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____playwright@1.61.1____esbuild@0.24.2____@vitest+browser@4.1.10___esbuild@0.24.2___playwright@1.61.1__esbuild@0.24.2_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_vitest@4.1.10__@types+node@25.9.5__@vitest+browser-playwright@4.1.10___playwright@1.61.1___vitest@4.1.10___@types+node@25.9.5___@vitest+coverage-v8@4.1.10____vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____playwright@1.61.1____esbuild@0.24.2____@vitest+browser@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____esbuild@0.24.2_____vite@8.1.4___@vitest+browser@4.1.10____vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____playwright@1.61.1_____esbuild@0.24.2_____@vitest+browser@4.1.10____esbuild@0.24.2____playwright@1.61.1___esbuild@0.24.2__@vitest+coverage-v8@4.1.10___vitest@4.1.10___@types+node@25.9.5___@vitest+browser-playwright@4.1.10____playwright@1.61.1____vitest@4.1.10____@types+node@25.9.5____@vitest+coverage-v8@4.1.10____@vitest+browser@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____esbuild@0.24.2_____playwright@1.61.1____esbuild@0.24.2___playwright@1.61.1___esbuild@0.24.2___@vitest+browser@4.1.10____vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10_____playwright@1.61.1_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+coverage-v8@4.1.10_____@vitest+browser@4.1.10_____esbuild@0.24.2____@vitest+coverage-v8@4.1.10____esbuild@0.24.2____vite@8.1.4__vite@8.1.4__playwright@1.61.1__esbuild@0.24.2_react@19.2.3_playwright@1.61.1_@types+react@19.2.17_@types+node@25.9.5_@vitest+coverage-v8@4.1.10__vitest@4.1.10___@types+node@25.9.5___@vitest+browser-playwright@4.1.10____playwright@1.61.1____vitest@4.1.10____@types+node@25.9.5____@vitest+coverage-v8@4.1.10____@vitest+browser@4.1.10_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____esbuild@0.24.2_____playwright@1.61.1____esbuild@0.24.2___@vitest+coverage-v8@4.1.10___vite@8.1.4___playwright@1.61.1___esbuild@0.24.2__@types+node@25.9.5__@vitest+browser-playwright@4.1.10___playwright@1.61.1___vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10____vite@8.1.4____playwright@1.61.1____esbuild@0.24.2___@types+node@25.9.5___@vitest+coverage-v8@4.1.10___@vitest+browser@4.1.10____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____vite@8.1.4_____playwright@1.61.1_____esbuild@0.24.2_____@vitest+browser@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10____@vitest+coverage-v8@4.1.10____esbuild@0.24.2____playwright@1.61.1___esbuild@0.24.2__playwright@1.61.1__esbuild@0.24.2__@vitest+browser@4.1.10___vitest@4.1.10____@types+node@25.9.5____@vitest+browser-playwright@4.1.10_____playwright@1.61.1_____vitest@4.1.10_____@types+node@25.9.5_____@vitest+coverage-v8@4.1.10_____@vitest+browser@4.1.10_____esbuild@0.24.2____@vitest+coverage-v8@4.1.10____vite@8.1.4____playwright@1.61.1____esbuild@0.24.2___@types+node@25.9.5___@vitest+browser-playwright@4.1.10____playwright@1.61.1____vitest@4.1.10_____@types+node@25.9.5_____@vitest+browser-playwright@4.1.10_____@vitest+coverage-v8@4.1.10_____vite@8.1.4_____playwright@1.61.1_____esbuild@0.24.2____@types+node@25.9.5____@vitest+coverage-v8@4.1.10____@vitest+browser@4.1.10____esbuild@0.24.2___@vitest+coverage-v8@4.1.10___esbuild@0.24.2___vite@8.1.4_esbuild@0.24.2",
     "npm:@storybook/html-vite@^10.1.11": "10.5.0_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_vite@8.1.4__@types+node@25.9.5__esbuild@0.24.2_@types+react@19.2.17_@types+node@25.9.5_esbuild@0.24.2_react@19.2.3",
     "npm:@sveltejs/package@^2.3.0": "2.5.7_svelte@5.46.1__acorn@8.15.0_typescript@5.7.3",
@@ -508,17 +508,8 @@
       "os": ["win32"],
       "cpu": ["x64"]
     },
-    "@graphmother/core@0.1.1": {
-      "integrity": "sha512-5ktHZsZmEXFT3/gHAWsXBghfI3o3PcwBo9fiV/OdRPJaC5n7vRYvpQCC+6bmzJ4nKWgy86NKdjJDtVTW5sd5gg==",
-      "dependencies": [
-        "@graphmother/wasm@0.1.1"
-      ]
-    },
-    "@graphmother/wasm@0.1.1": {
-      "integrity": "sha512-XX6T/kmvHovgVPUjzycWY0FDjcOgK9OA97Y9wp+XuGyrw0AEsdGLS4cUhYUe/g0ZSfOEFKArll5WiCVnIocbHQ=="
-    },
-    "@graphmother/wasm@0.2.0": {
-      "integrity": "sha512-U8rJpPAugZOCb0JC+PclxmbZrUeQq+4/C5W8m5eCo1XKseVupglurGZuOHxbLGM5PhNvSbTqdUFqKGw4kO6SqQ=="
+    "@graphmother/wasm@0.3.0": {
+      "integrity": "sha512-Bp/lIP7zzlJs3TAJpcALwQPSD7zcDJF36+OOojXsF6girskZgoyjQRiN1v3OTx9AcFZVvdifNEwmIV0akst49g=="
     },
     "@jridgewell/gen-mapping@0.3.13": {
       "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
@@ -1004,7 +995,7 @@
         "storybook"
       ]
     },
-    "@storybook/addon-docs@10.5.0_@types+react@19.2.17_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_react@19.2.3_esbuild@0.24.2_@types+react-dom@19.2.3__@types+react@19.2.17_react-dom@19.2.3__react@19.2.3_@types+node@25.9.5": {
+    "@storybook/addon-docs@10.5.0_@types+react@19.2.17_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1_react@19.2.3_esbuild@0.24.2_react-dom@19.2.3__react@19.2.3_@types+node@25.9.5": {
       "integrity": "sha512-kbZGdX+mysiY4xezhpcFEwzQ1zSXcMhSS3u09Qt8+w5XetCAMMSv/yAxzpi6z+YoH+EdQ53e1q3MFtPUkzkfUA==",
       "dependencies": [
         "@mdx-js/react",
@@ -1096,7 +1087,7 @@
         "react"
       ]
     },
-    "@storybook/react-dom-shim@10.5.0_@types+react@19.2.17_@types+react-dom@19.2.3__@types+react@19.2.17_react@19.2.3_react-dom@19.2.3__react@19.2.3_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1": {
+    "@storybook/react-dom-shim@10.5.0_@types+react@19.2.17_react@19.2.3_react-dom@19.2.3__react@19.2.3_storybook@10.5.0__@types+react@19.2.17__react@19.2.3__@testing-library+dom@10.4.1": {
       "integrity": "sha512-GwGA6zDj4Cfw6vGsdfPKfF39L0W6solNbbnjdjGa57m2ooASkidLhrXo2wgC9wh3o/jcfonmYPDRGY6sEhGDtg==",
       "dependencies": [
         "@types/react",
@@ -1211,7 +1202,7 @@
         "undici-types"
       ]
     },
-    "@types/react-dom@19.2.3_@types+react@19.2.17": {
+    "@types/react-dom@19.2.3": {
       "integrity": "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==",
       "dependencies": [
         "@types/react"
@@ -1887,6 +1878,15 @@
     "expect-type@1.4.0": {
       "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA=="
     },
+    "fdir@6.5.0": {
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "dependencies": [
+        "picomatch"
+      ],
+      "optionalPeers": [
+        "picomatch"
+      ]
+    },
     "fdir@6.5.0_picomatch@4.0.5": {
       "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
       "dependencies": [
@@ -2476,7 +2476,7 @@
         "lines-and-columns",
         "mz",
         "pirates",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "ts-interface-checker"
       ],
       "bin": true
@@ -2492,7 +2492,7 @@
       "dependencies": [
         "@jridgewell/trace-mapping",
         "chokidar@4.0.3",
-        "fdir",
+        "fdir@6.5.0_picomatch@4.0.5",
         "picocolors",
         "sade",
         "svelte",
@@ -2553,10 +2553,17 @@
     "tinyexec@1.2.4": {
       "integrity": "sha512-SHf/r48b7vOrjve9PxJo3MN5v5yuyjHvdUcrQffT3WXMUfnGmHDVbC4k3sHJaJTgZCwpUplIaAo5ANtMyp3YHg=="
     },
+    "tinyglobby@0.2.17": {
+      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+      "dependencies": [
+        "fdir@6.5.0",
+        "picomatch"
+      ]
+    },
     "tinyglobby@0.2.17_picomatch@4.0.5": {
       "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
       "dependencies": [
-        "fdir",
+        "fdir@6.5.0_picomatch@4.0.5",
         "picomatch"
       ]
     },
@@ -2603,7 +2610,7 @@
         "source-map@0.7.6",
         "sucrase",
         "tinyexec@0.3.2",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "tree-kill",
         "typescript"
       ],
@@ -2661,7 +2668,10 @@
       "dependencies": [
         "@types/node",
         "lightningcss",
-        "rolldown"
+        "picomatch",
+        "postcss",
+        "rolldown",
+        "tinyglobby@0.2.17"
       ],
       "optionalPeers": [
         "@types/node"
@@ -2677,7 +2687,7 @@
         "picomatch",
         "postcss",
         "rolldown",
-        "tinyglobby"
+        "tinyglobby@0.2.17_picomatch@4.0.5"
       ],
       "optionalDependencies": [
         "fsevents@2.3.3"
@@ -2719,7 +2729,7 @@
         "std-env",
         "tinybench",
         "tinyexec@1.2.4",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "tinyrainbow@3.1.0",
         "vite@8.1.4",
         "why-is-node-running"
@@ -2753,7 +2763,7 @@
         "std-env",
         "tinybench",
         "tinyexec@1.2.4",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "tinyrainbow@3.1.0",
         "vite@8.1.4_@types+node@25.9.5_esbuild@0.24.2",
         "why-is-node-running"
@@ -2787,7 +2797,7 @@
         "std-env",
         "tinybench",
         "tinyexec@1.2.4",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "tinyrainbow@3.1.0",
         "vite@8.1.4_@types+node@25.9.5_esbuild@0.24.2",
         "why-is-node-running"
@@ -2821,7 +2831,7 @@
         "std-env",
         "tinybench",
         "tinyexec@1.2.4",
-        "tinyglobby",
+        "tinyglobby@0.2.17_picomatch@4.0.5",
         "tinyrainbow@3.1.0",
         "vite@8.1.4_@types+node@25.9.5_esbuild@0.24.2",
         "why-is-node-running"
@@ -2908,7 +2918,7 @@
       "packages/core": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/wasm@0.2",
+            "npm:@graphmother/wasm@0.3",
             "npm:@webgpu/types@~0.1.69",
             "npm:esbuild@0.24",
             "npm:typescript@^5.7.0"
@@ -2918,7 +2928,7 @@
       "packages/react": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@0.3",
+            "npm:@graphmother/core@~0.3.1",
             "npm:@types/react@19",
             "npm:@webgpu/types@~0.1.69",
             "npm:react@19",
@@ -2930,7 +2940,7 @@
       "packages/svelte": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@0.3",
+            "npm:@graphmother/core@~0.3.1",
             "npm:@sveltejs/package@^2.3.0",
             "npm:@sveltejs/vite-plugin-svelte@4",
             "npm:@webgpu/types@~0.1.69",
@@ -2943,7 +2953,7 @@
       "packages/vue": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@0.3",
+            "npm:@graphmother/core@~0.3.1",
             "npm:@vue/tsconfig@0.7",
             "npm:@webgpu/types@~0.1.69",
             "npm:tsup@^8.3.0",

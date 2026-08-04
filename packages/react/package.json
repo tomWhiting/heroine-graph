@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/react",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "React wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,8 +23,12 @@
     "lint": "deno lint src"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": {
       "compilerOptions": {
         "jsx": "react-jsx",
@@ -37,7 +41,7 @@
     "react": ">=18.0.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.3.0"
+    "@graphmother/core": "^0.3.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

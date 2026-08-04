@@ -161,6 +161,22 @@ function setVersions(version: string): void {
   setDenoJsonVersion("deno.json", version);
   setDenoJsonVersion("packages/core/deno.json", version);
 
+  // The runtime VERSION constant ships inside the bundle; a manual bump that
+  // misses it (or this script skipping it) leaves the library reporting the
+  // previous release.
+  const factoryPath = join(ROOT, "packages/core/src/api/factory.ts");
+  const factory = Deno.readTextFileSync(factoryPath);
+  const [vMajor, vMinor, vPatch] = version.split(".");
+  const updatedFactory = factory.replace(
+    /(export const VERSION = \{\n  major: )\d+(,\n  minor: )\d+(,\n  patch: )\d+/,
+    `$1${vMajor}$2${vMinor}$3${vPatch}`,
+  );
+  if (updatedFactory === factory) {
+    throw new Error("Could not find the VERSION literal in packages/core/src/api/factory.ts");
+  }
+  Deno.writeTextFileSync(factoryPath, updatedFactory);
+  console.log(`    core/src/api/factory.ts VERSION -> ${version}`);
+
   // The framework wrappers are versioned in lockstep with core so that a
   // published wrapper always requests a core it was built against. They are
   // not in PUBLISH_DIRS (see the module docstring) but must not drift.

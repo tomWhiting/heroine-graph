@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/svelte",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Svelte wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "svelte": "./dist/index.js",
@@ -28,7 +28,7 @@
     "svelte": ">=5.0.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.3.0"
+    "@graphmother/core": "^0.3.1"
   },
   "devDependencies": {
     "@sveltejs/package": "^2.3.0",
