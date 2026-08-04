@@ -520,6 +520,24 @@ export class LODController {
   }
 
   /**
+   * Note that the graph itself changed: nodes or edges added or removed.
+   *
+   * Zoom is the only geometric input, so without this a host that mutates a
+   * standing graph re-evaluates nothing until the camera next moves — every
+   * node streamed in meanwhile renders unfolded, against a cut that still
+   * describes the graph as it was. A streaming producer never stops, so that
+   * is the steady state rather than a moment of lag.
+   *
+   * The evaluation is forced rather than merely enabled because the change
+   * that matters is one the camera cannot express: the hierarchy is re-read
+   * and re-adopted from the host, which is what re-derives mass, the proxy
+   * radii and the edge aggregation the mutation invalidated.
+   */
+  handleTopologyChange(): void {
+    this.#forceFull = true;
+  }
+
+  /**
    * Track a change in node-buffer capacity.
    *
    * The reallocated alpha buffer comes back fully opaque, so the scheduler's

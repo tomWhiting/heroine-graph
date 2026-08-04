@@ -2120,6 +2120,10 @@ export class GraphMother {
     this.resetNodeMass();
     this.resetLodProxyRadii();
     this.releaseLodEdgeAggregation();
+    // Everything above is host-side state the controller believes it still
+    // owns. Telling it forces the re-evaluation that re-derives all of it;
+    // without this the cut only catches up when the camera next moves.
+    this.lodController?.handleTopologyChange();
   }
 
   /**

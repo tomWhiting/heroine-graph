@@ -77,6 +77,28 @@ function hierarchyOf(
   return retainSuppliedHierarchy(columns, n);
 }
 
+/**
+ * A root over `dirs` directories of `perDir` leaves each.
+ *
+ * Regular on purpose: a mutation test wants the same shape at two sizes, so
+ * that what changed between them is the node count and nothing else.
+ */
+function balancedTree(dirs: number, perDir: number): RetainedHierarchy {
+  const parents: number[] = [-1];
+  for (let d = 0; d < dirs; d++) parents.push(0);
+  for (let d = 0; d < dirs; d++) {
+    for (let c = 0; c < perDir; c++) parents.push(1 + d);
+  }
+  return hierarchyOf(parents, (_slot, subtreeSize) => Math.sqrt(subtreeSize) * 4);
+}
+
+/** Extend a visibility shadow to a grown node count, new slots visible. */
+function growVisible(shadow: Uint8Array, nodeCount: number): Uint8Array {
+  const grown = new Uint8Array(nodeCount).fill(1);
+  grown.set(shadow);
+  return grown;
+}
+
 /** The code-tree fixture as a hierarchy; radius grows with subtree size. */
 function codeTreeHierarchy(): RetainedHierarchy {
   const tree = generateCodeTree(CODE_TREE_SCALES.small);
@@ -1316,6 +1338,61 @@ Deno.test("proxies: a capacity change re-declares the live collapsed set", () =>
   controller.handleNodeCapacityChange(64, 16);
   assert(log.mass.length > uploads);
   assertEquals(Array.from(log.mass.at(-1)!), [1, 3, 1, 0, 0]);
+});
+
+Deno.test("mutation: a graph that grows under a still camera is re-folded", () => {
+  // A streaming producer mutates the graph continuously while the user sits
+  // still. Zoom is the controller's only geometric input, so without a
+  // topology signal the cut goes on describing the graph as it was and every
+  // node streamed in since renders unfolded — which for a producer that never
+  // stops is the steady state, not a moment of lag.
+  const before = balancedTree(6, 40);
+  const { controller, log } = rig(before);
+  log.viewport.scale = 2;
+  controller.evaluateNow(0);
+
+  // Hiding waits behind the crossfade, so the flags land some frames after the
+  // decision that made them.
+  let clock = 0;
+  const settle = () => {
+    for (let frame = 0; frame < 60; frame++) controller.tick(clock += 16);
+  };
+  const hiddenCount = () => log.visibleShadow.reduce((n, v) => n + (v === 0 ? 1 : 0), 0);
+  settle();
+
+  assertEquals(
+    Array.from(controller.getVisibleNodes()).length,
+    7,
+    "root plus six folded directories",
+  );
+  assertEquals(hiddenCount(), before.nodeCount - 7);
+
+  // The graph grows: same shape, three times the leaves, camera untouched.
+  const after = balancedTree(6, 120);
+  log.hierarchy = after;
+  log.visibleShadow = growVisible(log.visibleShadow, after.nodeCount);
+
+  controller.handleTopologyChange();
+  settle();
+
+  assertEquals(
+    Array.from(controller.getVisibleNodes()).length,
+    7,
+    "the cut is the same seven nodes: the new leaves belong to folded subtrees",
+  );
+  assertEquals(
+    hiddenCount(),
+    after.nodeCount - 7,
+    "every newly streamed node is folded away, not left rendering",
+  );
+  // Each directory now stands for three times the subtree, so the bubble it
+  // presents has to grow with it or the layout reads as the old graph.
+  const radii = log.proxies.at(-1)!.radii;
+  assertEquals(radii.length, 6);
+  assert(
+    radii.every((r) => r > before.columns.wellRadius[1]),
+    `proxy radii ${radii[0]} did not grow past the pre-mutation ${before.columns.wellRadius[1]}`,
+  );
 });
 
 // =============================================================================
