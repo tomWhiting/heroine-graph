@@ -146,6 +146,11 @@ class Graph implements CardNodeSource {
   readonly positions = new Map<NodeId, Vec2>();
   readonly live = new Set<NodeId>();
   readonly pinned = new Set<NodeId>();
+  /**
+   * Slots whose identity has been reassigned, as a batch removal's compaction
+   * reassigns them. Empty unless a test is standing in for one.
+   */
+  readonly identityOverride = new Map<NodeId, string>();
 
   constructor(nodeIds: readonly NodeId[]) {
     for (const id of nodeIds) {
@@ -155,6 +160,8 @@ class Graph implements CardNodeSource {
   }
 
   externalId(node: NodeId): string | undefined {
+    const override = this.identityOverride.get(node);
+    if (override !== undefined) return override;
     return this.live.has(node) ? `src/mod${node}.ts` : undefined;
   }
   label(node: NodeId): string | undefined {
@@ -842,4 +849,71 @@ Deno.test("overlay: syncing before the overlay is enabled is inert", () => {
   assertEquals(provider.calls, []);
   assertEquals(overlay.cardCount, 0);
   assertEquals(dom.host.children.length, 1, "only the canvas");
+});
+
+// -----------------------------------------------------------------------------
+// Identity under slot compaction
+// -----------------------------------------------------------------------------
+
+Deno.test("overlay: a card whose slot changes hands is rebound to the new node", () => {
+  // A batch removal compacts slots, so a surviving node moves down into a slot
+  // that already holds a card. Every CardNode accessor reads through to
+  // whatever the source says the slot holds now, so an unrebound card would go
+  // on showing one node's content against another node's position — and a
+  // consumer keying its own state on externalId would attribute it to the
+  // wrong thing entirely.
+  const h = harness({ nodeIds: [1, 2, 3] });
+
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.provider.count("mount", 2), 1, "slot 2 must card");
+  assertEquals(
+    h.provider.containers.get(2)?.textContent,
+    "src/mod2.ts",
+    "the card must have rendered the node it mounted for",
+  );
+
+  // Compaction: slot 2 now holds a node that used to live further up.
+  h.graph.identityOverride.set(2, "src/mod9.ts");
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.provider.count("release", 2), 1, "the stale card must be released");
+  assertEquals(h.provider.count("mount", 2), 2, "and the slot re-carded for its new occupant");
+  assertEquals(
+    h.provider.containers.get(2)?.textContent,
+    "src/mod9.ts",
+    "the mounted content must be the new node's",
+  );
+});
+
+Deno.test("overlay: the lifetime floor does not hold a card whose slot changed hands", () => {
+  // minCardLifetimeMs exists to stop a correct card flickering. A card that has
+  // come to stand for a different node is not flickering, it is wrong, and
+  // holding it for the rest of the floor would show the wrong content at
+  // exactly the moment the graph mutated under the user.
+  const h = harness({ nodeIds: [1, 2, 3], minCardLifetimeMs: 10_000 });
+
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.provider.count("mount", 2), 1);
+
+  h.graph.identityOverride.set(2, "src/mod9.ts");
+  h.now += 1; // far inside the floor
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.provider.count("release", 2), 1, "the floor must not hold a wrong card");
+  assertEquals(h.provider.containers.get(2)?.textContent, "src/mod9.ts");
+});
+
+Deno.test("overlay: a card whose slot keeps its node is left alone", () => {
+  // The guard must cost a stable card nothing: no churn, no remount, and the
+  // lifetime floor still governs when it eventually goes.
+  const h = harness({ nodeIds: [1, 2, 3] });
+
+  h.overlay.syncCards([entry(2, 10)]);
+  h.now += 1000;
+  h.overlay.syncCards([entry(2, 10)]);
+  h.now += 1000;
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.provider.count("mount", 2), 1, "a stable card must mount exactly once");
+  assertEquals(h.provider.count("release", 2), 0, "and never be released while requested");
 });

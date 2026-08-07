@@ -207,6 +207,17 @@ interface CardRecord {
   /** Card box in graph units, fixed for the card's lifetime. */
   readonly width: number;
   readonly height: number;
+  /**
+   * Producer identifier the card mounted for.
+   *
+   * Cards are keyed by slot, and a batch removal compacts slots — so a
+   * surviving node can move into a slot that is already carded. Every
+   * {@link CardNode} accessor reads through to whatever the source says the
+   * slot holds now, so without this the card would go on standing for a node
+   * that is no longer there, showing one node's content against another's
+   * position, and the provider would have no way to find out.
+   */
+  readonly externalId: IdLike | undefined;
   opacity: number;
   priority: number;
 }
@@ -403,6 +414,18 @@ export class DomCardOverlay {
       this.#views.delete(node);
     }
     this.#ring = ring;
+
+    // A card whose slot has changed hands is standing for a node that is no
+    // longer there, so it goes before anything else looks at it — ahead of the
+    // lifetime floor, which exists to stop a *correct* card flickering and has
+    // no business holding a wrong one. Releasing rather than notifying keeps
+    // the provider's contract intact: `mount` returns per-card state built for
+    // one node, and there is no honest way to hand that state a different one.
+    // The mount pass below re-cards the slot for its new occupant in the same
+    // sync, so the swap costs one release and one mount, not a frame of wrong.
+    for (const [node, record] of [...this.#cards]) {
+      if (this.#nodes.externalId(node) !== record.externalId) this.#release(node);
+    }
 
     // Refresh what a re-sync is allowed to change on a live card. Size is not
     // in that set: the graph-unit box is fixed at mount so the card tracks the
@@ -677,6 +700,7 @@ export class DomCardOverlay {
       mountedAtMs: now,
       width: size.width / scale,
       height: size.height / scale,
+      externalId: this.#nodes.externalId(node),
       opacity: entry.opacity ?? 1,
       priority: entry.priority,
     };
