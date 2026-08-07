@@ -71,7 +71,11 @@ fi
 find_repo_root() {
     local dir="$1"
     while [ "$dir" != "/" ]; do
-        if [ -d "$dir/.git" ] || [ -d "$dir/.specify" ]; then
+        # -e, not -d: in a git worktree .git is a FILE (a gitlink), not a
+        # directory. With -d the walk skips the real root and can match a
+        # PARENT repo's .git, silently creating the feature in the wrong
+        # repository. .specify stays -d because it is always a directory.
+        if [ -e "$dir/.git" ] || [ -d "$dir/.specify" ]; then
             echo "$dir"
             return 0
         fi
