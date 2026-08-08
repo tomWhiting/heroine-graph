@@ -81,7 +81,9 @@ export interface HeadlessGraph {
   getVisibleNodes(): NodeId[];
   setDomOverlay(config: Partial<DomOverlayConfig>): void;
   setCardProvider(provider: CardProvider<unknown> | null): void;
-  syncDomCards(entries: readonly { node: NodeId; priority: number }[]): void;
+  syncDomCards(
+    entries: readonly { node: NodeId; priority: number; prefetchOnly?: boolean }[],
+  ): void;
   setScale(scale: number): void;
   getViewport(): ViewportState;
   startSimulation(): void;

@@ -574,3 +574,61 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "headless: an advisory prefetch throw does not cost the node its card",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      const host = domHost();
+      harness = await createHeadlessGraph(device, { overlayHost: host });
+      const { graph } = harness;
+      await graph.load(chainWithHierarchy(8));
+      graph.setScale(1);
+      graph.setLodConfig({ enabled: true });
+      // Before the controller has a cut it knows of no slots, and giving up on
+      // a node is a no-op — so a failure raised here would be discarded and the
+      // test would pass whatever the rule below said.
+      harness.evaluateLod(0);
+
+      // `prefetch` is an offer, not a commitment: it creates no DOM and the
+      // overlay is free to ignore its outcome. A provider that cannot warm a
+      // node up may still be perfectly able to mount it, so a throw here must
+      // cost the node nothing. `mount` and `update` are the hooks that were
+      // supposed to produce the card, and only those forfeit it.
+      const mounts: string[] = [];
+      const target = graph.getNodeId("src/mod4.ts");
+      assert(target !== undefined);
+
+      graph.setDomOverlay({ enabled: true, host });
+      graph.setCardProvider({
+        prefetch() {
+          throw new Error("warming failed");
+        },
+        mount(_container: HTMLElement, node: CardNode) {
+          mounts.push(String(node.externalId));
+          return { externalId: String(node.externalId) };
+        },
+      } as unknown as CardProvider<unknown>);
+
+      graph.syncDomCards([{ node: target, priority: 1, prefetchOnly: true }]);
+      assertEquals(mounts, [], "a prefetch offer creates no DOM");
+
+      // Focus is the LOD controller's own route to a card, so it passes through
+      // the suppression set the failure would have added to. Declaring the card
+      // through `syncDomCards` instead would bypass the controller entirely and
+      // pass whether or not the node had been given up on.
+      graph.setLodFocus([target]);
+
+      assertEquals(
+        mounts,
+        ["src/mod4.ts"],
+        "the node must still be cardable after an advisory hook threw",
+      );
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
