@@ -153,6 +153,35 @@ await graph.enableLabels({ fontSize: 14, maxLabels: 100, priority: "degree" });
 
 Each layer has a matching `disable*()` and `set*Config()` method.
 
+## Semantic LOD & DOM cards
+
+```ts
+graph.setLodConfig({ enabled: true, domThreshold: 48, maxCards: 150 });
+graph.setDomOverlay({ enabled: true });
+graph.setCardProvider({
+  mount(container, node) {
+    container.textContent = node.label ?? String(node.externalId);
+    return null;
+  },
+  release(container) {
+    container.replaceChildren();
+  },
+});
+graph.on("card:error", (event) => report(event.externalId, event.hook, event.error));
+```
+
+Subtrees fold into their ancestors as the camera pulls out; the largest nodes
+are promoted to real DOM as it pushes in. Core owns which nodes are carded,
+where each card sits and how big it is — the provider owns everything inside a
+card, and must remove its own children in `release`, because containers are
+pooled.
+
+The four thresholds are two independent pairs over two different metrics, and
+consumer records must be keyed on `node.externalId` rather than on the recycled
+GPU slot. Both are in
+[docs/lod-and-cards.md](https://github.com/tomWhiting/graphmother/blob/main/docs/lod-and-cards.md),
+which is the authority for this surface.
+
 ## Framework wrappers
 
 Thin components that own initialization and teardown for you:

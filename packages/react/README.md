@@ -59,6 +59,48 @@ const { graph, isReady, initialize, load, fitToView } = useGraph();
 const { isRunning, alpha, start, stop } = useSimulation({ graph });
 ```
 
+## Cards
+
+At high zoom GraphMother promotes the largest nodes to real DOM elements.
+`<GraphCards>` renders a React component into each one, through a portal, so the
+cards live in core's overlay — above the canvas, carrying the camera transform —
+while their components stay in your tree, with its context, state and hooks.
+
+```tsx
+const [graph, setGraph] = useState<GraphMother | null>(null);
+
+<GraphMother
+  onReady={(instance) => {
+    instance.setLodConfig({ enabled: true });
+    instance.setDomOverlay({ enabled: true });
+    setGraph(instance);
+  }}
+/>
+<GraphCards
+  graph={graph}
+  render={({ node, selected }) => (
+    <article data-selected={selected}>{node.label ?? String(node.externalId)}</article>
+  )}
+  fallback={<article>could not render this card</article>}
+  onCardError={(error, card) => report(card.key, error)}
+/>;
+```
+
+The adapter never positions, sizes, orders or evicts a card — core owns all of
+that, and `node.position()` / `node.size()` report it live. Cards are keyed on
+`node.externalId`, never on `node.id`: the latter is a GPU slot, and slots are
+recycled when nodes are removed, so a record keyed on one silently starts
+describing a different node.
+
+`onCardError` reports _your_ component throwing during render, which only a React
+error boundary can catch. A failure in the card provider itself is core's to
+contain and arrives as the graph's `card:error` event. Note that a card component
+throwing from an effect after commit is outside any boundary's reach, and will
+unmount the tree the graph is in.
+
+`useGraphCards(graph)` is the same bridge without the JSX, for a consumer that
+wants to lay the cards out itself.
+
 ## Full API
 
 See the [`@graphmother/core` README](https://github.com/tomWhiting/graphmother/tree/main/packages/core)

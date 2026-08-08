@@ -22,9 +22,10 @@ import {
   type HeadlessHarness,
 } from "../helpers/headless_graph.ts";
 import { GPU_SKIP_MESSAGE } from "../helpers/gpu.ts";
-import type { NodeId } from "../../packages/core/src/types.ts";
-import { HIERARCHY_ROOT } from "../../packages/core/src/graph/hierarchy.ts";
+import type { CardErrorEvent, NodeId } from "../../packages/core/src/types.ts";
 import type { CardNode, CardProvider } from "../../packages/core/src/overlay/types.ts";
+import { ErrorCode } from "../../packages/core/src/errors.ts";
+import { HIERARCHY_ROOT } from "../../packages/core/src/graph/hierarchy.ts";
 
 const device = await headlessDevice();
 
@@ -37,6 +38,83 @@ function chain(count: number) {
     type: "contains",
   }));
   return { nodes, edges };
+}
+
+/**
+ * One root containing `weights.length` leaves, with the hierarchy supplied.
+ *
+ * Supplied rather than derived because the harness has no WASM engine, and the
+ * LOD controller does nothing at all without a hierarchy — so this is what makes
+ * the *controller* the caller of `syncDomCards` here, rather than the test.
+ *
+ * `weight` is the producer's own ranking column, and the controller adds it to
+ * the screen radius when it ranks cards. Every node here has the same radius, so
+ * the weights are what decide which node wins a card budget, and they decide it
+ * exactly the way a consumer's own importance column would.
+ */
+function cardTree(weights: readonly number[]) {
+  const leaves = weights.length;
+  const n = leaves + 1;
+  const parent = new Uint32Array(n);
+  parent[0] = HIERARCHY_ROOT;
+  const depth = new Uint16Array(n);
+  const subtreeSize = new Uint32Array(n).fill(1);
+  subtreeSize[0] = n;
+  // The root's bubble is large enough to sit above any expand threshold a test
+  // sets, so the cut always reaches the leaves.
+  const wellRadius = new Float32Array(n).fill(10);
+  wellRadius[0] = 200;
+  const positions = new Float32Array(n * 2);
+  const weight = new Float32Array(n);
+  const nodeIds: string[] = ["src"];
+  const edgePairs = new Uint32Array(leaves * 2);
+  const edgeKinds = new Uint16Array(leaves);
+
+  for (let slot = 1; slot < n; slot++) {
+    parent[slot] = 0;
+    depth[slot] = 1;
+    // Well inside the viewport, so the card ring's cull keeps every leaf.
+    positions[slot * 2] = (slot - leaves / 2) * 20;
+    positions[slot * 2 + 1] = 30;
+    weight[slot] = weights[slot - 1];
+    nodeIds.push(`src/f${slot - 1}.ts`);
+    edgePairs[(slot - 1) * 2] = 0;
+    edgePairs[(slot - 1) * 2 + 1] = slot;
+  }
+
+  return {
+    nodeCount: n,
+    edgeCount: leaves,
+    positions,
+    edgePairs,
+    edgeKinds,
+    containmentKind: 0,
+    hierarchy: { parent, wellRadius, depth, subtreeSize },
+    nodeIds,
+    weight,
+  };
+}
+
+/** Thresholds low enough that every leaf in `cardTree` is card-sized. */
+const CARD_EVERYTHING = {
+  enabled: true,
+  expandThreshold: 1,
+  collapseThreshold: 0.5,
+  domThreshold: 1,
+  domExitThreshold: 0.5,
+  minCardLifetimeMs: 0,
+  minBandCommitFrames: 0,
+} as const;
+
+/** A provider that throws in `mount` for one producer id and works for the rest. */
+function providerFailingFor(externalId: string, mounts: string[]): CardProvider<unknown> {
+  return {
+    mount(_container: HTMLElement, node: CardNode) {
+      mounts.push(String(node.externalId));
+      if (String(node.externalId) === externalId) throw new Error("card content failed");
+      return { externalId: String(node.externalId) };
+    },
+  } as CardProvider<unknown>;
 }
 
 /** Records which producer id each mount/release was for. */
@@ -291,6 +369,205 @@ Deno.test({
         [Math.round(after.x - before.x), Math.round(after.y - before.y)],
         [dx, dy],
         "the folded subtree must be carried by the drift its proxy accumulated",
+      );
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name: "headless: a card provider that throws does not take the graph with it",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      const host = domHost();
+      harness = await createHeadlessGraph(device, { overlayHost: host });
+      const { graph } = harness;
+      await graph.load(chain(8));
+
+      // Uncontained, the throw below leaves the overlay through `syncDomCards`
+      // — and, once the LOD controller is the caller, through its tick at the
+      // top of the render callback, which the render loop catches and logs. The
+      // frame then aborts before edges, nodes, compute submit and position
+      // readback: one bad card freezes the graph while the loop spins.
+      const mounts: string[] = [];
+      graph.setDomOverlay({ enabled: true, host });
+      graph.setCardProvider({
+        mount(_container: HTMLElement, node: CardNode) {
+          mounts.push(String(node.externalId));
+          if (node.externalId === "src/mod3.ts") throw new Error("card content failed");
+          return { externalId: String(node.externalId) };
+        },
+      } as CardProvider<unknown>);
+
+      const errors: CardErrorEvent[] = [];
+      graph.on("card:error", (event) => errors.push(event));
+
+      const bad = graph.getNodeId("src/mod3.ts");
+      const good = graph.getNodeId("src/mod4.ts");
+      assert(bad !== undefined && good !== undefined);
+
+      graph.syncDomCards([{ node: bad, priority: 2 }, { node: good, priority: 1 }]);
+
+      assertEquals(errors.length, 1, "the failure must reach the consumer as an event");
+      assertEquals(errors[0].hook, "mount");
+      assertEquals(errors[0].externalId, "src/mod3.ts");
+      assertEquals(errors[0].nodeId, bad);
+      assertEquals(errors[0].released, false, "there was never a card to lose");
+      assertEquals(errors[0].error.code, ErrorCode.CARD_PROVIDER_FAILED);
+
+      assertEquals(
+        mounts,
+        ["src/mod3.ts", "src/mod4.ts"],
+        "the rest of the same sync must still be carded",
+      );
+
+      // And the graph is still a graph: the next sync neither retries the
+      // broken node nor loses the working one.
+      graph.syncDomCards([{ node: bad, priority: 2 }, { node: good, priority: 1 }]);
+      assertEquals(mounts, ["src/mod3.ts", "src/mod4.ts"]);
+      assertEquals(errors.length, 1);
+      assertEquals(graph.getExternalId(good), "src/mod4.ts");
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name: "headless: a failed card stops being declared, instead of becoming a hole",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      const host = domHost();
+      harness = await createHeadlessGraph(device, { overlayHost: host });
+      const { graph } = harness;
+      // Descending weights, so which node the controller ranks first is decided
+      // by the producer's column rather than by anything incidental.
+      await graph.load(cardTree([1, 0.5, 0, 0, 0]));
+
+      const mounts: string[] = [];
+      graph.setDomOverlay({ enabled: true, host });
+      graph.setCardProvider(providerFailingFor("src/f0.ts", mounts));
+      const errors: CardErrorEvent[] = [];
+      graph.on("card:error", (event) => errors.push(event));
+
+      // One card, so what the failed node costs is visible: while the
+      // controller goes on declaring it, the card budget is spent on a card the
+      // overlay refuses to mount and no other node can have one. The sprite side
+      // of the same defect — a node faded out under a card that will never exist
+      // — is not observable from outside, and is the reason this matters.
+      graph.setLodConfig({ ...CARD_EVERYTHING, maxCards: 1 });
+      graph.setLodFocus([]);
+
+      assertEquals(mounts, ["src/f0.ts"], "the top-ranked node is carded, and its mount throws");
+      assertEquals(errors.length, 1);
+      assertEquals(errors[0].hook, "mount");
+      assertEquals(errors[0].externalId, "src/f0.ts");
+
+      // A second evaluation, driven exactly as the first one was.
+      graph.setLodFocus([]);
+
+      assertEquals(
+        mounts,
+        ["src/f0.ts", "src/f1.ts"],
+        "the card the failed node cannot use must go to the node ranked behind it",
+      );
+      assertEquals(errors.length, 1, "and the broken provider is never asked again");
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name: "headless: a new provider takes back the cards the old one failed for",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      const host = domHost();
+      harness = await createHeadlessGraph(device, { overlayHost: host });
+      const { graph } = harness;
+      await graph.load(cardTree([1, 0.5, 0, 0, 0]));
+
+      const mounts: string[] = [];
+      graph.setDomOverlay({ enabled: true, host });
+      graph.setCardProvider(providerFailingFor("src/f0.ts", mounts));
+
+      graph.setLodConfig({ ...CARD_EVERYTHING, maxCards: 1 });
+      graph.setLodFocus([]);
+      assertEquals(mounts, ["src/f0.ts"]);
+
+      // The documented way back, and it has to reach both halves: the overlay
+      // stopped offering the node, the controller stopped declaring it, and a
+      // node only one of them has forgiven is still not carded. Nothing else
+      // happens here — no evaluation is forced, no camera moves — so a card can
+      // only appear because registering the provider re-declared the set.
+      const recovered: string[] = [];
+      graph.setCardProvider({
+        mount(_container: HTMLElement, node: CardNode) {
+          recovered.push(String(node.externalId));
+          return { externalId: String(node.externalId) };
+        },
+      } as CardProvider<unknown>);
+
+      assertEquals(
+        recovered,
+        ["src/f0.ts"],
+        "the node the old provider failed for must take its card back in this call",
+      );
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name: "headless: a quarantined slot cards its new occupant after a real compaction",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      const host = domHost();
+      harness = await createHeadlessGraph(device, { overlayHost: host });
+      const { graph } = harness;
+      await graph.load(chain(8));
+
+      // The provider fails for a producer id, as a real one does — its content
+      // belongs to a node. Nothing about the slot index is what it objects to.
+      const mounts: string[] = [];
+      graph.setDomOverlay({ enabled: true, host });
+      graph.setCardProvider(providerFailingFor("src/mod2.ts", mounts));
+
+      const quarantined = graph.getNodeId("src/mod2.ts");
+      assert(quarantined !== undefined);
+      graph.syncDomCards([{ node: quarantined, priority: 1 }]);
+      assertEquals(mounts, ["src/mod2.ts"], "the failing node is tried once");
+
+      await graph.removeNodesBatch(["src/mod0.ts", "src/mod1.ts"]);
+
+      // Premise check: the quarantine is keyed by slot, so this test says
+      // nothing unless the slot really did change hands to another live node.
+      const nowAtSlot = graph.getExternalId(quarantined);
+      assert(
+        nowAtSlot !== undefined && nowAtSlot !== "src/mod2.ts",
+        `slot ${quarantined} must now hold a different live node, holds ${String(nowAtSlot)}`,
+      );
+
+      graph.syncDomCards([{ node: quarantined, priority: 1 }]);
+
+      assertEquals(
+        mounts,
+        ["src/mod2.ts", String(nowAtSlot)],
+        "a survivor that landed in a quarantined slot never failed and must be carded",
       );
     } finally {
       harness?.dispose();

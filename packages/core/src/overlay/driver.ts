@@ -11,11 +11,51 @@
  * pooling — the overlay layer decides *which* nodes are carded and *where*
  * they sit, then drives them through here.
  *
+ * Being the single enforcement point makes it the single *containment* point
+ * too. A provider callback is consumer code running inside core's per-frame
+ * path: uncontained, one card that throws in `mount` strands a styled,
+ * attached container in the overlay forever and takes the whole render callback
+ * down with it on every frame after. So every call into the provider is
+ * wrapped, the card is left in a defined state, and the failure is handed to
+ * {@link CardDriverOptions.onProviderError} — or logged, when no one asked for
+ * it. Containment here is never silence.
+ *
  * @module
  */
 
-import type { NodeId } from "../types.ts";
+import type { CardProviderHook, NodeId } from "../types.ts";
+import { Errors, type GraphMotherError } from "../errors.ts";
 import type { CardChange, CardNode, CardProvider, CardStateChange } from "./types.ts";
+
+/**
+ * Whether a throw from this hook is evidence that the provider cannot render
+ * this node at all — the question every quarantine decision turns on.
+ *
+ * True for the two hooks a card cannot exist without. `mount` failed to build
+ * one; `update` had one and could not keep it, and `place` calls `update` on
+ * every frame of camera motion, so re-offering the node is a throw per frame.
+ * Retrying either is one failure per node per evaluation for as long as the
+ * graph is open.
+ *
+ * False for the other two, and the distinction is the whole point of asking.
+ * `prefetch` is advisory and abortable: the driver already spends the node for
+ * the epoch, and a speculative fetch that raised — a cache miss, a bad URL —
+ * says nothing about whether `mount` would have worked. `release` runs after a
+ * card the provider built and core displayed, so a throw there is a teardown
+ * defect, not an inability to render. Treating either as forfeiting the card
+ * costs the node its content for the life of the graph, with no event once the
+ * first has been reported and no way back short of replacing the provider.
+ *
+ * Exported because the answer has to be the same in the overlay, which stops
+ * offering the node, and in the graph, which stops declaring it — two copies of
+ * this rule would silently disagree, and a node the two disagree about is drawn
+ * as neither sprite nor card.
+ *
+ * @param hook - Which provider callback threw
+ */
+export function cardFailureForfeitsCard(hook: CardProviderHook): boolean {
+  return hook === "mount" || hook === "update";
+}
 
 /**
  * Where core has decided a card sits, in the coordinate space of the driver's
@@ -40,6 +80,28 @@ export interface CardPlacement {
   readonly opacity: number;
 }
 
+/**
+ * One contained provider failure.
+ *
+ * Reported after the driver has finished putting the card back into a defined
+ * state, so a handler sees settled state rather than a teardown in progress.
+ */
+export interface CardProviderFailure {
+  /** The node whose card failed; still a live view of its slot. */
+  readonly node: CardNode;
+  /** Which provider callback threw. */
+  readonly hook: CardProviderHook;
+  /** The throw, wrapped with the node, the hook and the contract rules. */
+  readonly error: GraphMotherError;
+  /** The value the provider threw, unwrapped. */
+  readonly cause: unknown;
+  /**
+   * Whether the node lost its card. False when there was none to lose: a
+   * `mount` that never completed, or an advisory `prefetch`.
+   */
+  readonly released: boolean;
+}
+
 export interface CardDriverOptions<TState> {
   /**
    * Element card containers are appended to. The driver only adds and removes
@@ -57,6 +119,12 @@ export interface CardDriverOptions<TState> {
   readonly recycleContainer?: (container: HTMLElement) => void;
   /** Class applied to every card container. */
   readonly cardClassName?: string;
+  /**
+   * Called once per contained provider failure. Omit it and the driver logs
+   * the wrapped error instead — a swallowed exception is a defect, so the
+   * quiet path is a decision the caller has to make explicitly.
+   */
+  readonly onProviderError?: (failure: CardProviderFailure) => void;
 }
 
 /**
@@ -111,6 +179,7 @@ export class CardDriver<TState = unknown> {
   private readonly createContainer: () => HTMLElement;
   private readonly recycleContainer: ((container: HTMLElement) => void) | undefined;
   private readonly cardClassName: string | undefined;
+  private readonly onProviderError: ((failure: CardProviderFailure) => void) | undefined;
 
   private readonly cards = new Map<NodeId, MountedCard<TState>>();
   /** Live prefetch controllers, including those of nodes that went on to mount. */
@@ -125,6 +194,28 @@ export class CardDriver<TState = unknown> {
       (() => this.host.ownerDocument.createElement("div"));
     this.recycleContainer = options.recycleContainer;
     this.cardClassName = options.cardClassName;
+    this.onProviderError = options.onProviderError;
+  }
+
+  /**
+   * Announce a contained failure.
+   *
+   * Called only once the card is back in a defined state, so a handler is free
+   * to drive the driver again from inside it.
+   */
+  private report(
+    node: CardNode,
+    hook: CardProviderHook,
+    cause: unknown,
+    released: boolean,
+  ): void {
+    const error = Errors.cardProviderFailed(hook, node.id, node.externalId, cause);
+    const handler = this.onProviderError;
+    if (handler === undefined) {
+      error.log();
+      return;
+    }
+    handler({ node, hook, error, cause, released });
   }
 
   /** Number of mounted cards. */
@@ -164,7 +255,15 @@ export class CardDriver<TState = unknown> {
     const controller = new AbortController();
     this.pendingPrefetch.set(node.id, controller);
     this.prefetchedThisEpoch.add(node.id);
-    this.provider.prefetch(node, controller.signal);
+    try {
+      this.provider.prefetch(node, controller.signal);
+    } catch (cause) {
+      // The offer is abandoned exactly as one the node walked away from is,
+      // and the node stays spent for the epoch: a prefetch that threw is no
+      // more worth repeating than one that was ignored.
+      this.cancelPrefetch(node.id);
+      this.report(node, "prefetch", cause, false);
+    }
   }
 
   /**
@@ -197,11 +296,19 @@ export class CardDriver<TState = unknown> {
    * Create a card: attach and place an empty container, then hand it to
    * `provider.mount` exactly once.
    *
+   * A provider that throws leaves no trace: the container is detached again and
+   * offered back to the pool, which drops it if the half-built card left
+   * children behind — the pool's existing dirty check is already exactly the
+   * right rule here, so containment introduces no new discipline. The card is
+   * never registered, so nothing later tries to place or release it.
+   *
+   * @returns whether the card exists. A caller keeping its own record of the
+   * card must roll that record back on `false`.
    * @throws if the node already has a card — double-mount would break the
    * provider's "exactly once" guarantee silently, and there is no caller for
    * which it is meaningful.
    */
-  mount(node: CardNode, placement: CardPlacement): void {
+  mount(node: CardNode, placement: CardPlacement): boolean {
     if (this.cards.has(node.id)) {
       throw new Error(`Card for node ${node.id} is already mounted`);
     }
@@ -212,8 +319,17 @@ export class CardDriver<TState = unknown> {
     applyPlacement(container, placement);
     this.host.appendChild(container);
 
-    const state = this.provider.mount(container, node);
+    let state: TState;
+    try {
+      state = this.provider.mount(container, node);
+    } catch (cause) {
+      container.remove();
+      this.recycleContainer?.(container);
+      this.report(node, "mount", cause, false);
+      return false;
+    }
     this.cards.set(node.id, { node, container, state, placement });
+    return true;
   }
 
   /**
@@ -242,12 +358,8 @@ export class CardDriver<TState = unknown> {
     card.placement = placement;
     applyPlacement(card.container, placement);
 
-    if (moved) {
-      this.provider.update?.(card.container, card.node, POSITION_CHANGE, card.state);
-    }
-    if (resized) {
-      this.provider.update?.(card.container, card.node, SIZE_CHANGE, card.state);
-    }
+    if (moved && !this.update(nodeId, card, POSITION_CHANGE)) return;
+    if (resized) this.update(nodeId, card, SIZE_CHANGE);
   }
 
   /**
@@ -258,13 +370,39 @@ export class CardDriver<TState = unknown> {
   notify(nodeId: NodeId, change: CardStateChange): void {
     const card = this.cards.get(nodeId);
     if (card === undefined) return;
-    this.provider.update?.(card.container, card.node, change, card.state);
+    this.update(nodeId, card, change);
+  }
+
+  /**
+   * Report one change to a mounted card, and tear the card down if that throws.
+   *
+   * Releasing rather than reporting and carrying on: a provider whose `update`
+   * threw is in a state it did not intend, and `place` runs for every card on
+   * every frame of camera motion — so "leave it mounted" means throwing again
+   * sixty times a second against a card that is already wrong on screen.
+   *
+   * @returns whether the card is still mounted
+   */
+  private update(nodeId: NodeId, card: MountedCard<TState>, change: CardChange): boolean {
+    try {
+      this.provider.update?.(card.container, card.node, change, card.state);
+      return true;
+    } catch (cause) {
+      this.release(nodeId);
+      this.report(card.node, "update", cause, true);
+      return false;
+    }
   }
 
   /**
    * Tear a card down: `provider.release` runs while the container is still in
    * the DOM, then the container is detached and offered back to the pool.
    * Ignored for nodes with no mounted card.
+   *
+   * Detaching happens whether or not `release` threw. A provider that failed to
+   * clean up has lost nothing it can still use — the card is already gone from
+   * the driver's map — and the alternative is a live, pointer-catching card
+   * wedged on screen over a node that no longer has one.
    */
   release(nodeId: NodeId): void {
     const card = this.cards.get(nodeId);
@@ -272,9 +410,17 @@ export class CardDriver<TState = unknown> {
 
     this.cards.delete(nodeId);
     this.cancelPrefetch(nodeId);
-    this.provider.release?.(card.container, card.node, card.state);
+    let failure: unknown;
+    let failed = false;
+    try {
+      this.provider.release?.(card.container, card.node, card.state);
+    } catch (cause) {
+      failure = cause;
+      failed = true;
+    }
     card.container.remove();
     this.recycleContainer?.(card.container);
+    if (failed) this.report(card.node, "release", failure, true);
   }
 
   /** Release every card and abort every prefetch. */

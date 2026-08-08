@@ -220,8 +220,10 @@ import {
   type TypeStyleManager,
 } from "../styling/mod.ts";
 import {
+  cardFailureForfeitsCard,
   type CardNodeSource,
   type CardProvider,
+  type CardProviderFailure,
   type CardSyncEntry,
   DomCardOverlay,
   type DomOverlayConfig,
@@ -5809,9 +5811,14 @@ export class GraphMother {
    * Core owns where a card is and how big it is; everything inside it belongs
    * to the provider. Swapping providers releases every mounted card first, so
    * the outgoing provider tears down its own state.
+   *
+   * This is also the way back from a `card:error`: nodes the outgoing provider
+   * threw for are candidates again from here, in both the overlay that refused
+   * to card them and the controller that stopped declaring them.
    */
   setCardProvider(provider: CardProvider | null): void {
     this.ensureDomOverlay().setProvider(provider);
+    this.lodController?.clearCardSuppressions();
   }
 
   /**
@@ -5847,9 +5854,49 @@ export class GraphMother {
         drag: this.nodeDrag,
         maxCards: lod.maxCards,
         minCardLifetimeMs: lod.minCardLifetimeMs,
+        onCardFailure: (failure) => this.handleCardFailure(failure),
       });
     }
     return this.domOverlay;
+  }
+
+  /**
+   * Announce a contained card failure, and stop drawing the node as a hole.
+   *
+   * Two things have to happen, and only one of them is the event. The overlay
+   * has stopped offering this node to the provider, so the controller has to
+   * stop declaring it — otherwise the node's sprite stays faded out under a
+   * card that will never exist, and one broken card removes a node from the
+   * picture entirely.
+   *
+   * The event is emitted when anyone is listening and logged when nobody is,
+   * which is the emitter's own convention for a failure. Contained is not the
+   * same as unremarkable: a provider that throws is a defect in the consumer's
+   * code, and a consumer who has not asked to hear about it still needs to.
+   */
+  private handleCardFailure(failure: CardProviderFailure): void {
+    // Same rule as the overlay's own quarantine, from the same function: the
+    // two sides must agree about which failures cost the node its card, because
+    // a node one of them has given up on and the other still wants is precisely
+    // the sprite-less, card-less hole this call exists to prevent.
+    if (cardFailureForfeitsCard(failure.hook)) {
+      this.lodController?.suppressCard(failure.node.id, performance.now());
+    }
+
+    if (!this.events.hasListeners("card:error")) {
+      failure.error.log();
+      return;
+    }
+    this.events.emit({
+      type: "card:error",
+      timestamp: performance.now(),
+      nodeId: failure.node.id,
+      externalId: failure.node.externalId,
+      hook: failure.hook,
+      error: failure.error,
+      cause: failure.cause,
+      released: failure.released,
+    });
   }
 
   /**

@@ -39,6 +39,7 @@ import {
   requestHarnessDevice,
 } from "./gpu.ts";
 import type {
+  EventMap,
   GraphInput,
   GraphTypedInput,
   NodeId,
@@ -65,6 +66,12 @@ export interface HeadlessGraph {
   getNodeId(externalId: string | number): NodeId | undefined;
   readonly nodeCount: number;
   setLodConfig(config: Partial<LodConfig>): void;
+  /**
+   * Also the only public act that forces an LOD evaluation without a frame,
+   * which is what makes the controller drivable here: the harness never
+   * presents, so `renderFrame`'s tick never runs.
+   */
+  setLodFocus(nodes: Iterable<NodeId>): void;
   isCollapsed(node: NodeId): boolean;
   expandNode(node: NodeId): void;
   collapseNode(node: NodeId): void;
@@ -78,6 +85,8 @@ export interface HeadlessGraph {
   setScale(scale: number): void;
   getViewport(): ViewportState;
   startSimulation(): void;
+  on<K extends keyof EventMap>(type: K, handler: (event: EventMap[K]) => void): void;
+  off<K extends keyof EventMap>(type: K, handler: (event: EventMap[K]) => void): void;
   dispose(): void;
 }
 

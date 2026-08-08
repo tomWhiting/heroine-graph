@@ -386,6 +386,17 @@ export class LODController {
   /** Clock value each currently-carded node was first carded at. */
   readonly #cardedSince = new Map<NodeId, number>();
   /**
+   * Nodes the overlay refuses to card, so the controller stops declaring them.
+   *
+   * Without it the two disagree permanently: the controller goes on naming a
+   * node in the card set, which fades its sprite out, while the overlay
+   * declines to mount it — and the node renders as neither sprite nor card. A
+   * hole in the graph is the failure mode "one bad card must not kill the
+   * graph" is actually about, and containment inside the overlay cannot fix it,
+   * because the sprite belongs to the controller.
+   */
+  readonly #cardSuppressed = new Set<NodeId>();
+  /**
    * The last card sync saw a node large enough to card or prefetch, whether or
    * not the viewport cull kept it.
    *
@@ -564,6 +575,56 @@ export class LODController {
     }
   }
 
+  /**
+   * Stop declaring a node as carded, and give it its sprite back.
+   *
+   * The answer to a card the overlay could not create. The controller's half of
+   * the swap has already happened by then — the sprite is ramping out under a
+   * card that does not exist — so the ramp is reversed through the ordinary
+   * crossfade, exactly as dropping a card does, and the node goes on being
+   * drawn as a sprite like any other.
+   *
+   * Deliberately does not re-derive the card set: the failure that prompts this
+   * arrives while the overlay is inside a sync, and re-declaring from here would
+   * re-enter it. The fade-in started below is enough — it makes the next
+   * {@link LODController.tick} advance the crossfade, which re-derives the set
+   * with this node no longer in it.
+   *
+   * The suppression lifts on {@link LODController.clearCardSuppressions}, on a
+   * rebuilt hierarchy, on a topology change, and on nothing else — the last two
+   * because a suppression names a slot and each of them may hand that slot to a
+   * different node. Zoom does not lift it: a provider that threw for a node will
+   * throw for it again, and a retry loop is one failure per node per evaluation
+   * for as long as the graph is open.
+   *
+   * @param node - Slot to stop carding
+   * @param nowMs - Caller's clock, for the fade only (see the module doc)
+   */
+  suppressCard(node: NodeId, nowMs: number): void {
+    if (node < 0 || node >= this.#nodeCount) return;
+    if (this.#cardSuppressed.has(node)) return;
+    this.#cardSuppressed.add(node);
+
+    if (this.#cardedMask[node] !== 1) return;
+    this.#cardedMask[node] = 0;
+    this.#cardedSince.delete(node);
+    this.#crossfade.fadeIn([node], nowMs, this.#config.transitionMs);
+    this.#host.uploadNodeAlpha(this.#crossfade);
+  }
+
+  /**
+   * Lift every card suppression and re-declare the card set.
+   *
+   * The counterpart to registering a new provider: the nodes the old one failed
+   * for are candidates again, and the ones that still qualify take their cards
+   * back in the same call rather than waiting for the camera to move.
+   */
+  clearCardSuppressions(): void {
+    if (this.#cardSuppressed.size === 0) return;
+    this.#cardSuppressed.clear();
+    this.#syncCards(this.#lastCardClockMs);
+  }
+
   /** Nodes in the cut, ascending. Every slot when LOD is off. */
   getVisibleNodes(): Uint32Array {
     return this.#visible.slice();
@@ -639,9 +700,19 @@ export class LODController {
    * that matters is one the camera cannot express: the hierarchy is re-read
    * and re-adopted from the host, which is what re-derives mass, the proxy
    * radii and the edge aggregation the mutation invalidated.
+   *
+   * Card suppressions go now rather than waiting for that re-adoption. They
+   * name slots, a removal compacts slots, and a suppression left on a slot that
+   * changed hands stops the controller declaring a node that never failed —
+   * which is a hole in the graph with nothing to announce it. Dropping them
+   * here bounds the cost to one retry per mutation for a node whose provider is
+   * genuinely broken, and the overlay's own quarantine is the authority that
+   * catches that retry: unlike this set it is keyed by producer id, so it
+   * refuses the same node and forgives the new occupant of its slot.
    */
   handleTopologyChange(): void {
     this.#forceFull = true;
+    this.#cardSuppressed.clear();
   }
 
   /**
@@ -803,6 +874,9 @@ export class LODController {
     this.#hasCut = false;
     this.#pendingHide.clear();
     this.#cardedSince.clear();
+    // Suppressions name slots of the hierarchy being replaced, and a rebuilt
+    // one may have put an entirely different node in each of them.
+    this.#cardSuppressed.clear();
     this.#cardBandActive = false;
 
     this.#mass = new Float32Array(n);
@@ -1654,6 +1728,9 @@ export class LODController {
     let bandActive = false;
 
     for (const slot of this.#visible) {
+      // A suppressed node is neither wanted nor offered — asked first, so it
+      // costs no radius read and cannot hold the band open on its own.
+      if (this.#cardSuppressed.has(slot)) continue;
       const worldRadius = this.#host.getNodeRadius(slot);
       const radius = worldRadius * this.#zoom;
       if (radius >= prefetchThreshold) bandActive = true;

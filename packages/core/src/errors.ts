@@ -5,6 +5,10 @@
  * All errors include context and are actionable.
  */
 
+// Type-only, and the one import this module has: `types.ts` imports the error
+// class back, so anything but an erased import would close a runtime cycle.
+import type { CardProviderHook } from "./types.ts";
+
 /**
  * Error codes for categorizing errors.
  */
@@ -44,6 +48,9 @@ export enum ErrorCode {
 
   // Lifecycle errors (7xxx)
   DISPOSED_ACCESS = 7001,
+
+  // Overlay errors (8xxx)
+  CARD_PROVIDER_FAILED = 8001,
 
   // General errors (9xxx)
   UNKNOWN_ERROR = 9999,
@@ -257,6 +264,40 @@ export const Errors = {
       `Layer not found: ${layerType}`,
       { layerType },
       "Valid layer types are: heatmap, contour, metaball, labels.",
+    );
+  },
+
+  /**
+   * Create a card provider failure error.
+   *
+   * The provider contract is a set of rules core cannot type-check, so a throw
+   * out of one of its four hooks is the only signal that a rule was broken. The
+   * suggestion names the rules rather than guessing which one it was: core saw
+   * an exception, not an intent.
+   *
+   * @param hook - Which provider callback threw
+   * @param nodeId - GPU slot the card stood for
+   * @param externalId - Producer identifier of that node, which is what a
+   *   consumer's own records are keyed on
+   * @param cause - The value the provider threw
+   */
+  cardProviderFailed(
+    hook: CardProviderHook,
+    nodeId: number,
+    externalId: string | number,
+    cause: unknown,
+  ): GraphMotherError {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    return new GraphMotherError(
+      ErrorCode.CARD_PROVIDER_FAILED,
+      `Card provider threw in ${hook}() for node ${String(externalId)}: ${detail}`,
+      { hook, nodeId, externalId, originalError: cause },
+      "A provider must mount exactly once into the container core hands it, own " +
+        "every child it adds, and remove those children in release() — containers " +
+        "are pooled, and a dirty one is dropped. Core has contained this failure. " +
+        "A throw from mount() or update() also stops the node being offered to this " +
+        "provider until setCardProvider() replaces it; prefetch() and release() are " +
+        "reported and otherwise cost the node nothing.",
     );
   },
 

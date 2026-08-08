@@ -871,6 +871,86 @@ Deno.test("cards: the budget keeps the largest and weight breaks ties", () => {
   assertEquals(cardedNodes(log), [2, 3]);
 });
 
+Deno.test("cards: a suppressed node stops being declared and gets its sprite back", () => {
+  // The answer to a card the overlay could not create. The controller has
+  // already faded the sprite out under a card that does not exist, so without
+  // this the node renders as neither sprite nor card — a hole in the graph.
+  const hierarchy = hierarchyOf([-1, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  log.radiusOf = () => 48;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  for (let frame = 1; frame <= 20; frame++) controller.tick(frame * 16);
+  assertEquals(cardedNodes(log), [0, 1]);
+  assertEquals(controller.crossfade.alphaOf(1), 0, "the carded node's sprite is faded out");
+
+  controller.suppressCard(1, 400);
+  controller.tick(400 + DEFAULT_LOD_CONFIG.transitionMs / 2);
+  assertEquals(controller.crossfade.alphaOf(1), 0.5, "the sprite comes back over the same ramp");
+  controller.tick(400 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(controller.crossfade.alphaOf(1), 1, "and comes all the way back");
+
+  // The fade the suppression started is what drives the re-derivation: nothing
+  // else would have told the host to stop expecting this card.
+  assertEquals(cardedNodes(log), [0], "a suppressed node must not be declared again");
+  log.viewport.scale = 2;
+  controller.viewportChanged();
+  controller.tick(2000);
+  assertEquals(cardedNodes(log), [0], "not even after a zoom that would have carded it");
+  assertNoReheat(log);
+});
+
+Deno.test("cards: clearing the suppressions cards the node again", () => {
+  const hierarchy = hierarchyOf([-1, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  log.radiusOf = () => 48;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  controller.suppressCard(1, 100);
+  controller.tick(100 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(cardedNodes(log), [0]);
+
+  // Registering a working provider is the documented way back, and it must not
+  // wait for the camera to move.
+  controller.clearCardSuppressions();
+
+  assertEquals(cardedNodes(log), [0, 1]);
+});
+
+Deno.test("cards: a topology change lifts the suppressions, because it moves slots", () => {
+  // A suppression names a slot; a removal compacts slots. Held across one, it
+  // stops the controller declaring a node that never failed — which renders as
+  // neither sprite nor card, with nothing to announce it and no act a consumer
+  // would think to perform. The controller cannot tell whose slot it is (it has
+  // no producer ids), so it forgives on the one signal it does get. The retry
+  // that costs is caught by the overlay's quarantine, which *is* keyed by
+  // producer id, so a node that really is broken is refused there instead.
+  //
+  // Deliberately not a change of hierarchy object: adoption already clears the
+  // set, and this is the contract of the other entry point.
+  const hierarchy = hierarchyOf([-1, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  log.radiusOf = () => 48;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  controller.suppressCard(1, 100);
+  controller.tick(100 + DEFAULT_LOD_CONFIG.transitionMs);
+  assertEquals(cardedNodes(log), [0], "the suppressed node is not declared");
+
+  controller.handleTopologyChange();
+  controller.tick(1000);
+
+  assertEquals(
+    cardedNodes(log),
+    [0, 1],
+    "the slot's occupant is in question, so it is a candidate",
+  );
+  assertNoReheat(log);
+});
+
 // =============================================================================
 // Budget
 // =============================================================================

@@ -4,7 +4,35 @@
 lockstep: core depends on the wasm package at the same minor, and a core
 release that does not name a matching wasm release is a bug (see 0.3.0).
 
-## Unreleased
+## 0.4.0
+
+A minor rather than a patch because the card surface grows: `createCardStore`,
+the `card:error` event and the failure types below are new exports, and
+`CardDriver.mount` changes its return type. `@graphmother/wasm` is republished at
+0.4.0 with no Rust changes, because the lockstep rule above is what makes
+`@graphmother/core@^0.4.0` resolvable against a wasm package at the same minor.
+
+### Added
+
+- **`card:error`, and a defined answer to a card provider that throws.** A
+  provider is consumer code running inside core's per-frame path; uncontained,
+  one card that threw stranded an attached container in the overlay and took the
+  render callback down with it on every subsequent frame — edges, nodes, compute
+  submit and position readback all aborted, so one bad card froze the graph while
+  the loop spun. All four provider hooks are now contained at the single place
+  the contract is enforced, the card is left in a defined state, and the failure
+  is announced: emitted as `card:error` when anything is listening, logged when
+  nothing is. New: `ErrorCode.CARD_PROVIDER_FAILED`, `Errors.cardProviderFailed`,
+  `CardErrorEvent` and its `EventMap` entry, `CardProviderHook`,
+  `CardProviderFailure`, `cardFailureForfeitsCard`,
+  `CardDriverOptions.onProviderError`, `DomCardOverlayOptions.onCardFailure`,
+  `DomCardOverlay.failedCards`, and
+  `LODController.suppressCard`/`clearCardSuppressions`. See
+  `docs/lod-and-cards.md`.
+- **`createCardStore`**, with `CardStore` and `LiveCard`: the card contract as a
+  subscribable list, for declarative frameworks that render cards themselves
+  rather than into the element `mount` is handed. `@graphmother/react`'s
+  `<GraphCards>` is built on it.
 
 ### Fixed
 
@@ -98,6 +126,28 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
   including that point the ceiling binds as before, and `LodChangeEvent.budget`
   reports which of the two regimes a cut came from.
 
+- **A broken card no longer leaves a hole in the graph.** The overlay stops
+  offering a node whose provider failed, and the LOD controller stops declaring
+  it — because the controller had already faded the node's sprite out under a
+  card that was never going to exist, so containment inside the overlay alone
+  left the node drawn as neither sprite nor card, and consuming a slot of
+  `maxCards` no other node could use. `setCardProvider` is the way back and
+  reaches both halves.
+- **A quarantined slot no longer bans its next occupant.** Cards and the
+  quarantine are keyed by GPU slot and `removeNodesBatch` compacts slots, so a
+  survivor could land in a slot another node's card had failed in and never be
+  carded again — with no event, no diagnostic, and only global acts as a way
+  back. The quarantine now records the producer id it was taken against and is
+  checked against the slot's current occupant. Consumers calling
+  `removeNodesBatch` with the overlay enabled were the exposed case.
+- **A `prefetch` or `release` that threw no longer costs the node its card.**
+  Both were quarantining, which contradicted the contract they are documented
+  under: `prefetch` is advisory and abortable, so a speculative fetch that raised
+  says nothing about whether `mount` would have worked, and `release` runs after
+  a card the provider built and core displayed. Only `mount` and `update` — the
+  two a card cannot exist without, and `update` runs on every frame of camera
+  motion — now forfeit it. The rule is exported as `cardFailureForfeitsCard` so
+  the overlay and the controller cannot disagree about it.
 - **A card is now laid out at its own CSS size and never drawn larger than it.**
   The card box was held in graph units and the overlay container carries the
   camera, so a card was laid out at `size / cameraScale` and magnified back up.
@@ -125,6 +175,13 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
   unaffected. `CardPlacement.width`/`height` are now the layout box in CSS
   pixels rather than an extent in graph units — the rendered extent is
   `width * scale`.
+- `CardDriver.mount` returns `boolean` — whether the card exists — rather than
+  `void`. A caller keeping its own record of the card must roll that record back
+  on `false`. Only consumers driving `CardDriver` directly are affected; the
+  overlay is the only caller inside core.
+- `Errors.cardProviderFailed` takes a `CardProviderHook` rather than a `string`.
+  A caller passing one of the four hook names is unaffected; anything else was
+  always producing a message that named a callback core never called.
 
 - `LodConfig` carries a `rootDetailReserve`, defaulting to `0.25`: how far past
   an unachievable `maxVisibleNodes` the cut may go, as a fraction of the root

@@ -1,10 +1,11 @@
 /**
  * DOM Card Overlay Module
  *
- * The consumer-facing card contract, the driver that enforces it, the default
- * renderer used when no provider is registered, the slot ↔ producer-id mapping
- * cards key themselves on, and the overlay engine that decides which cards
- * exist and where they sit.
+ * The consumer-facing card contract, the driver that enforces and contains it,
+ * the default renderer used when no provider is registered, the store that
+ * turns the contract into a subscribable list for a declarative framework, the
+ * slot ↔ producer-id mapping cards key themselves on, and the overlay engine
+ * that decides which cards exist and where they sit.
  *
  * Deliberately free of GPU imports: the overlay is a peer of the layer system,
  * not a `Layer` (a `Layer` renders into a `GPUCommandEncoder`, which a DOM
@@ -13,8 +14,11 @@
  * @module
  */
 
-export { CardDriver } from "./driver.ts";
-export type { CardDriverOptions, CardPlacement } from "./driver.ts";
+export { CardDriver, cardFailureForfeitsCard } from "./driver.ts";
+export type { CardDriverOptions, CardPlacement, CardProviderFailure } from "./driver.ts";
+
+export { createCardStore } from "./card_store.ts";
+export type { CardStore, LiveCard } from "./card_store.ts";
 
 export {
   CARD_DRAG_HANDLE_ATTRIBUTE,
