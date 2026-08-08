@@ -113,6 +113,172 @@ Deno.test("mutation invalidation: the invalidation still drops all four", () => 
   }
 });
 
+const SETTLE = "this.beginTopologyChange()";
+
+/**
+ * The deliberate exception: `load` replaces every position a translate would
+ * move, so the drift is not lost there but moot, and paying it would be buffer
+ * writes spent on positions about to be overwritten.
+ */
+const EXEMPT = "load";
+
+/** One method of the class: how it was declared, and its body. */
+interface Method {
+  /** Whether the declaration carries `private`, i.e. is unreachable from a host. */
+  hidden: boolean;
+  body: string;
+}
+
+/**
+ * Every method of `GraphMother`, by name.
+ *
+ * Enumerated rather than named, because the claim being tested is about the
+ * *set* of paths into the invalidation: a hand-written list of entry points
+ * asserts only that the listed ones are correct and is silent about the one
+ * somebody adds next, which is precisely how a path comes to be missed. The
+ * declaration pattern is anchored to two-space indentation, so nothing nested
+ * inside a body — an object literal's methods, a `for (` — can be mistaken for
+ * a declaration.
+ */
+function classMethods(): Map<string, Method> {
+  const declaration =
+    /\n {2}(private |public |protected )?(?:static )?(?:async )?([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\(/g;
+  const declarations = [...CLASS_SOURCE.matchAll(declaration)];
+  const methods = new Map<string, Method>();
+  for (let d = 0; d < declarations.length; d++) {
+    const match = declarations[d];
+    // Bounded by the next declaration, so a bodiless overload signature adopts
+    // no body rather than the following method's.
+    const limit = declarations[d + 1]?.index ?? CLASS_SOURCE.length;
+    const open = CLASS_SOURCE.indexOf("{\n", match.index);
+    if (open < 0 || open > limit) continue;
+    let depth = 0;
+    for (let i = open; i < CLASS_SOURCE.length; i++) {
+      const c = CLASS_SOURCE[i];
+      if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        methods.set(match[2], {
+          hidden: match[1] === "private ",
+          body: CLASS_SOURCE.slice(open, i + 1),
+        });
+        break;
+      }
+    }
+  }
+  return methods;
+}
+
+const METHODS = classMethods();
+
+/** The methods `name`'s body calls on `this`. */
+function callees(name: string): string[] {
+  const body = METHODS.get(name)!.body;
+  return [...METHODS.keys()].filter(
+    (other) => other !== name && new RegExp(`this\\.${other}\\(`).test(body),
+  );
+}
+
+/**
+ * Whether some path from `name` reaches the invalidation without passing the
+ * settle first.
+ *
+ * A method that settles closes every path below it, which is what lets an entry
+ * point cover the private helpers it delegates the invalidation to. Recursion
+ * through a cycle answers false: a cycle adds no path that its entry did not
+ * already offer.
+ */
+function unsettledPathToInvalidation(name: string, seen = new Set<string>()): boolean {
+  if (seen.has(name)) return false;
+  seen.add(name);
+  const body = METHODS.get(name)!.body;
+  if (body.includes(SETTLE)) return false;
+  if (body.includes(INVALIDATE)) return true;
+  return callees(name).some((callee) => unsettledPathToInvalidation(callee, seen));
+}
+
+Deno.test("mutation invalidation: the enumerator agrees with the by-name extractor", () => {
+  // The oracle below is only worth anything if it sees the real bodies: an
+  // enumerator that silently found nothing would pass every assertion in it.
+  for (const name of Object.keys(SENTINELS)) {
+    const found = METHODS.get(name);
+    assert(found !== undefined, `the enumerator missed ${name}`);
+    assertEquals(found.body, methodBody(name), `the two extractors disagree about ${name}`);
+  }
+  assert(METHODS.size > 100, `only ${METHODS.size} methods enumerated; the pattern has drifted`);
+});
+
+Deno.test("mutation invalidation: no reachable path drops the derived state unsettled", () => {
+  // Every path that reaches the invalidation loses the outstanding fold drift,
+  // whether or not it moved a slot: the hierarchy goes, and the anchors that
+  // measured the drift go with it at the next adoption. So the obligation is
+  // owed by the invalidation's callers rather than by mutation as such, and it
+  // is checked over everything a host can call plus everything nothing calls.
+  const callers = new Map<string, number>();
+  for (const name of METHODS.keys()) {
+    for (const callee of callees(name)) callers.set(callee, (callers.get(callee) ?? 0) + 1);
+  }
+
+  const offenders: string[] = [];
+  for (const [name, method] of METHODS) {
+    const reachable = !method.hidden || !callers.has(name);
+    if (!reachable || name === EXEMPT) continue;
+    if (unsettledPathToInvalidation(name)) offenders.push(name);
+  }
+  assertEquals(
+    offenders,
+    [],
+    "these reach invalidateTopologyDerived without settling the outstanding fold drift first",
+  );
+
+  // Vacuity guard: the oracle is a search for the absence of something, so it
+  // has to be shown finding the paths that do exist. `load` is one standing
+  // example; the rest are made by taking each settle back out and requiring the
+  // path it was covering to reappear, which is the only way to know the pass
+  // above came from the call and not from the search failing to look.
+  assert(unsettledPathToInvalidation(EXEMPT), "load must still be the one exempt path");
+  assert(!methodBody(EXEMPT).includes(SETTLE));
+  for (const name of ["addNode", "removeNodesBatch", "addEdgesBatch", "setForceAlgorithm"]) {
+    const settled = METHODS.get(name)!;
+    METHODS.set(name, { ...settled, body: settled.body.replaceAll(SETTLE, "") });
+    const found = unsettledPathToInvalidation(name);
+    METHODS.set(name, settled);
+    assert(found, `${name} would pass this oracle even without its settle`);
+  }
+});
+
+Deno.test("mutation invalidation: the settle precedes what it protects", () => {
+  // Presence is not enough: once a compaction has run, reading a proxy's
+  // position reads whichever node moved into its slot, so a flush issued from
+  // there translates subtrees by an arbitrary distance.
+  for (const [name, method] of METHODS) {
+    const settle = method.body.indexOf(SETTLE);
+    if (settle < 0) continue;
+    const invalidate = method.body.indexOf(INVALIDATE);
+    if (invalidate >= 0) {
+      assert(settle < invalidate, `${name} settles after it has already invalidated`);
+    }
+    for (const callee of callees(name)) {
+      if (!unsettledPathToInvalidation(callee, new Set())) continue;
+      const call = method.body.indexOf(`this.${callee}(`);
+      assert(settle < call, `${name} settles after calling ${callee}, which invalidates`);
+    }
+  }
+
+  const batch = methodBody("removeNodesBatch");
+  assert(
+    batch.indexOf(SETTLE) < batch.indexOf("nodeSlotRemap.set("),
+    "removeNodesBatch settles the drift after it has already moved the slots",
+  );
+});
+
+Deno.test("mutation invalidation: a compaction hands its slot remap to the LOD controller", () => {
+  // The focus set is host-declared slot numbers, so it is the one piece of LOD
+  // state a rebuilt hierarchy cannot re-derive; it moves with the same map the
+  // pins move with, or it follows whichever node inherited the slot.
+  assert(methodBody("removeNodesBatch").includes("remapSlots(nodeSlotRemap)"));
+  assert(methodBody("load").includes("remapSlots(new Map())"));
+});
+
 Deno.test("mutation invalidation: nothing else assigns the retained hierarchy", () => {
   // A second assignment site is a second answer to "is the cache stale?", which
   // is how the invalidation came to be reachable from only one path.

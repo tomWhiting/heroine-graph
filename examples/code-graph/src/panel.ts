@@ -196,6 +196,7 @@ const HUD_FIELDS = [
   ["nodes", "nodes"],
   ["edges", "edges"],
   ["visible", "visible"],
+  ["undrawn", "not drawn"],
   ["folded", "folded"],
   ["cards", "cards"],
   ["tick", "tick"],
@@ -205,6 +206,7 @@ const HUD_FIELDS = [
 /** Mount the readout and return a render function over {@link HudSnapshot}. */
 export function mountHud(root: HTMLElement): Hud {
   const values = new Map<string, HTMLElement>();
+  const captions = new Map<string, HTMLElement>();
   for (const [key, caption] of HUD_FIELDS) {
     const cell = document.createElement("div");
     cell.className = "hud-cell";
@@ -217,6 +219,7 @@ export function mountHud(root: HTMLElement): Hud {
     cell.append(value, label);
     root.append(cell);
     values.set(key, value);
+    captions.set(key, label);
   }
 
   function write(key: string, text: string): void {
@@ -224,11 +227,21 @@ export function mountHud(root: HTMLElement): Hud {
     if (cell) cell.textContent = text;
   }
 
+  function writeCaption(key: string, text: string): void {
+    const label = captions.get(key);
+    if (label) label.textContent = text;
+  }
+
   return {
     render(snapshot: HudSnapshot): void {
       write("nodes", formatCount(snapshot.nodes));
       write("edges", formatCount(snapshot.edges));
       write("visible", formatCount(snapshot.visible));
+      write("undrawn", formatCount(snapshot.undrawn));
+      // The caption carries what folded them: the same figure means "you are
+      // zoomed out" under `zoom` and "the ceiling is what you are seeing" under
+      // `budget`, and only one of those is worth acting on.
+      writeCaption("undrawn", snapshot.undrawnReason ?? "not drawn");
       write("folded", formatCount(snapshot.folded));
       write("cards", String(snapshot.cards));
       write("tick", formatMs(snapshot.tickMs));

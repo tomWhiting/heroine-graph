@@ -1758,8 +1758,11 @@ export class GraphMother {
       : parseGraphInput(data as GraphInput, this.parserConfig);
 
     // Pins reference slots of the previous graph — the fresh nodeFlags buffer
-    // is zero-filled, so the CPU set must reset to match
+    // is zero-filled, so the CPU set must reset to match. The LOD focus set is
+    // slot-keyed on the same graph and no slot of it survives, which is what an
+    // empty remap says.
     this.pinnedNodes.clear();
+    this.lodController?.remapSlots(new Map());
 
     // Every other slot-indexed interaction/animation cache is equally stale
     this.resetPerGraphState();
@@ -2101,6 +2104,38 @@ export class GraphMother {
   }
 
   /**
+   * Settle what the operation about to run would otherwise destroy.
+   *
+   * A collapsed proxy goes on simulating while the subtree folded into it is
+   * frozen, and the controller pays the difference back to the descendants when
+   * the fold opens. That payment is measured against the slot space and the
+   * hierarchy the fold was taken in, and
+   * {@link GraphMother.invalidateTopologyDerived} ends both: it drops the
+   * hierarchy, and the anchors that measured the drift go with it at the next
+   * adoption, as the only safe thing to do with numbers naming a tree that no
+   * longer exists. So the drift is paid out here, before any of that;
+   * afterwards there is nothing coherent left to pay it with, and every such
+   * operation would quietly discard whatever was owed at the time.
+   *
+   * The rule is therefore about the invalidation and not about mutation as
+   * such: every path that can reach `invalidateTopologyDerived` passes through
+   * here first, including the ones that change no topology at all and only drop
+   * what was derived from it — switching force algorithm, re-uploading the
+   * bubble knobs. A mutation that also *moves* the slot space has the stricter
+   * obligation of reaching here before the move rather than merely before the
+   * invalidation, because a proxy's position read after a compaction is some
+   * other node's.
+   *
+   * Deliberately not called from {@link GraphMother.load}, which replaces every
+   * position a translate would move: there the drift is not lost but moot, and
+   * issuing it would be three buffer writes per fold spent on positions that
+   * are about to be overwritten.
+   */
+  private beginTopologyChange(): void {
+    this.lodController?.flushFoldDrift();
+  }
+
+  /**
    * Drop everything derived from the topology that just changed.
    *
    * The hierarchy, the rolled-up masses, the inflated proxy radii and the LOD
@@ -2392,6 +2427,7 @@ export class GraphMother {
    * @returns The assigned node ID (the user-provided id)
    */
   async addNode(node: NodeInput): Promise<NodeId> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) {
       throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
@@ -2505,6 +2541,7 @@ export class GraphMother {
    * @returns true if the node was found and removed
    */
   async removeNode(id: NodeId | string): Promise<boolean> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) return false;
 
     const gs = this.graphState;
@@ -2570,6 +2607,7 @@ export class GraphMother {
    * @returns The edge index, or undefined if source/target not found
    */
   async addEdge(edge: EdgeInput): Promise<EdgeId | undefined> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) return undefined;
 
     const gs = this.graphState;
@@ -2668,6 +2706,7 @@ export class GraphMother {
    * Internal: Remove an edge by its slot index using swap-remove.
    */
   private async removeEdgeByIndex(index: number): Promise<boolean> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) return false;
 
     const gs = this.graphState;
@@ -2744,6 +2783,7 @@ export class GraphMother {
    * @returns Array of assigned node IDs
    */
   async addNodes(nodes: NodeInput[]): Promise<NodeId[]> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) {
       throw new GraphMotherError(
         ErrorCode.INVALID_GRAPH_DATA,
@@ -2884,6 +2924,7 @@ export class GraphMother {
   async removeNodesBatch(
     ids: (NodeId | string)[],
   ): Promise<{ removedCount: number; nodeSlotRemap: Map<number, number> }> {
+    this.beginTopologyChange();
     const emptyResult = { removedCount: 0, nodeSlotRemap: new Map<number, number>() };
     if (!this.graphState || !this.buffers || !this.simBuffers) return emptyResult;
 
@@ -3043,15 +3084,19 @@ export class GraphMother {
       gs.addEdgeAdjacency(i, gs.edgeSources[i]!, gs.edgeTargets[i]!);
     }
 
-    // Remap pinned slots — removed nodes drop their pin, survivors may have
-    // moved. The pin bits themselves moved with the flag shadow above; this
-    // keeps the CPU-side set (isNodePinned / getPinnedNodes) in agreement.
+    // Remap the slot-keyed sets a caller declared rather than the graph derived
+    // — removed nodes drop their membership, survivors may have moved. The pin
+    // bits themselves moved with the flag shadow above; this keeps the CPU-side
+    // set (isNodePinned / getPinnedNodes) in agreement, and the LOD focus set
+    // pointing at the nodes the caller named rather than at whichever nodes
+    // inherited their slots.
     const remappedPinned = new Set<NodeId>();
     for (const slot of this.pinnedNodes) {
       const newSlot = nodeSlotRemap.get(slot);
       if (newSlot !== undefined) remappedPinned.add(newSlot);
     }
     this.pinnedNodes = remappedPinned;
+    this.lodController?.remapSlots(nodeSlotRemap);
 
     // Drop the derived state before the flush, not after: a collapsed proxy's
     // borrowed radius is restored through the rebuilt id map, so it has to be
@@ -3154,6 +3199,7 @@ export class GraphMother {
    * @returns Array of edge IDs (undefined for edges with invalid source/target)
    */
   async addEdgesBatch(edges: EdgeInput[]): Promise<(EdgeId | undefined)[]> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) return [];
     if (edges.length === 0) return [];
 
@@ -3287,6 +3333,7 @@ export class GraphMother {
    * @returns Number of edges actually removed
    */
   async removeEdgesBatch(ids: (EdgeId | string)[]): Promise<number> {
+    this.beginTopologyChange();
     if (!this.graphState || !this.buffers || !this.simBuffers) return 0;
     if (ids.length === 0) return 0;
 
@@ -4706,6 +4753,11 @@ export class GraphMother {
       bubbleUploadChanged(previous, this.forceConfig) && this.state.loaded &&
       this.algorithmBuffers
     ) {
+      // Inside the branch rather than at the top: the re-upload drops the
+      // hierarchy and with it the fold anchors, but the calls that skip it
+      // change nothing a fold was measured against, and this runs per knob
+      // movement.
+      this.beginTopologyChange();
       this.uploadAlgorithmEdgeData(this.gpuContext.device);
     }
 
@@ -4833,6 +4885,11 @@ export class GraphMother {
       );
 
       this.rebuildAlgorithmBindGroups();
+
+      // The switch drops the hierarchy along with everything else derived from
+      // the topology, so a live fold is owed its drift here exactly as it is
+      // before a mutation — nothing above this point moved a node.
+      this.beginTopologyChange();
 
       // Upload algorithm-specific edge data
       this.uploadAlgorithmEdgeData(this.gpuContext.device);

@@ -55,6 +55,49 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
   it did. That is the correction, not a side effect: the previous extent was one
   the contents never fit inside.
 
+- **A semantic-LOD focus set now survives a node removal.** `setLodFocus` takes
+  slot numbers, and `removeNodes` compacts the slot space, so a focus declared
+  once went on naming the numbers rather than the nodes: after a compaction it
+  carded whichever nodes had moved into those slots, and a node the removal
+  deleted kept a card standing over a stranger. The focus set is now rewritten
+  through the same slot remap the pins already moved with, so a host that
+  declared its focus once never has to re-declare it, and a focused node the
+  removal deleted is dropped rather than left pointing somewhere.
+
+- **A live fold no longer loses its accumulated drift when the topology
+  changes.** A collapsed proxy keeps simulating while the subtree folded into it
+  is frozen, and the difference is paid out to the descendants when the fold
+  opens. That payment is only expressible against the slot space and the
+  hierarchy the fold was measured in, and every path that drops the derived
+  topology ends both — so each add, remove or algorithm switch silently
+  discarded whatever was outstanding, and the losses accumulated in the
+  descendants' positions across a stream of mutations until a folded subtree
+  reappeared detached from its parent. Every such path now settles the drift
+  first, and a mutation that also moves the slot space settles it before the
+  move. A streaming producer mutating under a hot simulation pays one position
+  write per live fold per mutation, bounded by the drift since the previous one.
+
+- **A fold is no longer translated by a delta measured across a compaction.**
+  Between the moment a host declares a slot remap and the moment the rebuilt
+  hierarchy is adopted, a proxy's anchor names the outgoing slot space while its
+  position names the new one, so their difference is not a drift and the
+  descendants it would move are not the ones that were folded. Every route to a
+  fold fix-up now declines across that seam rather than translating subtrees by
+  an arbitrary distance — including disabling LOD, which restores every fold and
+  reaches it without consulting the hierarchy on the way in.
+
+- **A forest wider than `maxVisibleNodes` is no longer a bare layer of
+  proxies.** Roots are admitted unconditionally — nothing sits above them to
+  fold into — so a graph with more roots than the ceiling exceeded it before the
+  first expansion was even considered, and every expansion after that was
+  refused for overrunning a budget already overrun: no zoom level opened
+  anything. The cut is now built against the root layer plus
+  `LodConfig.rootDetailReserve` of it once the configured ceiling has stopped
+  being achievable — which is strictly once the root layer _exceeds_ it, since a
+  root layer equal to the ceiling is a cut that honours it exactly. Up to and
+  including that point the ceiling binds as before, and `LodChangeEvent.budget`
+  reports which of the two regimes a cut came from.
+
 - **A card is now laid out at its own CSS size and never drawn larger than it.**
   The card box was held in graph units and the overlay container carries the
   camera, so a card was laid out at `size / cameraScale` and magnified back up.
@@ -82,6 +125,20 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
   unaffected. `CardPlacement.width`/`height` are now the layout box in CSS
   pixels rather than an extent in graph units — the rendered extent is
   `width * scale`.
+
+- `LodConfig` carries a `rootDetailReserve`, defaulting to `0.25`: how far past
+  an unachievable `maxVisibleNodes` the cut may go, as a fraction of the root
+  layer. Set it to `0` for a `maxVisibleNodes` that is an absolute cap, at the
+  cost of a forest wider than the ceiling never opening. Additive for a caller
+  patching the config through `setLodConfig`, breaking for one constructing a
+  whole `LodConfig` literal.
+
+- `LodChangeEvent` carries three further members: `totalCount`, the nodes in the
+  hierarchy the cut was drawn from; `budget`, the ceiling the cut was actually
+  built against; and `hiddenByReason`, the undrawn nodes attributed to what
+  folded the proxy standing over them, summing to `totalCount - visibleCount`.
+  Additive for a listener, breaking for anything constructing the event — a test
+  double, or a host re-emitting it — which must now supply all three.
 
 ## 0.3.2
 

@@ -15,12 +15,26 @@
  * @module
  */
 
+// Typed against the module that declares it, not the barrel — see the note at
+// the top of `repo.ts`.
+import type { LodChangeEvent, LodTransitionReason } from "../../../packages/core/src/types.ts";
+
 /** Everything the readout draws, in one immutable snapshot. */
 export interface HudSnapshot {
   readonly nodes: number;
   readonly edges: number;
   /** Nodes the current LOD cut leaves on screen. */
   readonly visible: number;
+  /** Nodes the cut does not draw at all. */
+  readonly undrawn: number;
+  /**
+   * What accounts for most of them, or null while everything is drawn.
+   *
+   * The number alone cannot be acted on: a graph folded away by the camera is
+   * working as intended, while the same number under `budget` says the ceiling
+   * is what the user is looking at and raising it would show them more.
+   */
+  readonly undrawnReason: LodTransitionReason | null;
   /** Nodes currently standing in for a folded subtree. */
   readonly folded: number;
   /** DOM cards currently mounted. */
@@ -52,6 +66,8 @@ export class HudModel {
   #nodes = 0;
   #edges = 0;
   #visible = 0;
+  #undrawn = 0;
+  #undrawnReason: LodTransitionReason | null = null;
   #folded = 0;
   #cards = 0;
   #tickMs = 0;
@@ -77,13 +93,24 @@ export class HudModel {
     this.#nodes = nodes;
     this.#edges = edges;
     this.#visible = nodes;
+    this.#undrawn = 0;
+    this.#undrawnReason = null;
     this.#folded = 0;
     this.#cards = 0;
   }
 
-  /** Record a `lod:change` event. */
-  lodChanged(visibleCount: number): void {
-    this.#visible = visibleCount;
+  /**
+   * Record a `lod:change` event.
+   *
+   * The undrawn total is taken from the event's own accounting rather than from
+   * the node count this model was loaded with: under a streaming producer the
+   * two disagree between a mutation and the cut that follows it, and the event
+   * is the one that describes the cut it came from.
+   */
+  lodChanged(event: LodChangeEvent): void {
+    this.#visible = event.visibleCount;
+    this.#undrawn = event.totalCount - event.visibleCount;
+    this.#undrawnReason = dominantReason(event.hiddenByReason);
   }
 
   /**
@@ -146,12 +173,36 @@ export class HudModel {
       nodes: this.#nodes,
       edges: this.#edges,
       visible: this.#visible,
+      undrawn: this.#undrawn,
+      undrawnReason: this.#undrawnReason,
       folded: this.#folded,
       cards: this.#cards,
       tickMs: this.#tickMs,
       fps: this.#fps,
     };
   }
+}
+
+/**
+ * The reason with the largest share of the undrawn nodes, or null when nothing
+ * is undrawn.
+ *
+ * Ties go to the first reason in iteration order, which is stable for a record
+ * the library builds the same way every time; a HUD showing one of two equal
+ * halves has nothing to be right or wrong about.
+ */
+function dominantReason(
+  hidden: Readonly<Record<LodTransitionReason, number>>,
+): LodTransitionReason | null {
+  let best: LodTransitionReason | null = null;
+  let most = 0;
+  for (const reason of Object.keys(hidden) as LodTransitionReason[]) {
+    if (hidden[reason] > most) {
+      most = hidden[reason];
+      best = reason;
+    }
+  }
+  return best;
 }
 
 /**

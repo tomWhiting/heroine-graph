@@ -49,8 +49,36 @@ export interface LodConfig {
   readonly prefetchRatio: number;
   /** Crossfade duration, in ms, for a node entering or leaving the cut. */
   readonly transitionMs: number;
-  /** Hard ceiling on the size of the visible cut. */
+  /**
+   * Ceiling on the size of the visible cut, hard wherever it can be.
+   *
+   * A hierarchy's roots have nothing above them to fold into, so a forest whose
+   * root layer alone *exceeds* this number cannot honour it: the cut is at least
+   * that layer whatever the value says. Up to and including the point where the
+   * two are equal the ceiling binds exactly and the cut never exceeds it; past
+   * it the cut is built against the root layer plus
+   * {@link LodConfig.rootDetailReserve}, so that detail is still reachable
+   * rather than every expansion being refused. `LodChangeEvent.budget` reports
+   * the value each cut was actually built against.
+   */
   readonly maxVisibleNodes: number;
+  /**
+   * Fraction of the root layer left available for detail once
+   * {@link LodConfig.maxVisibleNodes} has stopped being achievable.
+   *
+   * A root cannot be folded, so a forest with more roots than the ceiling draws
+   * every one of them regardless, and from there every expansion is over budget
+   * by construction. Refusing them all turns the ceiling into a cliff: the cut
+   * is a bare layer of proxies that no amount of zooming opens. This is how far
+   * past that root layer the cut may then go, taken as a fraction of the layer
+   * rather than of the ceiling because it is the forest, not the ceiling, that
+   * the cut is already sized by, and never adding more than the ceiling itself.
+   *
+   * Zero restores the ceiling as an absolute cap at the cost of that cliff,
+   * which is the right trade for a host that would rather render nothing extra
+   * than overrun a hard memory or DOM limit.
+   */
+  readonly rootDetailReserve: number;
   /** Ceiling on simultaneously carded nodes. */
   readonly maxCards: number;
   /** Anti-flicker floor on how long a card stays once it exists, in ms. */
@@ -89,6 +117,7 @@ export const DEFAULT_LOD_CONFIG: LodConfig = {
   prefetchRatio: 2,
   transitionMs: 150,
   maxVisibleNodes: 4000,
+  rootDetailReserve: 0.25,
   maxCards: 150,
   minCardLifetimeMs: 400,
   minBandCommitFrames: 6,
@@ -142,6 +171,9 @@ export function resolveLodConfig(
     prefetchRatio: positive(patch.prefetchRatio, base.prefetchRatio, 1),
     transitionMs: positive(patch.transitionMs, base.transitionMs, 0),
     maxVisibleNodes: count(patch.maxVisibleNodes, base.maxVisibleNodes, 1),
+    // Zero is meaningful here — it is the opt-out — so this floors at 0 rather
+    // than at the smallest positive value the other extents use.
+    rootDetailReserve: positive(patch.rootDetailReserve, base.rootDetailReserve, 0),
     maxCards: count(patch.maxCards, base.maxCards, 0),
     minCardLifetimeMs: positive(patch.minCardLifetimeMs, base.minCardLifetimeMs, 0),
     minBandCommitFrames: count(patch.minBandCommitFrames, base.minBandCommitFrames, 0),

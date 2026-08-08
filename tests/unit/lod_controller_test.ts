@@ -28,7 +28,14 @@ import {
   retainSuppliedHierarchy,
 } from "../../packages/core/src/graph/hierarchy.ts";
 import type { CardSyncEntry } from "../../packages/core/src/overlay/overlay.ts";
-import type { NodeId, ViewportState } from "../../packages/core/src/types.ts";
+import type {
+  LodChangeEvent,
+  LodTransitionReason,
+  NodeCollapseEvent,
+  NodeExpandEvent,
+  NodeId,
+  ViewportState,
+} from "../../packages/core/src/types.ts";
 import { computeVisibleCut } from "../helpers/invariants.ts";
 import { CODE_TREE_SCALES, generateCodeTree } from "../fixtures/code_tree.ts";
 
@@ -186,6 +193,11 @@ interface Recorder {
   visibleShadow: Uint8Array;
   cards: CardSyncEntry[][];
   events: string[];
+  /**
+   * Every `lod:change` in full, because the accounting fields are numbers no
+   * summary string could carry and the identity between them is the claim.
+   */
+  lodChanges: LodChangeEvent[];
   /** Every property name read off the host, in order. */
   accessed: string[];
   reheatCalls: number;
@@ -229,6 +241,7 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     visibleShadow: new Uint8Array(hierarchy?.nodeCount ?? 0).fill(1),
     cards: [],
     events: [],
+    lodChanges: [],
     accessed: [],
     reheatCalls: 0,
     viewport: { x: VIEWPORT.x, y: VIEWPORT.y, scale: VIEWPORT.scale },
@@ -298,12 +311,13 @@ function recorder(hierarchy: RetainedHierarchy | null): Recorder {
     syncCards: (entries: readonly CardSyncEntry[]) => {
       state.cards.push([...entries]);
     },
-    emit: (event: { type: string; nodeId?: NodeId; reason?: string; visibleCount?: number }) => {
-      state.events.push(
-        event.type === "lod:change"
-          ? `lod:change/${event.visibleCount}`
-          : `${event.type}/${event.nodeId}/${event.reason}`,
-      );
+    emit: (event: LodChangeEvent | NodeCollapseEvent | NodeExpandEvent) => {
+      if (event.type === "lod:change") {
+        state.lodChanges.push(event);
+        state.events.push(`lod:change/${event.visibleCount}`);
+        return;
+      }
+      state.events.push(`${event.type}/${event.nodeId}/${event.reason}`);
     },
     setAlpha: reheat,
     setAlphaTarget: reheat,
@@ -889,6 +903,218 @@ Deno.test("budget: a generous budget expands everything", () => {
   assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3, 4, 5, 6]);
 });
 
+/**
+ * Twelve roots over one leaf each: a forest whose root layer alone overruns any
+ * ceiling below twelve, so every expansion from it starts over budget.
+ *
+ * Root radii descend with the slot, which makes the heap's order — widest
+ * subtree first — unambiguous, and every root is far above the expand
+ * threshold, so what holds a root folded can only be the budget.
+ */
+function wideForest(): RetainedHierarchy {
+  const roots = 12;
+  const parents: number[] = [];
+  for (let r = 0; r < roots; r++) parents.push(-1);
+  for (let r = 0; r < roots; r++) parents.push(r);
+  return hierarchyOf(parents, (slot) => (slot < roots ? 1000 - slot * 10 : 10));
+}
+
+Deno.test("budget: a forest wider than the ceiling still shows detail", () => {
+  // Nothing can fold a root, so a ceiling of ten over twelve roots is a number
+  // the cut cannot honour. Held to it literally, the first expansion is refused
+  // for overrunning a budget the cut had already overrun before it started —
+  // and so is every expansion after it, at every zoom, forever: the graph is a
+  // bare layer of proxies that no amount of zooming opens.
+  const { controller, log } = rig(wideForest(), { maxVisibleNodes: 10 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // Twelve roots plus a quarter of them: the three widest open.
+  assertEquals(
+    Array.from(controller.getVisibleNodes()),
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  );
+  for (const root of [3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    assert(
+      log.events.includes(`node:collapse/${root}/budget`),
+      `root ${root} must report the budget as what folded it`,
+    );
+  }
+  assertNoReheat(log);
+});
+
+/**
+ * Eight nodes as four roots over one child each: a forest whose root layer is
+ * exactly four, so a ceiling of four sits on the boundary between the regimes.
+ *
+ * Every node is far above the expand threshold, so nothing but the budget can
+ * hold a root folded, and the root radii descend so the heap order is fixed.
+ */
+function squareForest(): RetainedHierarchy {
+  return hierarchyOf([-1, -1, -1, -1, 0, 1, 2, 3], (slot) => (slot < 4 ? 1000 - slot * 10 : 10));
+}
+
+Deno.test("budget: a ceiling the root layer meets exactly is still satisfiable", () => {
+  // The boundary case, and the one the two regimes disagree about: four roots
+  // under a ceiling of four is a cut that honours the ceiling exactly — the
+  // root layer *is* a legal cut — so nothing here is unachievable and no
+  // reserve may be granted. Treating "the root layer has reached the ceiling"
+  // as the unachievable case overruns a ceiling the host declared hard by a
+  // node, which is the difference between a cap and a suggestion.
+  const { controller, log } = rig(squareForest(), { maxVisibleNodes: 4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3]);
+  assertEquals(log.lodChanges.at(-1)?.budget, 4);
+
+  // One root fewer than the ceiling and the ceiling still binds exactly: the
+  // regime is the same on both sides of the boundary, which is what makes the
+  // boundary itself the only place it could have been drawn wrong.
+  const under = rig(hierarchyOf([-1, -1, -1, 0, 1, 2], (slot) => (slot < 3 ? 1000 : 10)), {
+    maxVisibleNodes: 4,
+  });
+  under.log.viewport.scale = 1;
+  under.controller.evaluateNow(0);
+  assertEquals(Array.from(under.controller.getVisibleNodes()), [0, 1, 2, 3]);
+  assertEquals(under.log.lodChanges.at(-1)?.budget, 4);
+  assertNoReheat(log);
+});
+
+Deno.test("budget: the root-detail reserve is the host's to set, including to nothing", () => {
+  // A host with a hard external limit — a DOM node ceiling, a fixed buffer —
+  // would rather render a bare layer of proxies than overrun it, so the reserve
+  // that keeps detail reachable has to be surrenderable.
+  const strict = rig(wideForest(), { maxVisibleNodes: 10, rootDetailReserve: 0 });
+  strict.log.viewport.scale = 1;
+  strict.controller.evaluateNow(0);
+  assertEquals(strict.controller.getVisibleNodes().length, 12, "only the unfoldable roots");
+  assertEquals(strict.log.lodChanges.at(-1)?.budget, 12);
+
+  // And a host that wants more detail than the default quarter says so in the
+  // same place, rather than being held to a constant compiled into the library.
+  const generous = rig(wideForest(), { maxVisibleNodes: 10, rootDetailReserve: 0.5 });
+  generous.log.viewport.scale = 1;
+  generous.controller.evaluateNow(0);
+  assertEquals(generous.controller.getVisibleNodes().length, 18);
+  assertEquals(generous.log.lodChanges.at(-1)?.budget, 18);
+});
+
+Deno.test("budget: a ceiling the root layer clears is still a hard ceiling", () => {
+  // The same fixture the fold-order test above pins, at the same ceiling: while
+  // the ceiling is achievable it binds exactly, and the reserve must not leak
+  // into that regime and buy a seventh node.
+  const hierarchy = hierarchyOf(
+    [-1, 0, 0, 1, 1, 1, 2],
+    (slot) => [4000, 400, 200, 100, 100, 100, 100][slot],
+  );
+  const { controller, log } = rig(hierarchy, { maxVisibleNodes: 6 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 2, 3, 4, 5]);
+  assertEquals(log.lodChanges.at(-1)?.budget, 6);
+});
+
+// =============================================================================
+// The lod:change accounting
+// =============================================================================
+
+/** The undrawn total an event claims, summed over its own breakdown. */
+function undrawn(event: LodChangeEvent): number {
+  let total = 0;
+  for (const reason of Object.keys(event.hiddenByReason) as LodTransitionReason[]) {
+    total += event.hiddenByReason[reason];
+  }
+  return total;
+}
+
+/**
+ * A tree that folds three ways at once, so one cut exercises every bucket that
+ * can be non-zero without a policy verdict or an imperative call.
+ *
+ * Node 3 is too small to expand and folds on zoom; node 2 has a single child
+ * and vanishes under the pass-through policy the test installs; node 1 wants to
+ * expand and is refused by the budget, which node 7 — expanding second, and
+ * cheaper — then fits inside.
+ */
+function mixedFoldFixture(): RetainedHierarchy {
+  const radii = [4000, 400, 300, 10, 10, 10, 10, 200, 10, 10, 10, 10];
+  return hierarchyOf([-1, 0, 0, 0, 1, 1, 1, 2, 7, 7, 3, 3], (slot) => radii[slot]);
+}
+
+Deno.test("lod:change: the undrawn nodes are attributed and account for every node", () => {
+  const { controller, log } = rig(mixedFoldFixture(), { maxVisibleNodes: 6 });
+  log.viewport.scale = 1;
+  controller.setPolicy((candidate) => candidate.childCount === 1 ? "pass-through" : "default");
+  controller.evaluateNow(0);
+
+  assertEquals(Array.from(controller.getVisibleNodes()), [0, 1, 3, 7, 8, 9]);
+  const event = log.lodChanges.at(-1)!;
+  assertEquals(event.totalCount, 12);
+  assertEquals(event.visibleCount, 6);
+  // Node 3 hides two leaves, node 1 hides three, and node 2 is a pass-through
+  // that stands for nobody but is itself undrawn.
+  assertEquals(event.hiddenByReason, { zoom: 2, policy: 1, imperative: 0, budget: 3 });
+  assertEquals(event.visibleCount + undrawn(event), event.totalCount);
+});
+
+Deno.test("lod:change: the attribution accounts for the code tree at every zoom", () => {
+  // The identity is what makes the breakdown usable at all — a host reporting
+  // "N not drawn" is reporting a difference the buckets have to close exactly —
+  // and it rests on every node being reachable from a root, which is a property
+  // of the whole fixture rather than of a hand-built shape.
+  const { controller, log } = rig(codeTreeHierarchy(), { maxVisibleNodes: 200 });
+  // One whole level of directories is declared absent, so the walk exercises
+  // the pass-through bucket alongside the two the geometry produces by itself.
+  controller.setPolicy((candidate) => (candidate.depth === 2 ? "pass-through" : "default"));
+
+  const seen: Record<LodTransitionReason, number> = {
+    zoom: 0,
+    policy: 0,
+    imperative: 0,
+    budget: 0,
+  };
+  for (const zoom of ZOOM_TABLE) {
+    log.viewport.scale = zoom;
+    controller.viewportChanged();
+    controller.tick(zoom * 1000);
+  }
+  assert(log.lodChanges.length > 0, "the walk must produce transitions");
+  for (const event of log.lodChanges) {
+    assertEquals(
+      event.visibleCount + undrawn(event),
+      event.totalCount,
+      `the breakdown does not close at zoom ${event.zoom}`,
+    );
+    for (const reason of Object.keys(seen) as LodTransitionReason[]) {
+      seen[reason] += event.hiddenByReason[reason];
+    }
+  }
+  // Each bucket has its own way of being wrong, so the walk is only evidence
+  // for the ones it actually filled.
+  assert(seen.zoom > 0, "the walk must fold something on zoom");
+  assert(seen.policy > 0, "the walk must commit pass-throughs, or it proves nothing about them");
+  assert(seen.budget > 0, "the walk must reach the budget, or it proves nothing about it");
+});
+
+Deno.test("lod:change: the effective ceiling is reported when the root layer raises it", () => {
+  const wide = rig(wideForest(), { maxVisibleNodes: 10 });
+  wide.log.viewport.scale = 1;
+  wide.controller.evaluateNow(0);
+  assertEquals(wide.controller.getConfig().maxVisibleNodes, 10);
+  assertEquals(
+    wide.log.lodChanges.at(-1)?.budget,
+    15,
+    "a host given only the configured ceiling could not tell why the cut is fifteen",
+  );
+
+  const single = rig(proxyFixture(), { maxVisibleNodes: 10 });
+  single.log.viewport.scale = 1;
+  single.controller.evaluateNow(0);
+  assertEquals(single.log.lodChanges.at(-1)?.budget, 10);
+});
+
 // =============================================================================
 // Imperative control and lifecycle
 // =============================================================================
@@ -948,6 +1174,15 @@ Deno.test("lifecycle: disabling announces the release like any other transition"
     "lod:change/5",
     "the closing lod:change reports every node visible",
   );
+
+  // And reports the state it leaves behind rather than the one it just tore
+  // down: a released cut hides nothing, so a listener that stopped at the last
+  // event — which is what a listener does, since none follow — would otherwise
+  // be left showing the old cut's fold counts against a fully drawn graph.
+  const closing = log.lodChanges.at(-1)!;
+  assertEquals(closing.hiddenByReason, { zoom: 0, policy: 0, imperative: 0, budget: 0 });
+  assertEquals(closing.visibleCount, closing.totalCount);
+  assertEquals(closing.budget, DEFAULT_LOD_CONFIG.maxVisibleNodes);
 
   // Disabling with nothing folded stays silent: there is no transition to
   // announce, and a spurious lod:change would ripple through listeners.
@@ -1395,6 +1630,217 @@ Deno.test("mutation: a graph that grows under a still camera is re-folded", () =
   );
 });
 
+/**
+ * A root over `leaves` leaves, every one of them in the cut: a shape where the
+ * only thing that can card a node is the focus set.
+ */
+function flatTree(leaves: number): RetainedHierarchy {
+  const parents = [-1];
+  for (let i = 0; i < leaves; i++) parents.push(0);
+  return hierarchyOf(parents, (slot) => (slot === 0 ? 4000 : 10));
+}
+
+Deno.test("mutation: the focus set follows the compaction", () => {
+  const { controller, log } = rig(flatTree(6), { minCardLifetimeMs: 0 });
+  log.viewport.scale = 1;
+  // A pixel of screen radius: nothing is large enough to card on its own size,
+  // so a card on screen can only be the focus set's doing.
+  log.radiusOf = () => 1;
+  controller.setFocus([5]);
+  assertEquals(cardedNodes(log), [5]);
+
+  // A removal compacts the slot space and the focused node lands at slot 3. The
+  // host declared its focus once; it must not have to re-declare it here.
+  log.hierarchy = flatTree(4);
+  controller.remapSlots(new Map([[0, 0], [1, 1], [4, 2], [5, 3], [6, 4]]));
+  controller.handleTopologyChange();
+  controller.evaluateNow(16);
+
+  assertEquals(cardedNodes(log), [3]);
+  assertNoReheat(log);
+});
+
+Deno.test("mutation: a focus node the removal deleted is dropped", () => {
+  const { controller, log } = rig(flatTree(6), { minCardLifetimeMs: 0 });
+  log.viewport.scale = 1;
+  log.radiusOf = () => 1;
+  controller.setFocus([5]);
+  assertEquals(cardedNodes(log), [5]);
+
+  // Slot 5's node is the one removed, so it is absent from the remap while the
+  // node that was slot 6 moves down into its number. A focus left on the number
+  // rather than moved with the node cards a node nobody asked for.
+  log.hierarchy = flatTree(5);
+  controller.remapSlots(new Map([[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [6, 5]]));
+  controller.handleTopologyChange();
+  controller.evaluateNow(16);
+
+  assertEquals(cardedNodes(log), []);
+});
+
+Deno.test("mutation: a live fold pays out its drift before the slot space moves", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assert(controller.isCollapsed(1), "node 1 must be standing in for 3 and 4");
+  assertEquals(log.translations, [], "a collapse translates nothing");
+
+  // The proxy drifts, and then the graph is mutated rather than zoomed. The
+  // subtree never expands, so nothing on the ordinary path pays what it is
+  // owed; and once the mutation has moved the slot space the anchor that
+  // measured the drift names other nodes, so it can never be paid at all.
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+
+  assertEquals(log.translations, [{ lo: 3, hi: 5, dx: 15, dy: 10 }]);
+  assertEquals(log.positions.get(3), { x: 15, y: 10 });
+  assertEquals(log.positions.get(4), { x: 15, y: 10 });
+  assertNoReheat(log);
+});
+
+Deno.test("mutation: the drift is paid once however often the flush is asked for", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // One mutation can reach several entry points — a removal walks its node's
+  // edges before the node itself — and each of them asks for the flush.
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+  controller.flushFoldDrift();
+
+  log.hierarchy = proxyFixture();
+  controller.handleTopologyChange();
+  controller.evaluateNow(16);
+
+  assertEquals(log.translations, [{ lo: 3, hi: 5, dx: 15, dy: 10 }]);
+});
+
+Deno.test("mutation: a compaction stops the flush measuring against slots it lost", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  // The mutation pays first and compacts second, which is the whole point of
+  // paying at the entry point.
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+  controller.remapSlots(new Map([[0, 0], [1, 1], [3, 2], [4, 3]]));
+
+  // A second mutation arrives before anything has re-evaluated. The fold, the
+  // anchors and the descendant walk all name the outgoing slot space while the
+  // positions name the new one, so there is no delta to be had — and a
+  // translate issued anyway moves whichever nodes arrived in those slots.
+  log.positions.set(1, { x: 100, y: 100 });
+  const touched = log.accessed.length;
+  controller.flushFoldDrift();
+
+  assertEquals(log.translations, [{ lo: 3, hi: 5, dx: 15, dy: 10 }]);
+  // Declines outright rather than measuring and discarding: a position read
+  // across the seam is another node's, so there is nothing to be learned from
+  // reading one, and re-anchoring to it would record the same nonsense.
+  assertEquals(log.accessed.length, touched, "the flush must not touch the host at all");
+});
+
+Deno.test("mutation: a compaction stops an unfold translating what it no longer describes", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+  controller.remapSlots(new Map([[0, 0], [1, 1], [3, 2], [4, 3]]));
+  const paid = [...log.translations];
+
+  // The host acts on the fold between declaring its compaction and having the
+  // rebuilt hierarchy adopted — a click on a proxy, a search result opening a
+  // subtree. Slot 1 now holds the node that compacted into it, so the anchor
+  // and the position belong to different graphs and their difference is not a
+  // drift at all; the descendants the walk would move are not the ones the fold
+  // was taken over either.
+  log.positions.set(1, { x: 1000, y: 1000 });
+  controller.expandNode(1, 16);
+
+  assertEquals(log.translations, paid, "an unfold across the seam must translate nothing");
+});
+
+Deno.test("mutation: disabling LOD after a compaction moves and announces nothing", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  assert(controller.isCollapsed(1), "the fixture must fold node 1 or the test is vacuous");
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+  controller.remapSlots(new Map([[0, 0], [1, 1], [3, 2], [4, 3]]));
+  const paid = [...log.translations];
+
+  // Turning LOD off is a release, and a release restores every fold — which is
+  // exactly the arbitrary translate the flush refuses to make, reached by the
+  // one door that never consults the hierarchy on the way in.
+  log.positions.set(1, { x: 1000, y: 1000 });
+  const before = log.events.length;
+  controller.setConfig({ enabled: false }, 16);
+
+  assertEquals(log.translations, paid, "a release across the seam must translate nothing");
+  // Nor may it announce the folds it did not open: an expand event names a slot
+  // whose node is not the one that was folded, and a host mirroring the fold
+  // state would act on it.
+  const released = log.events.slice(before);
+  assertEquals(released.filter((entry) => entry.startsWith("node:expand")), []);
+  assertEquals(released.at(-1), "lod:change/5", "the closing event still has to arrive");
+  assertEquals(controller.hasCut, false);
+});
+
+Deno.test("mutation: an adopted hierarchy makes the fold measurable again", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.flushFoldDrift();
+  controller.remapSlots(new Map([[0, 0], [1, 1], [3, 2], [4, 3]]));
+
+  // The refusal is a state, not a mode: it lasts exactly as long as the seam
+  // does. Once a hierarchy is adopted every slot-indexed structure describes it
+  // again, and a fold taken from there is measurable like any other — left
+  // latched, the controller would refuse every drift payment for the rest of
+  // the graph's life and each fold would silently strand its subtree.
+  log.hierarchy = proxyFixture();
+  controller.handleTopologyChange();
+  controller.evaluateNow(16);
+  assert(controller.isCollapsed(1), "the rebuilt cut must fold node 1 again");
+  const paid = log.translations.length;
+
+  log.positions.set(1, { x: 40, y: 6 });
+  controller.flushFoldDrift();
+  assertEquals(log.translations.slice(paid), [{ lo: 3, hi: 5, dx: 30, dy: 10 }]);
+});
+
+Deno.test("mutation: drift accrued after a flush is still owed to the next one", () => {
+  const { controller, log } = rig(proxyFixture());
+  log.positions.set(1, { x: 10, y: -4 });
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+
+  log.positions.set(1, { x: 25, y: 6 });
+  controller.flushFoldDrift();
+
+  // A streaming producer mutates repeatedly with the fold live throughout. Each
+  // flush settles the drift up to that instant and leaves the fold measuring
+  // from where the proxy now stands, so the next one pays exactly the interval
+  // since — no more, and nothing missed.
+  log.positions.set(1, { x: 30, y: 6 });
+  controller.flushFoldDrift();
+
+  assertEquals(log.translations, [
+    { lo: 3, hi: 5, dx: 15, dy: 10 },
+    { lo: 3, hi: 5, dx: 5, dy: 0 },
+  ]);
+});
+
 // =============================================================================
 // Edge aggregation — the seam, and when it fires
 // =============================================================================
@@ -1684,6 +2130,7 @@ Deno.test("config: nonsense falls back and counts are clamped", () => {
     maxCards: -1,
     minBandCommitFrames: 2.7,
     transitionMs: -10,
+    rootDetailReserve: -1,
   });
   assertEquals(resolved.expandThreshold, DEFAULT_LOD_CONFIG.expandThreshold);
   assertEquals(resolved.prefetchRatio, 1);
@@ -1691,6 +2138,15 @@ Deno.test("config: nonsense falls back and counts are clamped", () => {
   assertEquals(resolved.maxCards, 0);
   assertEquals(resolved.minBandCommitFrames, 2);
   assertEquals(resolved.transitionMs, 0);
+  assertEquals(resolved.rootDetailReserve, 0);
+
+  // Zero is a value here rather than nonsense — it is how a host asks for the
+  // ceiling to be absolute — so it must survive rather than fall back.
+  assertEquals(resolveLodConfig({ rootDetailReserve: 0 }).rootDetailReserve, 0);
+  assertEquals(
+    resolveLodConfig({ rootDetailReserve: Number.NaN }).rootDetailReserve,
+    DEFAULT_LOD_CONFIG.rootDetailReserve,
+  );
 });
 
 Deno.test("config: a patch keeps every field it does not mention", () => {

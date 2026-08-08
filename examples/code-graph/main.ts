@@ -245,7 +245,7 @@ async function run(
 
   // --- Events ------------------------------------------------------------
 
-  graph.on("lod:change", (event) => hud.lodChanged(event.visibleCount));
+  graph.on("lod:change", (event) => hud.lodChanged(event));
   graph.on("node:collapse", () => hud.nodeFolded());
   graph.on("node:expand", () => hud.nodeUnfolded());
   graph.on("simulation:tick", () => hud.tick(performance.now()));
