@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/core",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "High-performance graph visualization using WebGPU",
   "type": "module",
   "main": "./dist/graphmother.esm.js",

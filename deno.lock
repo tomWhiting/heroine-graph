@@ -2928,7 +2928,7 @@
       "packages/react": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@~0.3.1",
+            "npm:@graphmother/core@~0.3.2",
             "npm:@types/react@19",
             "npm:@webgpu/types@~0.1.69",
             "npm:react@19",
@@ -2940,7 +2940,7 @@
       "packages/svelte": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@~0.3.1",
+            "npm:@graphmother/core@~0.3.2",
             "npm:@sveltejs/package@^2.3.0",
             "npm:@sveltejs/vite-plugin-svelte@4",
             "npm:@webgpu/types@~0.1.69",
@@ -2953,7 +2953,7 @@
       "packages/vue": {
         "packageJson": {
           "dependencies": [
-            "npm:@graphmother/core@~0.3.1",
+            "npm:@graphmother/core@~0.3.2",
             "npm:@vue/tsconfig@0.7",
             "npm:@webgpu/types@~0.1.69",
             "npm:tsup@^8.3.0",
