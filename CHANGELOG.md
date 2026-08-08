@@ -8,6 +8,30 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
 
 ### Fixed
 
+- **Bubble mode now separates unrelated subtrees, rather than hoping repulsion
+  will.** Three defects stood between the nested-bubble columns and the
+  guarantee they exist for. The force passes derived their parent, sibling and
+  cousin sets from the graph's _whole_ edge set while `wellRadius` and `depth`
+  came from the containment forest — so on a code graph an import edge made a
+  file a "parent" of its importers and made those importers "siblings", and
+  every separation invariant was stated across two different trees. Repulsion
+  and the phantom overlay were mass-weighted in bubble mode, where the well
+  radius already encodes subtree size, so size was counted twice and the
+  resulting force ran orders of magnitude past the integrator's velocity cap,
+  saturating and flipping sign every frame — the jitter that read as a grid
+  artifact. And the orbit term pulled children onto a shell that cannot be
+  satisfied: evenly spaced children on it sit closer than their own bubbles
+  allow at every branching factor of four or more, so it fought sibling
+  separation permanently.
+
+  Bubble mode now routes the sibling pass onto the containment forest, drops the
+  double-counted mass weighting, keeps only the inward half of the orbit pull,
+  and adds a containment barrier that is quadratic in violation depth so both it
+  and its gradient vanish at the boundary. A new pass separates forest roots,
+  which completes the induction: any two nodes whose lowest common ancestor is
+  not a real node now sit inside a chain of nested wells ending in two disjoint
+  ones. Outside bubble mode nothing changes.
+
 - **A bubble is now big enough to hold its children.** `wellRadius` sized every
   parent from a single packing efficiency of 0.82 — the density many equal
   circles approach in the limit. Small fan-out is nowhere near that limit and is
