@@ -12,11 +12,13 @@ import { assert, assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import {
   bubbleUploadChanged,
   buildChildrenCsr,
+  collectForestRoots,
   CONTAINMENT_EDGE_TYPE,
   decodeHierarchyColumns,
   deriveHierarchy,
   HIERARCHY_ROOT,
   type HierarchyColumns,
+  hierarchyCsrPair,
   type HierarchyDeriver,
   MAX_HIERARCHY_DEPTH,
   retainSuppliedHierarchy,
@@ -162,6 +164,104 @@ Deno.test("buildChildrenCsr: indexes children in ascending slot order", () => {
   assertEquals(Array.from(csr.children), [1, 3, 2]);
   assertEquals(Array.from(csr.children.subarray(csr.offsets[0], csr.offsets[1])), [1, 3]);
   assertEquals(Array.from(csr.children.subarray(csr.offsets[1], csr.offsets[2])), [2]);
+});
+
+// ===========================================================================
+// The forest as the GPU force passes index it
+// ===========================================================================
+//
+// Bubble mode's orbit spring, containment barrier and phantom separation are
+// all stated against wellRadius and depth, so the parent, sibling and cousin
+// sets the sibling shader derives have to come from the tree those columns were
+// computed over. Feeding it the graph's whole edge CSR instead states every
+// invariant across two different graphs — on a code graph, an import edge makes
+// a file a "parent" of its importers.
+
+Deno.test("hierarchyCsrPair: reproduces the retained tree in both directions", async () => {
+  const tree = generateCodeTree(CODE_TREE_SCALES.small);
+  const hierarchy = await derive(tree.nodeCount, containmentPairs(tree));
+
+  const { forward, inverse } = hierarchyCsrPair(hierarchy);
+
+  // Forward is the retained children index verbatim.
+  assertEquals(forward.offsets, hierarchy.children.offsets);
+  assertEquals(forward.targets, hierarchy.children.children);
+
+  // Inverse rows: empty for a root, exactly the parent otherwise. The two
+  // directions must also declare the same edge count, which is what
+  // uploadRelativityAtlasEdges cross-checks before touching a GPU buffer.
+  assertEquals(inverse.offsets.length, tree.nodeCount + 1);
+  assertEquals(inverse.offsets[tree.nodeCount], forward.offsets[tree.nodeCount]);
+  for (let i = 0; i < tree.nodeCount; i++) {
+    const row = Array.from(inverse.sources.subarray(inverse.offsets[i], inverse.offsets[i + 1]));
+    const expected = hierarchy.columns.parent[i] === HIERARCHY_ROOT
+      ? []
+      : [hierarchy.columns.parent[i]];
+    assertEquals(row, expected, `inverse row of slot ${i}`);
+  }
+});
+
+Deno.test("hierarchyCsrPair: carries no dependency edge on a graph that has both", async () => {
+  // The fixture's "imports" edges cross the containment tree freely. Feeding
+  // them to the sibling pass would make an imported file a parent, its
+  // importers siblings, and every bubble invariant meaningless.
+  const tree = generateCodeTree(CODE_TREE_SCALES.small);
+  const hierarchy = await derive(tree.nodeCount, containmentPairs(tree));
+
+  const { forward, inverse } = hierarchyCsrPair(hierarchy);
+
+  const containment = new Set<string>();
+  for (let e = 0; e < tree.containmentEdgeCount; e++) {
+    containment.add(`${tree.edgeSources[e]}->${tree.edgeTargets[e]}`);
+  }
+  assert(
+    tree.edgeSources.length > tree.containmentEdgeCount,
+    "fixture has no cross-cutting edges to exclude",
+  );
+
+  for (let p = 0; p < tree.nodeCount; p++) {
+    for (let c = forward.offsets[p]; c < forward.offsets[p + 1]; c++) {
+      assert(
+        containment.has(`${p}->${forward.targets[c]}`),
+        `forward CSR carries non-containment pair ${p}->${forward.targets[c]}`,
+      );
+    }
+    for (let s = inverse.offsets[p]; s < inverse.offsets[p + 1]; s++) {
+      assert(
+        containment.has(`${inverse.sources[s]}->${p}`),
+        `inverse CSR carries non-containment pair ${inverse.sources[s]}->${p}`,
+      );
+    }
+  }
+});
+
+Deno.test("collectForestRoots: returns every root, ascending, and nothing else", () => {
+  //   0 → {1, 3}, 1 → {2}, 4 and 5 are further roots
+  const parent = new Uint32Array([
+    HIERARCHY_ROOT,
+    0,
+    1,
+    0,
+    HIERARCHY_ROOT,
+    HIERARCHY_ROOT,
+  ]);
+
+  assertEquals(Array.from(collectForestRoots(parent, 6)), [0, 4, 5]);
+});
+
+Deno.test("collectForestRoots: a fixture's roots are exactly its parentless slots", async () => {
+  const tree = generateCodeTree(CODE_TREE_SCALES.small);
+  const hierarchy = await derive(tree.nodeCount, containmentPairs(tree));
+
+  const expected: number[] = [];
+  for (let i = 0; i < tree.nodeCount; i++) {
+    if (hierarchy.columns.parent[i] === HIERARCHY_ROOT) expected.push(i);
+  }
+
+  assertEquals(
+    Array.from(collectForestRoots(hierarchy.columns.parent, tree.nodeCount)),
+    expected,
+  );
 });
 
 // ===========================================================================

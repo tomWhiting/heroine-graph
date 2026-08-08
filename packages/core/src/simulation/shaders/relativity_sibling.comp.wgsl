@@ -10,6 +10,23 @@
 // - Phantom zones create mass-proportional collision boundaries
 //
 // Uses vec2<f32> layout for consolidated position/force data.
+//
+// # Bubble mode and the separation induction
+//
+// With bubble_mode on, this pass supplies two of the three clauses that
+// separate unrelated subtrees without any spatial structure at all:
+//
+//   containment — a node's well stays inside its parent's (Phase 1A2), so a
+//                 subtree is entirely within its root's bubble;
+//   siblings    — wells of nodes sharing a parent do not overlap (the Phase 1B
+//                 phantom overlay);
+//   roots       — wells of forest roots do not overlap, which is the induction
+//                 base and lives in relativity_bubble_roots.comp.wgsl.
+//
+// Together these imply that any two nodes whose lowest common ancestor is not a
+// real node are separated, because each sits inside a chain of nested wells
+// terminating in two disjoint ones. Every term is a continuous function of
+// pairwise distance; nothing here reads a grid or a cell.
 
 struct SiblingUniforms {
     node_count: u32,
@@ -113,13 +130,26 @@ fn sibling_group_count(list_len: u32, cap: u32) -> u32 {
 // Compute repulsive force between two nodes.
 // Linear (1/r) repulsion like ForceAtlas2 — maintains force at medium distance
 // so siblings spread evenly rather than bunching up.
+//
+// Mass-weighted OUTSIDE bubble mode only, for the same reason the phantom
+// overlay is (see compute_phantom_force). In bubble mode subtree size is the
+// well radius, and this term is unbounded in range: two depth-1 directories of
+// a 35K-node tree carry ~10^3 mass each, so their mutual 1/d push stays around
+// 10^6 * repulsion_strength at any separation and simply overwhelms the
+// containment barrier, which is bounded at repulsion_strength by construction.
+// Left mass-weighted, it is the term that keeps a wide directory's bubble
+// outside its own parent's however hard containment pulls.
 fn compute_repulsion(delta: vec2<f32>, mass_i: f32, mass_j: f32) -> vec2<f32> {
     let dist_sq = dot(delta, delta);
     let min_dist_sq = uniforms.min_distance * uniforms.min_distance;
     let safe_dist_sq = max(dist_sq, min_dist_sq);
     let dist = sqrt(safe_dist_sq);
 
-    let force_magnitude = uniforms.repulsion_strength * mass_i * mass_j / dist;
+    var size_weight = mass_i * mass_j;
+    if (uniforms.bubble_mode != 0u) {
+        size_weight = 1.0;
+    }
+    let force_magnitude = uniforms.repulsion_strength * size_weight / dist;
 
     return (delta / dist) * force_magnitude;
 }
@@ -128,15 +158,28 @@ fn compute_repulsion(delta: vec2<f32>, mass_i: f32, mass_j: f32) -> vec2<f32> {
 // Normal mode: zone radius = phantom_multiplier * sqrt(mass).
 // Bubble mode: zone radius = wellRadius (computed from subtree).
 // When zones overlap, apply a soft push proportional to the overlap depth.
+//
+// The magnitude is mass-weighted OUTSIDE bubble mode only. There, mass is the
+// only size proxy the pass has. In bubble mode the well radius already encodes
+// subtree size — it is the radius of a circle whose area is the summed areas of
+// the children's — while mass compounds as roughly (child_mass_factor/2)^depth
+// up the tree (relativity_mass.comp.wgsl). Multiplying the two double-counts
+// size: two depth-1 directories of a 35K-node tree carry ~10^3 mass each, and
+// the product puts the separation force four orders of magnitude past the
+// integrator's velocity cap, where every frame saturates and the sign flips —
+// jitter that reads as a grid artifact but is not one.
 fn compute_phantom_force(delta: vec2<f32>, dist: f32, mass_i: f32, mass_j: f32, idx_i: u32, idx_j: u32) -> vec2<f32> {
     var zone_i: f32;
     var zone_j: f32;
+    var size_weight: f32;
     if (uniforms.bubble_mode != 0u) {
         zone_i = well_radius[idx_i];
         zone_j = well_radius[idx_j];
+        size_weight = 1.0;
     } else {
         zone_i = uniforms.phantom_multiplier * sqrt(mass_i);
         zone_j = uniforms.phantom_multiplier * sqrt(mass_j);
+        size_weight = mass_i * mass_j;
     }
     let combined_radius = zone_i + zone_j;
 
@@ -152,14 +195,19 @@ fn compute_phantom_force(delta: vec2<f32>, dist: f32, mass_i: f32, mass_j: f32, 
 
     // Soft push: quadratic ramp for smooth force onset
     // Force scales with repulsion_strength so it's tunable from the same slider
-    let force_magnitude = uniforms.repulsion_strength * mass_i * mass_j * overlap_ratio * overlap_ratio;
+    let force_magnitude = uniforms.repulsion_strength * size_weight * overlap_ratio * overlap_ratio;
 
     let dir = delta / max(dist, uniforms.min_distance);
     return dir * force_magnitude;
 }
 
 // Apply repulsion between this node and another, including phantom zone check.
-fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f32, strength_mult: f32, idx_i: u32, idx_j: u32) -> vec2<f32> {
+//
+// `allow_phantom` is false for a pair whose bubbles are nested by construction.
+// The overlay's predicate — zones overlap — is permanently true between a node
+// and its own descendant, so it would contribute a constant outward push on
+// exactly the pair containment is holding together.
+fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f32, strength_mult: f32, idx_i: u32, idx_j: u32, allow_phantom: bool) -> vec2<f32> {
     let delta = pos - other_pos;
     let dist_sq = dot(delta, delta);
 
@@ -170,7 +218,7 @@ fn apply_repulsion(pos: vec2<f32>, other_pos: vec2<f32>, mass_i: f32, mass_j: f3
     var f = compute_repulsion(delta, mass_i, mass_j) * strength_mult;
 
     // Phantom zone overlay — extra push when collision zones overlap
-    if (uniforms.phantom_enabled != 0u) {
+    if (uniforms.phantom_enabled != 0u && allow_phantom) {
         let dist = sqrt(dist_sq);
         f += compute_phantom_force(delta, dist, mass_i, mass_j, idx_i, idx_j) * strength_mult;
     }
@@ -270,7 +318,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // -- A: Orbit force --
         // Push child toward a target orbit distance from parent.
-        // Normal: scales with sqrt(sibling count). Bubble: scales with parent's wellRadius.
+        // Normal: a two-sided spring onto a shell scaled by sqrt(sibling count).
+        // Bubble: a one-sided inward pull toward wellRadius * orbit_scale, plus
+        // the containment barrier below.
         if (uniforms.orbit_strength > 0.0 && parent_dist > EPSILON) {
             var target_radius: f32;
             if (uniforms.bubble_mode != 0u) {
@@ -283,7 +333,57 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             // Positive orbit_error = too far from parent, pull inward
             // Negative orbit_error = too close, push outward
-            force += radial_dir * orbit_error * uniforms.orbit_strength;
+            //
+            // Bubble mode keeps only the inward half. A shell of radius
+            // R_parent * orbit_scale is geometrically unsatisfiable there: with
+            // R_parent ~= 1.10 * sqrt(sum of child radii squared) + padding, k
+            // equal children spaced evenly on that shell sit an adjacent chord
+            // of 1.32 * sqrt(k) * r * sin(pi/k) apart, which is under the 2r
+            // their own bubbles need for every k >= 4 (0.93 * 2r at k = 4, 0.29
+            // at k = 50). The outward half of the spring therefore fought the
+            // sibling phantom permanently and neither could win. What the model
+            // actually wants from this term is compactness, and only the inward
+            // half expresses that; separation is the phantom's job and staying
+            // inside the parent is the barrier's.
+            if (uniforms.bubble_mode == 0u || orbit_error > 0.0) {
+                force += radial_dir * orbit_error * uniforms.orbit_strength;
+            }
+        }
+
+        // -- A2: Containment barrier (bubble mode) --
+        // The nested-bubble invariant a child owes its parent: its own well must
+        // fit inside its parent's. Violating it is what lets a leaf drift into a
+        // neighbouring subtree, because every separation guarantee the sibling
+        // and root passes give is stated between BUBBLES, and a node outside its
+        // own bubble is outside all of them.
+        //
+        // Quadratic in the violation depth, so both the force and its gradient
+        // vanish at the boundary: a node crossing it feels no step, and no
+        // discrete edge is introduced anywhere in the field.
+        //
+        // The depth is normalised by the node's OWN well, not by its parent's,
+        // because the force this has to argue with is the sibling phantom and
+        // that one's length scale is the sum of two sibling wells. Normalising
+        // by the parent instead would weaken the barrier by a factor of about
+        // sqrt(child count) at every level, so exactly the wide directories that
+        // need it most would be the ones where separation wins. Saturating one
+        // full well out bounds the term at repulsion_strength, so a far-flung
+        // starting position cannot produce a force the velocity cap has to clip.
+        //
+        // Skipped when the parent's well does not strictly enclose the child's,
+        // which no derived hierarchy produces but the uniform-radius fallback
+        // does: there the constraint is unsatisfiable at every distance, and an
+        // unsatisfiable constraint must generate no force rather than collapse
+        // the child onto its parent.
+        if (uniforms.bubble_mode != 0u && parent_dist > EPSILON) {
+            let own_well = well_radius[node_idx];
+            let parent_well = well_radius[parent_idx];
+            let violation = parent_dist + own_well - parent_well;
+            if (violation > 0.0 && parent_well > own_well) {
+                let ratio = min(violation / max(own_well, uniforms.min_distance), 1.0);
+                let radial_dir = to_parent / parent_dist;
+                force += radial_dir * uniforms.repulsion_strength * ratio * ratio;
+            }
         }
 
         // -- B: Sibling repulsion with tangential amplification --
@@ -392,7 +492,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                         let mass_j = max(node_mass[cousin_idx], 1.0);
 
                         // Cousin repulsion — uses standard (non-tangential) repulsion
-                        force += apply_repulsion(pos, cousin_pos, mass_i, mass_j, uniforms.cousin_strength, node_idx, cousin_idx);
+                        force += apply_repulsion(pos, cousin_pos, mass_i, mass_j, uniforms.cousin_strength, node_idx, cousin_idx, true);
                         cousin_count++;
                     }
 
@@ -436,7 +536,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let child_pos = positions[child_idx];
         let mass_j = max(node_mass[child_idx], 1.0);
 
-        force += apply_repulsion(pos, child_pos, mass_i, mass_j, uniforms.parent_child_multiplier, node_idx, child_idx);
+        // Phantom suppressed in bubble mode: this is the one ancestor pair the
+        // pass computes, and there the child's well is inside the parent's by
+        // construction. Outside bubble mode the zones are mass spheres that a
+        // parent and child genuinely can be clear of, so the overlay stands.
+        force += apply_repulsion(
+            pos, child_pos, mass_i, mass_j, uniforms.parent_child_multiplier,
+            node_idx, child_idx, uniforms.bubble_mode == 0u
+        );
     }
 
     // Accumulate forces

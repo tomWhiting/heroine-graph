@@ -280,6 +280,72 @@ export function buildChildrenCsr(
 }
 
 /**
+ * The containment forest in the two CSR directions a force pass indexes by.
+ *
+ * `forward` is the parent→children direction, `inverse` the child→parent one.
+ * Both describe exactly the same set of containment edges, one per non-root
+ * slot, so a consumer that cross-checks their edge counts sees them agree.
+ */
+export interface HierarchyCsrPair {
+  readonly forward: { readonly offsets: Uint32Array; readonly targets: Uint32Array };
+  readonly inverse: { readonly offsets: Uint32Array; readonly sources: Uint32Array };
+}
+
+/**
+ * The retained containment forest as a forward/inverse CSR pair.
+ *
+ * A force pass that reads the graph's *whole* edge CSR derives its parent,
+ * sibling and cousin sets from every edge, containment or not — so on a code
+ * graph an import edge makes a file a "parent" and its importers "siblings",
+ * and every separation invariant is then stated over a different tree from the
+ * one that produced `wellRadius` and `depth`. This pair is the same tree those
+ * columns came from.
+ *
+ * The forward direction is the retained children index verbatim. The inverse is
+ * a row of length 0 for a root and 1 for everything else, because a retained
+ * hierarchy is a spanning forest: a slot has at most one containment parent
+ * even when the source graph gave it several.
+ */
+export function hierarchyCsrPair(hierarchy: RetainedHierarchy): HierarchyCsrPair {
+  const { nodeCount, columns, children } = hierarchy;
+
+  const offsets = new Uint32Array(nodeCount + 1);
+  for (let i = 0; i < nodeCount; i++) {
+    offsets[i + 1] = offsets[i] + (columns.parent[i] === HIERARCHY_ROOT ? 0 : 1);
+  }
+
+  const sources = new Uint32Array(offsets[nodeCount]);
+  for (let i = 0; i < nodeCount; i++) {
+    const p = columns.parent[i];
+    if (p !== HIERARCHY_ROOT) sources[offsets[i]] = p;
+  }
+
+  return {
+    forward: { offsets: children.offsets, targets: children.children },
+    inverse: { offsets, sources },
+  };
+}
+
+/**
+ * The forest roots, ascending.
+ *
+ * Two nodes whose lowest common ancestor is not a real node sit under different
+ * roots, so root-versus-root separation is the induction step that containment
+ * and sibling separation cannot reach on their own.
+ */
+export function collectForestRoots(
+  parent: Uint32Array,
+  nodeCount: number,
+): Uint32Array {
+  const roots = new Uint32Array(nodeCount);
+  let count = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    if (parent[i] === HIERARCHY_ROOT) roots[count++] = i;
+  }
+  return roots.subarray(0, count);
+}
+
+/**
  * Reject supplied columns that cannot describe a forest over `nodeCount` slots.
  *
  * Checked, all O(nodeCount): column lengths; parents in range; no self-parent;

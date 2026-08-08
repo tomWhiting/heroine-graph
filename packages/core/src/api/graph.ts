@@ -40,9 +40,11 @@ import { parseGraphTypedInput, type TypedParserConfig } from "../graph/typed_par
 import { initializePositions, needsInitialization } from "../graph/initialize.ts";
 import {
   bubbleUploadChanged,
+  collectForestRoots,
   deriveHierarchy,
   HIERARCHY_ROOT,
   type HierarchyColumns,
+  hierarchyCsrPair,
   type RetainedHierarchy,
   retainSuppliedHierarchy,
   selectContainmentEdges,
@@ -200,6 +202,7 @@ import {
   RelativityAtlasBuffers,
   supportsAlgorithmOnDevice,
   TidyTreeAlgorithm,
+  uploadRelativityAtlasBubbleRoots,
   uploadRelativityAtlasEdges,
 } from "../simulation/algorithms/mod.ts";
 import {
@@ -2146,23 +2149,49 @@ export class GraphMother {
 
     if (this.currentAlgorithm instanceof RelativityAtlasAlgorithm) {
       const gs = this.graphState;
-      const forward = gs.generateForwardCSR();
-      const inverse = gs.generateInverseCSR();
+      const nodeCount = gs.nodeHighWater;
+      const hierarchy = this.getHierarchy();
+      const bubbleMode = this.forceConfig.relativityBubbleMode && hierarchy !== null;
+
+      // In bubble mode the CSR the sibling pass reads IS the containment
+      // forest, not the whole edge set. That pass defines the parent, sibling
+      // and cousin sets, and the orbit spring, the containment barrier and the
+      // phantom separation are all stated against wellRadius and depth — so
+      // unless the sets come from the tree those columns were computed over,
+      // every invariant is stated across two different graphs. On the primary
+      // use case that is not a corner: a code graph's import edges make a file
+      // a "parent" of its importers and their importers each other's
+      // "siblings", all with radii belonging to the containment tree.
+      //
+      // The cost is that a slot with two containment parents keeps only the one
+      // the spanning forest chose, so the other exerts no orbit or containment
+      // pull. That is the nested-bubble model's own premise — a bubble has one
+      // enclosing bubble — and outside bubble mode nothing changes.
+      const csr = bubbleMode ? hierarchyCsrPair(hierarchy) : null;
+      const forward = csr?.forward ?? gs.generateForwardCSR();
+      const inverse = csr?.inverse ?? gs.generateInverseCSR();
 
       uploadRelativityAtlasEdges(
         device,
         this.algorithmBuffers,
         { offsets: forward.offsets, indices: forward.targets },
         { offsets: inverse.offsets, indices: inverse.sources },
-        gs.nodeHighWater,
+        nodeCount,
+      );
+
+      // Roots are the base case of the separation induction the sibling and
+      // root passes complete between them; outside bubble mode there is no such
+      // pass, and an empty list is what keeps it from dispatching.
+      uploadRelativityAtlasBubbleRoots(
+        device,
+        this.algorithmBuffers,
+        bubbleMode ? collectForestRoots(hierarchy.columns.parent, nodeCount) : new Uint32Array(0),
       );
 
       // Reset mass state so it gets recomputed on next frame
       (this.currentAlgorithm as RelativityAtlasAlgorithm).resetMassState();
 
       const b = this.algorithmBuffers as RelativityAtlasBuffers;
-      const nodeCount = gs.nodeHighWater;
-      const hierarchy = this.getHierarchy();
 
       // Depths drive depth-decaying gravity; they come from the same forest the
       // LOD cut walks, so the physics and the semantics cannot diverge.
@@ -2178,7 +2207,7 @@ export class GraphMother {
       // phantom-zone and orbit-spring shaders must see the uniform default, so
       // the hierarchy is retained but its radii are not uploaded.
       const wellRadii = new Float32Array(nodeCount);
-      if (this.forceConfig.relativityBubbleMode && hierarchy) {
+      if (bubbleMode) {
         wellRadii.set(hierarchy.columns.wellRadius.subarray(0, nodeCount));
       } else {
         wellRadii.fill(DEFAULT_WELL_RADIUS);

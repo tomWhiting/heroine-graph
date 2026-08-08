@@ -110,7 +110,17 @@ export interface FullForceConfig extends ForceConfig {
   relativityOrbitRadius: number;
 
   // Relativity Atlas Bubble Mode parameters
-  /** Enable nested bubble mode for subtree separation (default: false) */
+  /**
+   * Enable nested bubble mode for subtree separation (default: false).
+   *
+   * Switches the Relativity Atlas force laws onto the containment hierarchy:
+   * the parent, sibling and cousin sets come from the retained forest rather
+   * than the whole edge set, subtree size is carried by the well radius instead
+   * of by the compounding mass column, and three continuous clauses —
+   * containment, sibling separation, root separation — replace ancestry-blind
+   * repulsion. Requires a hierarchy; without one the well radii fall back to a
+   * uniform default and the clauses have nothing to act on.
+   */
   relativityBubbleMode: boolean;
   /** Base well radius for leaf nodes in bubble computation (default: 10.0) */
   relativityBubbleBaseRadius: number;
@@ -118,7 +128,18 @@ export interface FullForceConfig extends ForceConfig {
   relativityBubblePadding: number;
   /** Gravity depth decay rate: gravity *= decay^depth. 0 = no gravity at leaves, 1 = no effect (default: 0.7) */
   relativityDepthDecay: number;
-  /** Orbit radius as fraction of parent wellRadius in bubble mode (default: 0.6) */
+  /**
+   * Target distance from the parent, as a fraction of its wellRadius, that
+   * bubble mode pulls a child no further out than (default: 0.6).
+   *
+   * A one-sided pull, not a shell: a child inside the target is left alone.
+   * A two-sided shell at this radius is geometrically unsatisfiable — evenly
+   * spaced children on it sit closer than their own bubbles allow for every
+   * branching factor of four or more — so the outward half fought the sibling
+   * separation permanently and neither could win. Compactness is what this knob
+   * expresses; separation belongs to the sibling and root passes and staying
+   * inside the parent to the containment barrier.
+   */
   relativityBubbleOrbitScale: number;
 
   // LinLog specific parameters

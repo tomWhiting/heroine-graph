@@ -42,6 +42,7 @@ import {
 import DEGREES_WGSL from "../shaders/relativity_degrees.comp.wgsl";
 import MASS_WGSL from "../shaders/relativity_mass.comp.wgsl";
 import SIBLING_WGSL from "../shaders/relativity_sibling.comp.wgsl";
+import BUBBLE_ROOTS_WGSL from "../shaders/relativity_bubble_roots.comp.wgsl";
 import GRAVITY_WGSL from "../shaders/relativity_gravity.comp.wgsl";
 import DENSITY_FIELD_WGSL from "../shaders/density_field.comp.wgsl";
 import FA2_ATTRACTION_WGSL from "../shaders/fa2_attraction.comp.wgsl";
@@ -63,7 +64,8 @@ const RELATIVITY_ATLAS_INFO: ForceAlgorithmInfo = {
   // set and node mass. Each was 9 before its merge, and 9 is not slower but
   // unselectable — the layout is invalid on a default-limit adapter. Declared
   // rather than omitted so a ninth binding fails a test instead of silently
-  // costing the algorithm those adapters.
+  // costing the algorithm those adapters. Bubble root separation binds five, so
+  // it does not move this ceiling.
   minStorageBuffersPerShaderStage: 8,
 };
 
@@ -119,6 +121,15 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   // Sibling repulsion
   siblingRepulsion: GPUComputePipeline;
 
+  /**
+   * Forest-root bubble separation (bubble mode only).
+   *
+   * The sibling pass separates pairs with a common ancestor; this separates the
+   * roots, which is the one case that has none. See the shader header for the
+   * induction the two complete together.
+   */
+  bubbleRoots: GPUComputePipeline;
+
   // Gravity
   gravity: GPUComputePipeline;
 
@@ -141,6 +152,7 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
   degreesLayout: GPUBindGroupLayout;
   massLayout: GPUBindGroupLayout;
   siblingLayout: GPUBindGroupLayout;
+  bubbleRootsLayout: GPUBindGroupLayout;
   gravityLayout: GPUBindGroupLayout;
   attractionLayout: GPUBindGroupLayout;
   attractionBundledLayout: GPUBindGroupLayout;
@@ -149,6 +161,9 @@ interface RelativityAtlasPipelines extends AlgorithmPipelines {
 
 /** Byte size of FA2AttractionUniforms in fa2_attraction.comp.wgsl. */
 const RA_ATTRACTION_UNIFORM_BYTES = 32;
+
+/** Byte size of BubbleRootUniforms in relativity_bubble_roots.comp.wgsl. */
+const RA_BUBBLE_ROOT_UNIFORM_BYTES = 16;
 
 /**
  * First element of the source region of {@link RelativityAtlasBuffers.csrInverse}.
@@ -222,6 +237,15 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
     // Bubble mode buffers (per-node data from WASM)
     public wellRadius: GPUBuffer, // f32 per node: subtree-based collision radius
     public nodeDepth: GPUBuffer, // f32 per node: BFS depth from root
+    public bubbleRootUniforms: GPUBuffer,
+    /**
+     * Compacted forest-root slots, ascending, for the root-separation pass.
+     *
+     * Sized for the degenerate case where every slot is its own root, so the
+     * buffer never has to be reallocated when a mutation splits the forest.
+     * {@link RelativityAtlasBuffers.rootCount} is how much of it is live.
+     */
+    public rootList: GPUBuffer,
     /**
      * Zero-filled node flags used when AlgorithmRenderContext.nodeFlags is
      * not provided (all slots treated as live). Production passes the shared
@@ -234,6 +258,16 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
     public maxNodes: number,
     public maxEdges: number,
   ) {}
+
+  /**
+   * Live length of {@link rootList}, set by
+   * {@link uploadRelativityAtlasBubbleRoots}.
+   *
+   * Zero until the host uploads a hierarchy, which is what keeps the
+   * root-separation pass from dispatching over stale slots on a graph whose
+   * forest is not yet known.
+   */
+  rootCount = 0;
 
   destroy(): void {
     this.degreesUniforms.destroy();
@@ -258,6 +292,8 @@ export class RelativityAtlasBuffers implements AlgorithmBuffers {
 
     this.wellRadius.destroy();
     this.nodeDepth.destroy();
+    this.bubbleRootUniforms.destroy();
+    this.rootList.destroy();
     this.fallbackNodeFlags.destroy();
     this.lodFallbacks.destroy();
   }
@@ -271,6 +307,7 @@ interface RelativityAtlasBindGroups extends AlgorithmBindGroups {
   massInit: GPUBindGroup;
   massAggregate: GPUBindGroup[]; // Ping-pong
   sibling: GPUBindGroup;
+  bubbleRoots: GPUBindGroup;
   gravity: GPUBindGroup;
   attraction: GPUBindGroup; // Linear edge attraction (F=d, no rest length)
   attractionBundled: GPUBindGroup; // Same, over the LOD active-edge list + bundles
@@ -296,6 +333,14 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
   private currentEdgeCount = 0;
   /** The aggregated edge set the last updateUniforms saw, or null for no cut. */
   private lastLodEdges: LodEdgeDispatch | null = null;
+  /**
+   * Root-separation thread count the last updateUniforms settled on: the
+   * uploaded root count in bubble mode, zero otherwise. Cached because
+   * recordRepulsionPass is handed neither the config nor the buffers, and the
+   * dispatch must agree with the uniform block exactly or threads read past the
+   * live end of the root list.
+   */
+  private bubbleRootCount = 0;
 
   /**
    * Reset mass state when graph changes
@@ -376,6 +421,23 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // === Bubble Roots Layout ===
+    // Bindings: uniforms, positions (vec2), forces (vec2), well_radius,
+    // node_flags, root_list — five storage buffers, so the widest pass in the
+    // algorithm is still the sibling one and minStorageBuffersPerShaderStage
+    // stays at 8.
+    const bubbleRootsLayout = device.createBindGroupLayout({
+      label: "RA Bubble Roots Layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
     // === Gravity Layout ===
     // Bindings: uniforms, positions (vec2), forces (vec2), node_mass, node_depth, node_flags
     const gravityLayout = device.createBindGroupLayout({
@@ -409,6 +471,11 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     const gravityPipelineLayout = device.createPipelineLayout({
       label: "RA Gravity Pipeline Layout",
       bindGroupLayouts: [gravityLayout],
+    });
+
+    const bubbleRootsPipelineLayout = device.createPipelineLayout({
+      label: "RA Bubble Roots Pipeline Layout",
+      bindGroupLayouts: [bubbleRootsLayout],
     });
 
     // === Attraction Layout (linear F=d, replaces Hooke's law springs) ===
@@ -508,6 +575,18 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
         compute: { module: siblingModule, entryPoint: "main" },
       }),
 
+      bubbleRoots: device.createComputePipeline({
+        label: "RA Bubble Root Separation",
+        layout: bubbleRootsPipelineLayout,
+        compute: {
+          module: device.createShaderModule({
+            label: "Relativity Atlas Bubble Roots",
+            code: BUBBLE_ROOTS_WGSL,
+          }),
+          entryPoint: "main",
+        },
+      }),
+
       gravity: device.createComputePipeline({
         label: "RA Gravity",
         layout: gravityPipelineLayout,
@@ -551,6 +630,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       degreesLayout,
       massLayout,
       siblingLayout,
+      bubbleRootsLayout,
       gravityLayout,
       attractionLayout,
       attractionBundledLayout,
@@ -703,6 +783,20 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // Bubble mode: forest-root separation. BubbleRootUniforms:
+    // { node_count, root_count, repulsion_strength, min_distance }
+    const bubbleRootUniforms = device.createBuffer({
+      label: "RA Bubble Root Uniforms",
+      size: RA_BUBBLE_ROOT_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    const rootList = device.createBuffer({
+      label: "RA Bubble Root List",
+      size: nodeBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     // Zero-filled fallback for contexts without a shared nodeFlags buffer
     // (GPU buffers are created zero-initialized: all slots live)
     const fallbackNodeFlags = device.createBuffer({
@@ -729,6 +823,8 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       edgeWeightsBuffer,
       wellRadius,
       nodeDepth,
+      bubbleRootUniforms,
+      rootList,
       fallbackNodeFlags,
       createAlgorithmLodFallbacks(device, safeMaxNodes, "RA"),
       safeMaxNodes,
@@ -827,6 +923,24 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       ],
     });
 
+    // Bubble root separation bind group.
+    //
+    // Built unconditionally, dispatched only in bubble mode with two or more
+    // roots: whether bubble mode is live is per-frame uniform state, and
+    // createBindGroups is contractually forbidden from capturing any of it.
+    const bubbleRoots = device.createBindGroup({
+      label: "RA Bubble Roots Bind Group",
+      layout: p.bubbleRootsLayout,
+      entries: [
+        { binding: 0, resource: { buffer: b.bubbleRootUniforms } },
+        { binding: 1, resource: { buffer: context.positions } },
+        { binding: 2, resource: { buffer: context.forces } },
+        { binding: 3, resource: { buffer: b.wellRadius } },
+        { binding: 4, resource: { buffer: nodeFlags } },
+        { binding: 5, resource: { buffer: b.rootList } },
+      ],
+    });
+
     // Gravity bind group
     // Note: After mass iterations (even count), final mass values are in massOut
     const gravity = device.createBindGroup({
@@ -899,6 +1013,7 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       massInit,
       massAggregate,
       sibling,
+      bubbleRoots,
       gravity,
       attraction,
       attractionBundled,
@@ -991,6 +1106,22 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
     siblingView.setFloat32(56, context.forceConfig.relativityBubbleOrbitScale, true); // orbit_scale
     siblingView.setUint32(60, csrInverseSourcesBase(b.maxNodes), true);
     device.queue.writeBuffer(b.siblingUniforms, 0, siblingData);
+
+    // Bubble root uniforms (RA_BUBBLE_ROOT_UNIFORM_BYTES):
+    // { node_count: u32, root_count: u32, repulsion_strength: f32, min_distance: f32 }
+    //
+    // Separation between roots is the same geometric constraint the sibling
+    // phantom expresses one level down, so it is driven off the same knob
+    // rather than a new one.
+    const rootCount = context.forceConfig.relativityBubbleMode ? b.rootCount : 0;
+    this.bubbleRootCount = rootCount;
+    const bubbleRootData = new ArrayBuffer(RA_BUBBLE_ROOT_UNIFORM_BYTES);
+    const bubbleRootView = new DataView(bubbleRootData);
+    bubbleRootView.setUint32(0, context.nodeCount, true);
+    bubbleRootView.setUint32(4, rootCount, true);
+    bubbleRootView.setFloat32(8, Math.abs(context.forceConfig.repulsionStrength), true);
+    bubbleRootView.setFloat32(12, context.forceConfig.repulsionDistanceMin, true);
+    device.queue.writeBuffer(b.bubbleRootUniforms, 0, bubbleRootData);
 
     // Gravity uniforms (32 bytes)
     // Struct layout: { node_count: u32, gravity_strength: f32, center_x: f32, center_y: f32,
@@ -1173,6 +1304,18 @@ export class RelativityAtlasAlgorithm implements ForceAlgorithm {
       pass.setPipeline(p.siblingRepulsion);
       pass.setBindGroup(0, bg.sibling);
       pass.dispatchWorkgroups(nodeWorkgroups);
+      pass.end();
+    }
+
+    // === PHASE 5B: Forest-root bubble separation (bubble mode, every frame) ===
+    // Phase 5 separates pairs that share an ancestor; this separates the
+    // forest roots, which share none. A single-rooted graph has nothing to
+    // separate and skips the dispatch entirely.
+    if (this.bubbleRootCount >= 2) {
+      const pass = encoder.beginComputePass({ label: "RA Bubble Root Separation" });
+      pass.setPipeline(p.bubbleRoots);
+      pass.setBindGroup(0, bg.bubbleRoots);
+      pass.dispatchWorkgroups(calculateWorkgroups(this.bubbleRootCount, WORKGROUP_SIZE));
       pass.end();
     }
 
@@ -1514,5 +1657,48 @@ export function uploadRelativityAtlasEdges(
       csrInverseSourcesBase(b.maxNodes) * Uint32Array.BYTES_PER_ELEMENT,
       inverseSourceBuffer,
     );
+  }
+}
+
+/**
+ * Upload the containment forest's roots for the bubble root-separation pass.
+ *
+ * Load-time state, like the well radii beside it: the pass reads the list every
+ * frame but its contents change only when the topology or the bubble constants
+ * do. Call with an empty list to disable the pass — that is what a graph with
+ * no retained hierarchy must do, rather than leave the previous graph's roots
+ * addressing slots that now hold different nodes.
+ *
+ * @throws CSRValidationError when a root slot lies outside the buffer capacity.
+ */
+export function uploadRelativityAtlasBubbleRoots(
+  device: GPUDevice,
+  buffers: AlgorithmBuffers,
+  roots: Uint32Array,
+): void {
+  const b = buffers as RelativityAtlasBuffers;
+
+  if (roots.length > b.maxNodes) {
+    throw new CSRValidationError(
+      `Forest root count ${roots.length} exceeds buffer capacity ${b.maxNodes}. ` +
+        `Recreate buffers with createBuffers() using a larger maxNodes value.`,
+      { field: "roots.length", expected: `<= ${b.maxNodes}`, actual: roots.length },
+    );
+  }
+  for (let i = 0; i < roots.length; i++) {
+    if (roots[i] >= b.maxNodes) {
+      throw new CSRValidationError(
+        `Forest root slot ${roots[i]} at index ${i} is outside the buffer's ` +
+          `${b.maxNodes} slots. Out-of-range indices cause GPU memory corruption.`,
+        { field: `roots[${i}]`, expected: `< ${b.maxNodes}`, actual: roots[i] },
+      );
+    }
+  }
+
+  b.rootCount = roots.length;
+  if (roots.length > 0) {
+    const packed = new ArrayBuffer(roots.byteLength);
+    new Uint32Array(packed).set(roots);
+    device.queue.writeBuffer(b.rootList, 0, packed);
   }
 }
