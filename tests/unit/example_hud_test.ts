@@ -12,11 +12,31 @@
 
 import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1";
 import { formatCount, formatMs, HudModel } from "../../examples/code-graph/src/hud.ts";
+import type { LodChangeEvent, LodTransitionReason } from "../../packages/core/src/types.ts";
+
+/** A `lod:change` carrying only the accounting the readout reads. */
+function lodChange(
+  visibleCount: number,
+  totalCount: number,
+  hidden: Partial<Record<LodTransitionReason, number>> = {},
+): LodChangeEvent {
+  return {
+    type: "lod:change",
+    timestamp: 0,
+    expanded: [],
+    collapsed: [],
+    visibleCount,
+    totalCount,
+    budget: totalCount,
+    hiddenByReason: { zoom: 0, policy: 0, imperative: 0, budget: 0, ...hidden },
+    zoom: 1,
+  };
+}
 
 Deno.test("hud: a load resets everything derived from the previous dataset", () => {
   const hud = new HudModel();
   hud.loaded(100, 120);
-  hud.lodChanged(40);
+  hud.lodChanged(lodChange(40, 100, { zoom: 60 }));
   hud.nodeFolded();
   hud.cardsMounted(7);
 
@@ -28,6 +48,8 @@ Deno.test("hud: a load resets everything derived from the previous dataset", () 
   assertEquals(snapshot.cards, 0);
   // Before the cut has been evaluated, everything is on screen.
   assertEquals(snapshot.visible, 2_500);
+  assertEquals(snapshot.undrawn, 0);
+  assertEquals(snapshot.undrawnReason, null);
 });
 
 Deno.test("hud: fps is published once per window, not per frame", () => {
@@ -143,10 +165,28 @@ Deno.test("hud: the fold count is a net that never goes negative", () => {
 Deno.test("hud: lod:change drives the visible count", () => {
   const hud = new HudModel();
   hud.loaded(35_000, 40_000);
-  hud.lodChanged(1_204);
+  hud.lodChanged(lodChange(1_204, 35_000, { zoom: 33_796 }));
   assertEquals(hud.snapshot().visible, 1_204);
-  hud.lodChanged(0);
+  hud.lodChanged(lodChange(0, 35_000, { zoom: 35_000 }));
   assertEquals(hud.snapshot().visible, 0);
+});
+
+Deno.test("hud: the undrawn nodes are reported with what folded them", () => {
+  // The count on its own is not actionable: the same figure is a camera pulled
+  // back or a ceiling the user is looking at, and only the second is a knob.
+  const hud = new HudModel();
+  hud.loaded(35_000, 40_000);
+
+  hud.lodChanged(lodChange(1_200, 35_000, { zoom: 30_000, budget: 3_800 }));
+  assertEquals(hud.snapshot().undrawn, 33_800);
+  assertEquals(hud.snapshot().undrawnReason, "zoom");
+
+  hud.lodChanged(lodChange(1_200, 35_000, { zoom: 3_800, budget: 30_000 }));
+  assertEquals(hud.snapshot().undrawnReason, "budget");
+
+  hud.lodChanged(lodChange(35_000, 35_000));
+  assertEquals(hud.snapshot().undrawn, 0);
+  assertEquals(hud.snapshot().undrawnReason, null);
 });
 
 Deno.test("hud: counts are formatted at a fixed width per magnitude", () => {

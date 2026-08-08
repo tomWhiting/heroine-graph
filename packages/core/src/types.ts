@@ -680,13 +680,33 @@ export type LodTransitionReason = "zoom" | "policy" | "imperative" | "budget";
  * `expanded` and `collapsed` list the nodes whose *proxy* status changed — a
  * node entering `collapsed` now stands for its whole subtree, a node leaving it
  * has handed that role back to its children. Nodes merely hidden underneath a
- * collapsed proxy are not listed; they are accounted for by `visibleCount`.
+ * collapsed proxy are not listed individually; `totalCount - visibleCount` is
+ * how many there are and `hiddenByReason` says what put them there.
  */
 export interface LodChangeEvent extends GraphEvent {
   readonly type: "lod:change";
   readonly expanded: readonly NodeId[];
   readonly collapsed: readonly NodeId[];
   readonly visibleCount: number;
+  /** Nodes in the hierarchy the cut was drawn from, drawn or not. */
+  readonly totalCount: number;
+  /**
+   * The ceiling the cut was actually built against.
+   *
+   * `LodConfig.maxVisibleNodes`, except where the hierarchy's root layer alone
+   * reached it: roots cannot be folded, so from there the configured ceiling is
+   * unachievable and the cut is built against a raised one instead. A host that
+   * wants to know which of the two regimes a cut came from compares this with
+   * the value it configured.
+   */
+  readonly budget: number;
+  /**
+   * The `totalCount - visibleCount` undrawn nodes, attributed to whatever
+   * folded the proxy standing over them, and summing to exactly that
+   * difference. It is what separates a cut that folded because the camera
+   * pulled back from one that folded because it ran out of budget.
+   */
+  readonly hiddenByReason: Readonly<Record<LodTransitionReason, number>>;
   readonly zoom: number;
 }
 

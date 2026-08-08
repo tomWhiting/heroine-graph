@@ -272,6 +272,34 @@ export class LODController {
   #cardedMask = EMPTY_U8;
   #visible = EMPTY_U32;
   #hasCut = false;
+  /**
+   * The ceiling the live cut was built against, which is
+   * {@link LodConfig.maxVisibleNodes} except where the root layer alone already
+   * exceeded it. Reported as {@link LodChangeEvent.budget}.
+   */
+  #cutBudget = DEFAULT_LOD_CONFIG.maxVisibleNodes;
+  /**
+   * Undrawn nodes by the reason that folded the proxy standing over them,
+   * indexed by the same constants as {@link REASON_NAMES}.
+   *
+   * Accumulated where the cut is built rather than counted afterwards: every
+   * fold already knows its own subtree size at the instant it is made, so the
+   * whole breakdown costs one add per fold and no extra pass.
+   */
+  readonly #hiddenByReason = new Uint32Array(REASON_NAMES.length);
+  /** Nodes the most recent gather skipped as pass-through. */
+  #gatheredPassThrough = 0;
+  /**
+   * The host has moved its slot space since the live fold state was built.
+   *
+   * Everything about a fold — the collapsed set, the anchors, the descendant
+   * walk — is indexed by slot against the hierarchy last adopted, while the
+   * positions are the host's. A compaction moves the second and not the first,
+   * so between one and the next adoption there is no coherent frame in which to
+   * measure drift, and {@link LODController.flushFoldDrift} must decline rather
+   * than translate whichever nodes now hold those slots.
+   */
+  #slotSpaceMoved = false;
 
   // ---- Scratch, all sized to the slot space ----
   #stack = EMPTY_U32;
@@ -455,6 +483,85 @@ export class LODController {
     this.#forceFull = true;
     this.#bypassCommit = true;
     this.evaluateNow(this.#lastCardClockMs);
+  }
+
+  /**
+   * Rewrite the focus set through a slot remap the host has just applied.
+   *
+   * The focus set is the only slot-indexed state here the host declared rather
+   * than the controller derived: everything else is rebuilt from the hierarchy
+   * when the next one is adopted, but a focus slot is a number the host handed
+   * over and nothing here can re-derive it. A compaction moves the nodes those
+   * numbers name, so without this a focus survives as a card on whichever node
+   * inherited the slot — and a host that declared its focus once would have to
+   * re-declare it after every mutation to keep it pointing at the same node.
+   *
+   * `remap` is total over the surviving slots: it carries every old slot that
+   * still holds a node, mapped to where that node now is. A member absent from
+   * it therefore names a node the mutation deleted and is dropped, and an empty
+   * map means nothing survived rather than nothing moved.
+   *
+   * Unlike {@link LODController.setFocus} this does not evaluate. It runs in
+   * the middle of a mutation, with the hierarchy already dropped and the node
+   * buffers only part way through being rewritten; it marks the next evaluation
+   * full instead, which the mutation's own topology signal would do anyway.
+   *
+   * It is also the notice that the slot space has moved at all, which is what
+   * stops {@link LODController.flushFoldDrift} measuring a fold against
+   * positions that no longer belong to it.
+   */
+  remapSlots(remap: ReadonlyMap<NodeId, NodeId>): void {
+    const survivors = new Set<NodeId>();
+    for (const slot of this.#focus) {
+      const moved = remap.get(slot);
+      if (moved !== undefined) survivors.add(moved);
+    }
+    this.#focus = survivors;
+    this.#context.focus = survivors;
+    this.#slotSpaceMoved = true;
+    this.#forceFull = true;
+    this.#bypassCommit = true;
+  }
+
+  /**
+   * Pay out the drift every live fold owes its descendants, before the slot
+   * space that measured it moves.
+   *
+   * A collapsed proxy goes on simulating while its subtree is frozen underneath
+   * it, and the anchor recording where it stood is only meaningful for as long
+   * as its descendants are the nodes those slots hold. A mutation moves them,
+   * and adopting the rebuilt hierarchy can only drop the anchors — translating
+   * by a delta measured against the outgoing slot map would move a subtree an
+   * arbitrary distance — so by adoption the outstanding drift is already
+   * unrecoverable. Left to that, every topology change silently discards
+   * whatever was owed at the time, and the losses accumulate in the
+   * descendants' positions across a stream of mutations.
+   *
+   * Idempotent, so a host may call it defensively and a mutation that reaches
+   * two entry points pays once: each proxy is re-anchored where it now stands,
+   * which leaves the next call measuring a zero delta. Re-anchored rather than
+   * un-anchored because the fold is not over — the proxy still stands for its
+   * subtree — and an anchor dropped here would lose the drift accrued between
+   * this mutation and the next.
+   *
+   * Declines outright once a compaction has been declared through
+   * {@link LODController.remapSlots} and before the rebuilt hierarchy has been
+   * adopted: the fold names the outgoing slot space and the positions name the
+   * new one, so there is nothing to measure and a translate would move whatever
+   * nodes have arrived in those slots. Paying before the compaction, which is
+   * what the host's mutation entry points do, is the answer to that; there is
+   * no second chance afterwards.
+   */
+  flushFoldDrift(): void {
+    if (this.#hierarchy === null || !this.#hasCut || this.#slotSpaceMoved) return;
+    const count = this.#gatherProxies(false);
+    for (let k = 0; k < count; k++) {
+      const slot = this.#proxies[k];
+      this.#restoreSubtree(slot);
+      const position = this.#host.getNodePosition(slot);
+      this.#anchorX[slot] = position.x;
+      this.#anchorY[slot] = position.y;
+    }
   }
 
   /** Nodes in the cut, ascending. Every slot when LOD is off. */
@@ -708,6 +815,9 @@ export class LODController {
     this.#anchorX = new Float32Array(n).fill(NaN);
     this.#anchorY = new Float32Array(n).fill(NaN);
     this.#proxiesStale = true;
+    // Every slot-indexed structure above now describes the hierarchy just
+    // adopted, so a fold measured from here on is measurable again.
+    this.#slotSpaceMoved = false;
 
     // The semantic columns are producer data, fixed for the graph's lifetime,
     // so they are read once here rather than on every evaluation.
@@ -1013,19 +1123,32 @@ export class LODController {
    * binds it is the smallest subtrees that stay folded — the budget degrades
    * the cut the same way zooming out does, rather than truncating it wherever
    * the traversal happened to be.
+   *
+   * Two regimes, and which one applies is a property of the graph rather than
+   * of the configuration. While the root layer *fits inside* the ceiling — up
+   * to and including the case where the two are equal, where the root layer is
+   * itself a cut that honours it exactly — the ceiling is exactly a ceiling and
+   * the cut never exceeds it. Only once the root layer alone overruns it does
+   * it stop being satisfiable — roots cannot fold — and it is replaced by the
+   * root layer plus {@link LodConfig.rootDetailReserve} of it, without which
+   * the first expansion is refused and every one after it too. The change of
+   * rule is abrupt at exactly the point the contract changes from achievable to
+   * unachievable, and {@link LodChangeEvent.budget} reports which regime the
+   * cut was built in so a host is never left guessing.
    */
   #buildCut(): void {
     const h = this.#hierarchy!;
-    const { parent } = h.columns;
+    const { parent, subtreeSize } = h.columns;
     const { offsets, children } = h.children;
     const n = h.nodeCount;
-    const budget = this.#config.maxVisibleNodes;
+    const config = this.#config;
 
     const visible = this.#nextVisibleMask;
     const collapsed = this.#nextCollapsedMask;
     visible.fill(0);
     collapsed.fill(0);
     this.#heapSize = 0;
+    this.#hiddenByReason.fill(0);
 
     // Roots are admitted unconditionally: a forest with more roots than the
     // budget still has to render, and there is nothing above them to fold into.
@@ -1033,7 +1156,12 @@ export class LODController {
     for (let i = 0; i < n; i++) {
       if (parent[i] === HIERARCHY_ROOT) this.#stack[seeds++] = i;
     }
-    let visibleCount = this.#commitAdmitted(this.#gather(seeds), visible, collapsed);
+    const floor = this.#commitAdmitted(this.#gather(seeds), visible, collapsed);
+    const budget = floor <= config.maxVisibleNodes
+      ? config.maxVisibleNodes
+      : floor + Math.min(config.maxVisibleNodes, Math.ceil(floor * config.rootDetailReserve));
+    this.#cutBudget = budget;
+    let visibleCount = floor;
 
     while (this.#heapSize > 0) {
       const slot = this.#heapPop();
@@ -1045,6 +1173,7 @@ export class LODController {
       if (visibleCount + admitted > budget) {
         collapsed[slot] = 1;
         this.#collapseReason[slot] = REASON_BUDGET;
+        this.#hiddenByReason[REASON_BUDGET] += subtreeSize[slot] - 1;
         continue;
       }
       visibleCount += this.#commitAdmitted(admitted, visible, collapsed);
@@ -1061,14 +1190,20 @@ export class LODController {
    * children are considered at its parent's level instead, so a chain of them
    * disappears entirely. Iterative because those chains are exactly the deep
    * single-child directory runs the verb exists for.
+   *
+   * The pass-throughs skipped are left in {@link LODController.#gatheredPassThrough}
+   * for the commit to attribute; they are undrawn nodes like any other, but
+   * only the caller knows whether this gather's result is going to be used.
    */
   #gather(seedCount: number): number {
     const { offsets, children } = this.#hierarchy!.children;
     let top = seedCount;
     let out = 0;
+    let skipped = 0;
     while (top > 0) {
       const slot = this.#stack[--top];
       if (this.#passThrough[slot] === 1) {
+        skipped++;
         for (let c = offsets[slot]; c < offsets[slot + 1]; c++) {
           this.#stack[top++] = children[c];
         }
@@ -1076,12 +1211,25 @@ export class LODController {
       }
       this.#scratch[out++] = slot;
     }
+    this.#gatheredPassThrough = skipped;
     return out;
   }
 
-  /** Mark gathered nodes visible, queueing the expandable ones. */
+  /**
+   * Mark gathered nodes visible, queueing the expandable ones, and attribute
+   * everything the commit leaves undrawn.
+   *
+   * Attributing at commit time rather than where each fold is decided is what
+   * keeps the tally exact: a gather the budget refuses is discarded whole, and
+   * the pass-throughs it skipped are already inside the refusing proxy's own
+   * subtree count. Every node is therefore drawn, or a descendant of exactly
+   * one collapsed proxy, or a committed pass-through, and the buckets sum to
+   * the undrawn total.
+   */
   #commitAdmitted(count: number, visible: Uint8Array, collapsed: Uint8Array): number {
     const { offsets } = this.#hierarchy!.children;
+    const { subtreeSize } = this.#hierarchy!.columns;
+    this.#hiddenByReason[REASON_POLICY] += this.#gatheredPassThrough;
     for (let k = 0; k < count; k++) {
       const slot = this.#scratch[k];
       visible[slot] = 1;
@@ -1091,9 +1239,30 @@ export class LODController {
       } else {
         collapsed[slot] = 1;
         this.#collapseReason[slot] = this.#reason[slot];
+        this.#hiddenByReason[this.#reason[slot]] += subtreeSize[slot] - 1;
       }
     }
     return count;
+  }
+
+  /**
+   * The undrawn tally as the record {@link LodChangeEvent} carries.
+   *
+   * Built by walking {@link REASON_NAMES} so the event's keys and the numeric
+   * bucket constants cannot drift apart, over a literal so the type checker
+   * still proves the record total.
+   */
+  #reasonBreakdown(): Record<LodTransitionReason, number> {
+    const breakdown: Record<LodTransitionReason, number> = {
+      zoom: 0,
+      policy: 0,
+      imperative: 0,
+      budget: 0,
+    };
+    for (let k = 0; k < REASON_NAMES.length; k++) {
+      breakdown[REASON_NAMES[k]] = this.#hiddenByReason[k];
+    }
+    return breakdown;
   }
 
   /**
@@ -1213,6 +1382,9 @@ export class LODController {
       expanded: left,
       collapsed: entered,
       visibleCount: this.#visible.length,
+      totalCount: this.#nodeCount,
+      budget: this.#cutBudget,
+      hiddenByReason: this.#reasonBreakdown(),
       zoom: this.#zoom,
     });
 
@@ -1369,8 +1541,16 @@ export class LODController {
    * Issued as one call per contiguous slot run, which is a single buffer write
    * for the whole subtree when the producer emits slots depth-first — the
    * ordering the hierarchy module asks producers for, and the reason it does.
+   *
+   * The one choke point every translate goes through, which is why the
+   * compaction guard lives here rather than at each caller: between a declared
+   * remap and the next adoption the anchor names the outgoing slot space and
+   * the position names the new one, so no delta measured across that seam
+   * describes anything, and the nodes it would move are not even the ones the
+   * fold was taken over.
    */
   #restoreSubtree(root: NodeId): void {
+    if (this.#slotSpaceMoved) return;
     const position = this.#host.getNodePosition(root);
     const dx = position.x - this.#anchorX[root];
     const dy = position.y - this.#anchorY[root];
@@ -1581,13 +1761,19 @@ export class LODController {
    *   hierarchy the collapsed set was named against, where the descendant
    *   walk would follow a tree that no longer describes the slot space — and
    *   where per-proxy expand events would name subtrees of that vanished tree,
-   *   so only the closing `lod:change` is emitted.
+   *   so only the closing `lod:change` is emitted. A declared-but-unadopted
+   *   compaction is the same situation reached by the other door and is
+   *   demoted to it here, so a caller need not ask.
    * @param nowMs - Caller's clock, stamped onto the events.
    */
   #release(restore: boolean, nowMs: number): void {
     const hadCut = this.#hasCut;
     let released: readonly NodeId[] = EMPTY_RELEASED;
-    if (restore) {
+    // A compaction the host has declared but not yet had adopted leaves the
+    // collapsed set naming the outgoing slot space just as a dropped hierarchy
+    // does: those slots hold other nodes now, so unfolding them would move the
+    // wrong subtrees and the expand events would name the wrong nodes.
+    if (restore && !this.#slotSpaceMoved) {
       const count = this.#gatherProxies(false);
       for (let k = 0; k < count; k++) this.#restoreSubtree(this.#proxies[k]);
       if (hadCut && count > 0) {
@@ -1616,6 +1802,9 @@ export class LODController {
       this.#host.applyVisibility(0, this.#nodeCount, this.#appliedVisible);
     }
     this.#visible = materialise(this.#visibleMask, this.#nodeCount);
+    // A released cut hides nothing, so the breakdown the closing event carries
+    // is the empty one rather than the last cut's.
+    this.#hiddenByReason.fill(0);
     this.#pendingHide.clear();
     this.#cardedSince.clear();
     this.#cardBandActive = false;
@@ -1641,6 +1830,9 @@ export class LODController {
       expanded: released,
       collapsed: [],
       visibleCount: this.#visible.length,
+      totalCount: this.#nodeCount,
+      budget: this.#config.maxVisibleNodes,
+      hiddenByReason: this.#reasonBreakdown(),
       zoom: this.#zoom,
     });
   }
