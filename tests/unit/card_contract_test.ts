@@ -68,7 +68,7 @@ function makeCardNode(id: number, overrides: Partial<CardNode> = {}): CardNode {
 }
 
 function placement(overrides: Partial<CardPlacement> = {}): CardPlacement {
-  return { x: 10, y: 20, width: 200, height: 120, opacity: 1, ...overrides };
+  return { x: 10, y: 20, width: 200, height: 120, scale: 1, opacity: 1, ...overrides };
 }
 
 interface Call {
@@ -132,7 +132,7 @@ Deno.test("card contract: mount runs exactly once, on an attached and placed con
 
   const container = host.children[0] as unknown as HTMLElement;
   assertEquals(container.className, "gm-card");
-  assertEquals(container.style.transform, "translate(10px, 20px)");
+  assertEquals(container.style.transform, "translate(10px, 20px) scale(1)");
   assertEquals(container.style.width, "200px");
   assertEquals(container.style.height, "120px");
   assertEquals(container.style.opacity, "1");
@@ -170,7 +170,7 @@ Deno.test("card contract: core never touches container children (SC-004)", () =>
 
   assertEquals(container.innerHTML, content, "consumer content survives every core write");
   // ...while core's own four properties did move
-  assertEquals(container.style.transform, "translate(512px, 640px)");
+  assertEquals(container.style.transform, "translate(512px, 640px) scale(1)");
   assertEquals(container.style.width, "320px");
   assertEquals(container.style.height, "200px");
   assertEquals(container.style.opacity, "0.25");

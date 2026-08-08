@@ -22,12 +22,20 @@ import type { CardChange, CardNode, CardProvider, CardStateChange } from "./type
  * host element.
  */
 export interface CardPlacement {
-  /** Left edge in CSS pixels. */
+  /** Left edge, in the container's (camera-scaled) coordinate space. */
   readonly x: number;
-  /** Top edge in CSS pixels. */
+  /** Top edge, in the container's (camera-scaled) coordinate space. */
   readonly y: number;
+  /** Layout width in CSS pixels — the card's natural size, not its rendered one. */
   readonly width: number;
+  /** Layout height in CSS pixels. */
   readonly height: number;
+  /**
+   * Counter-scale applied to the card, cancelling the camera so the card is
+   * laid out at {@link CardPlacement.width} and rendered at the size the
+   * overlay chose. See `cardCounterScale`.
+   */
+  readonly scale: number;
   /** 0..1 crossfade opacity. Core-owned, so it raises no `CardChange`. */
   readonly opacity: number;
 }
@@ -69,18 +77,29 @@ interface MountedCard<TState> {
  * Take a container out of normal flow, once, at mount. `transform` cannot
  * place a statically-positioned element at all, so this is the precondition
  * for placement rather than styling the consumer might want a say in.
+ *
+ * The origin goes with it: placement puts the card's *top-left* at `x`/`y`, so
+ * the default `50% 50%` origin would offset every scaled card by half the
+ * difference between its layout and rendered size.
  */
 function anchorContainer(container: HTMLElement): void {
   const style = container.style;
   style.position = "absolute";
   style.left = "0";
   style.top = "0";
+  style.transformOrigin = "0 0";
 }
 
-/** Write the four style properties core owns, and nothing else. */
+/**
+ * Write the four style properties core owns, and nothing else.
+ *
+ * The transform composes as `translate ∘ scale`, so the scale runs first and
+ * the translation is in container units either way — which is what lets
+ * placement express the offset without knowing the counter-scale.
+ */
 function applyPlacement(container: HTMLElement, placement: CardPlacement): void {
   const style = container.style;
-  style.transform = `translate(${placement.x}px, ${placement.y}px)`;
+  style.transform = `translate(${placement.x}px, ${placement.y}px) scale(${placement.scale})`;
   style.width = `${placement.width}px`;
   style.height = `${placement.height}px`;
   style.opacity = String(placement.opacity);
@@ -202,6 +221,12 @@ export class CardDriver<TState = unknown> {
    * reports at most one `position` and one `size` change; an unchanged
    * placement produces no DOM write and no callback. Ignored for nodes with
    * no mounted card.
+   *
+   * A `size` change is reported against the card's *rendered* extent rather
+   * than its layout box, which is fixed at mount. That is the one of the two a
+   * provider can act on, and it is silent through the clamped regime — where
+   * the counter-scale changes on every zoom step precisely so that the rendered
+   * size does not.
    */
   place(nodeId: NodeId, placement: CardPlacement): void {
     const card = this.cards.get(nodeId);
@@ -209,9 +234,10 @@ export class CardDriver<TState = unknown> {
 
     const previous = card.placement;
     const moved = placement.x !== previous.x || placement.y !== previous.y;
-    const resized = placement.width !== previous.width ||
-      placement.height !== previous.height;
-    if (!moved && !resized && placement.opacity === previous.opacity) return;
+    const resized = placement.width * placement.scale !== previous.width * previous.scale ||
+      placement.height * placement.scale !== previous.height * previous.scale;
+    const rescaled = placement.scale !== previous.scale;
+    if (!moved && !resized && !rescaled && placement.opacity === previous.opacity) return;
 
     card.placement = placement;
     applyPlacement(card.container, placement);

@@ -4,6 +4,38 @@
 lockstep: core depends on the wasm package at the same minor, and a core
 release that does not name a matching wasm release is a bug (see 0.3.0).
 
+## Unreleased
+
+### Fixed
+
+- **A card is now laid out at its own CSS size and never drawn larger than it.**
+  The card box was held in graph units and the overlay container carries the
+  camera, so a card was laid out at `size / cameraScale` and magnified back up.
+  A card mounts when its node's screen radius crosses `domThreshold`, which puts
+  the camera well above scale 1 — so the ordinary case was a card laid out at a
+  fraction of the width it appeared to occupy and rendered as a magnified
+  picture of itself: text drawn several pixels per pixel, borders equally thick,
+  wrapping and `min-width` computed against the wrong number. Zooming further in
+  inflated it without bound, since nothing counter-scaled.
+
+  A card is now laid out in the box the caller asked for, and carries a
+  counter-scale that cancels the camera. At and above the scale it mounted at it
+  renders at exactly its natural size, pixel for pixel, however far the camera
+  goes; below that it shrinks with the camera as before, so the swap to and from
+  a sprite stays free of a jump in both directions.
+
+  Consumers rendering anything with intrinsic size — an input, a control, a
+  framework subtree with its own breakpoints — were the exposed case.
+
+### Breaking
+
+- `cardPlacementAt` takes a `scale` argument before `opacity`, and
+  `CardPlacement` carries a `scale`. Both are exported for consumers driving
+  `syncDomCards` by hand; a consumer that only registers a `CardProvider` is
+  unaffected. `CardPlacement.width`/`height` are now the layout box in CSS
+  pixels rather than an extent in graph units — the rendered extent is
+  `width * scale`.
+
 ## 0.3.2
 
 ### Fixed

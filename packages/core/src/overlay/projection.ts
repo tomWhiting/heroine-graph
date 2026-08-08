@@ -8,10 +8,17 @@
  * overlay never grows a second camera to keep in sync with the first.
  *
  * One consequence shapes the rest of the overlay. The container carries the
- * zoom, so a card *inside* it is positioned and sized in graph units and is
- * scaled along with every sprite: one transform write per frame moves every
- * card, and a card keeps the apparent size of the node it replaced instead of
- * jumping when the swap happens.
+ * zoom, so a card *inside* it is positioned in graph units and is moved along
+ * with every sprite: one transform write per frame moves every card.
+ *
+ * Size is the part that cannot simply ride the camera. A card is real DOM with
+ * real text, inputs and hit targets, so it needs two things at once that pull
+ * in opposite directions: it must keep the apparent size of the sprite it
+ * replaced (no jump at the swap), and it must eventually stand at its own CSS
+ * size (or its text is magnified, its layout is computed at the wrong width,
+ * and it grows without bound as the camera keeps zooming). Both hold if the
+ * card is *laid out* at its natural CSS size and given a counter-scale — see
+ * {@link cardCounterScale}.
  *
  * Everything here is pure and DOM-free, so the ≤0.5 px claim (SC-002) is
  * provable arithmetically — no browser, no rendering, no GPU.
@@ -72,27 +79,71 @@ export function projectByMatrix(m: CssMatrix, point: Vec2): Vec2 {
 }
 
 /**
+ * The scale a card's own transform must carry to sit correctly inside the
+ * camera-scaled container.
+ *
+ * A card is laid out at its natural CSS size, so this is the whole of what
+ * makes its *rendered* size behave. Composed with the container's camera scale
+ * `S`, a card renders at `natural × S × cardCounterScale(S, S₀)`, which is
+ * `natural × min(1, S / S₀)` — two regimes with one expression:
+ *
+ * - **`S ≥ S₀` (in the DOM band).** Net scale is exactly 1: the card renders at
+ *   its natural CSS size, pixel for pixel, however far the camera keeps
+ *   zooming. This is the ceiling. Without it a card is a magnified picture of
+ *   a small card — 13px text drawn 8px-per-pixel, borders eight pixels thick,
+ *   layout computed at an eighth of the width it appears to occupy — and it
+ *   inflates without bound as the camera goes in. A card that has to hold a
+ *   working input has to reach its own size and stop.
+ * - **`S < S₀` (zooming back out, before the card is dropped).** Net scale is
+ *   `S / S₀`, so the card shrinks with the camera exactly as the sprite it
+ *   replaced does. This is what keeps the swap free of a jump in *both*
+ *   directions, which is the property the graph-unit box was there to provide.
+ *
+ * `S₀` is the camera scale the card mounted at, and a card mounts on crossing
+ * into the DOM band, so `S ≥ S₀` is the ordinary case and the natural size is
+ * the size a card is seen at almost all of the time.
+ *
+ * @param cameraScale - Current camera scale `S`
+ * @param mountScale - Camera scale when the card mounted, `S₀`
+ */
+export function cardCounterScale(cameraScale: number, mountScale: number): number {
+  // A non-positive or non-finite camera scale has no sane counter-scale, and
+  // dividing by it would put NaN into a style property, which silently drops
+  // the whole transform. Fall back to unscaled: wrong size, still on screen.
+  const larger = Math.max(cameraScale, mountScale);
+  if (!Number.isFinite(larger) || larger <= 0) return 1;
+  return 1 / larger;
+}
+
+/**
  * Placement of a card centred on a graph-space anchor.
  *
- * Expressed in graph units, because that is the coordinate space *inside* the
- * transformed container — see the module doc.
+ * `x`/`y` are in graph units, because that is the coordinate space *inside* the
+ * transformed container. `width`/`height` are in CSS pixels, because that is
+ * the box the card is laid out in; `scale` reconciles the two. See the module
+ * doc and {@link cardCounterScale}.
  *
  * @param anchor - Graph-space position of the node the card stands for
- * @param width - Card width in graph units
- * @param height - Card height in graph units
+ * @param width - Card layout width in CSS pixels
+ * @param height - Card layout height in CSS pixels
+ * @param scale - Counter-scale from {@link cardCounterScale}
  * @param opacity - Crossfade opacity, 0..1
  */
 export function cardPlacementAt(
   anchor: Vec2,
   width: number,
   height: number,
+  scale: number,
   opacity: number,
 ): CardPlacement {
+  // The card occupies `width * scale` graph units, so that — not the layout
+  // box — is what has to be centred on the node.
   return {
-    x: anchor.x - width / 2,
-    y: anchor.y - height / 2,
+    x: anchor.x - (width * scale) / 2,
+    y: anchor.y - (height * scale) / 2,
     width,
     height,
+    scale,
     opacity,
   };
 }

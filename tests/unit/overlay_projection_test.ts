@@ -15,8 +15,9 @@
  * No DOM, no GPU, no rendering: everything under test is pure.
  */
 
-import { assert, assertEquals } from "jsr:@std/assert@^1";
+import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1";
 import {
+  cardCounterScale,
   cardPlacementAt,
   type CssMatrix,
   formatCssMatrix,
@@ -142,13 +143,60 @@ Deno.test("overlay projection: the matrix is the viewport camera", () => {
 });
 
 Deno.test("overlay projection: a card is centred on its node", () => {
-  const placement = cardPlacementAt({ x: 40, y: -20 }, 200, 120, 0.75);
-  assertEquals(placement, { x: -60, y: -80, width: 200, height: 120, opacity: 0.75 });
+  const placement = cardPlacementAt({ x: 40, y: -20 }, 200, 120, 1, 0.75);
+  assertEquals(placement, {
+    x: -60,
+    y: -80,
+    width: 200,
+    height: 120,
+    scale: 1,
+    opacity: 0.75,
+  });
 
-  // The centre of the box is the anchor, at every size.
+  // The centre of the *rendered* box is the anchor, at every size and every
+  // counter-scale — the layout box is not what the user sees.
   for (const [width, height] of [[10, 10], [200, 120], [0, 0]] as const) {
-    const box = cardPlacementAt({ x: 7, y: 9 }, width, height, 1);
-    assertEquals(box.x + width / 2, 7);
-    assertEquals(box.y + height / 2, 9);
+    for (const scale of [1, 0.5, 0.125, 4]) {
+      const box = cardPlacementAt({ x: 7, y: 9 }, width, height, scale, 1);
+      assertEquals(box.x + (width * scale) / 2, 7);
+      assertEquals(box.y + (height * scale) / 2, 9);
+    }
+  }
+});
+
+Deno.test("overlay projection: the counter-scale caps a card at its own size", () => {
+  // A card mounts at scale 8 — the ordinary case, since a node cards when its
+  // screen radius crosses a threshold well above its world radius.
+  const mount = 8;
+  const natural = 200;
+  const rendered = (camera: number) => natural * camera * cardCounterScale(camera, mount);
+
+  // At and above the mount scale the card is at its natural size, exactly, and
+  // the ceiling does not sag however far the camera keeps going.
+  assertEquals(rendered(8), natural);
+  for (const camera of [8.0001, 16, 1e3, 1e6]) {
+    assertAlmostEquals(rendered(camera), natural, 1e-9, `capped at camera ${camera}`);
+  }
+
+  // Below it the card tracks the camera, in proportion.
+  assertEquals(rendered(4), natural / 2);
+  assertEquals(rendered(1), natural / 8);
+  assertEquals(rendered(0.5), natural / 16);
+
+  // Continuous across the join: no jump at the moment the ceiling engages.
+  assertAlmostEquals(rendered(8 - 1e-9), rendered(8), 1e-6);
+});
+
+Deno.test("overlay projection: the counter-scale never yields an unusable transform", () => {
+  // A degenerate camera scale must not put NaN or Infinity into a style
+  // property — the browser drops the whole transform and the card lands at the
+  // container origin, which reads as every card stacked in one corner.
+  for (const camera of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const scale = cardCounterScale(camera, 4);
+    assert(Number.isFinite(scale), `finite for camera ${camera}`);
+    assert(scale > 0, `positive for camera ${camera}`);
+  }
+  for (const mount of [0, -1, Number.NaN]) {
+    assert(Number.isFinite(cardCounterScale(2, mount)), `finite for mount ${mount}`);
   }
 });

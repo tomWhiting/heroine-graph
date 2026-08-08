@@ -34,7 +34,13 @@ export type {
 
 export { CardContainerPool, DEFAULT_MAX_IDLE_CONTAINERS } from "./pool.ts";
 
-export { cardPlacementAt, formatCssMatrix, overlayMatrix, projectByMatrix } from "./projection.ts";
+export {
+  cardCounterScale,
+  cardPlacementAt,
+  formatCssMatrix,
+  overlayMatrix,
+  projectByMatrix,
+} from "./projection.ts";
 export type { CssMatrix } from "./projection.ts";
 
 export { createDefaultCardProvider } from "./default_card.ts";

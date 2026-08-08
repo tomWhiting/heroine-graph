@@ -543,7 +543,14 @@ Deno.test("overlay: ranking is stable and deterministic on ties", () => {
 // Placement
 // -----------------------------------------------------------------------------
 
-Deno.test("overlay: cards are placed in graph units, centred on their node", () => {
+/** The rendered width of a card container, in screen pixels. */
+function renderedWidth(container: HTMLElement, cameraScale: number): number {
+  const layout = Number.parseFloat(container.style.width);
+  const scale = Number.parseFloat(/scale\(([^)]+)\)/.exec(container.style.transform)?.[1] ?? "1");
+  return layout * scale * cameraScale;
+}
+
+Deno.test("overlay: cards are laid out in CSS pixels and centred on their node", () => {
   const h = harness({ minCardLifetimeMs: 0 });
   h.viewport = viewportState({ scale: 2 });
 
@@ -551,28 +558,80 @@ Deno.test("overlay: cards are placed in graph units, centred on their node", () 
   const container = h.provider.containers.get(1);
   assert(container !== undefined);
 
-  // Size is given in CSS pixels and held in graph units, so the card scales
-  // with the camera exactly like the sprite it replaced.
-  const width = DEFAULT_CARD_SIZE.width / 2;
-  const height = DEFAULT_CARD_SIZE.height / 2;
-  const expected = cardPlacementAt(h.graph.position(1), width, height, 1);
-  assertEquals(container.style.transform, `translate(${expected.x}px, ${expected.y}px)`);
+  // The layout box is the size the caller asked for, at whatever zoom the card
+  // mounted at. Providers lay content out in it, so it must not be a fraction
+  // of the size the card appears to occupy.
+  const { width, height } = DEFAULT_CARD_SIZE;
+  const expected = cardPlacementAt(h.graph.position(1), width, height, 0.5, 1);
+  assertEquals(
+    container.style.transform,
+    `translate(${expected.x}px, ${expected.y}px) scale(0.5)`,
+  );
   assertEquals(container.style.width, `${width}px`);
   assertEquals(container.style.height, `${height}px`);
+  assertEquals(container.style.transformOrigin, "0 0", "placement puts the top-left at x/y");
+  assertEquals(renderedWidth(container, 2), width, "and it is drawn at that size");
 
   // A moving node follows on the frame tick, and the camera moves the whole
   // container rather than every card.
   h.graph.positions.set(1, { x: 111, y: -222 });
   h.viewport = viewportState({ scale: 2, x: 40 });
   h.overlay.syncFrame();
-  const moved = cardPlacementAt({ x: 111, y: -222 }, width, height, 1);
-  assertEquals(container.style.transform, `translate(${moved.x}px, ${moved.y}px)`);
+  const moved = cardPlacementAt({ x: 111, y: -222 }, width, height, 0.5, 1);
+  assertEquals(container.style.transform, `translate(${moved.x}px, ${moved.y}px) scale(0.5)`);
   assertEquals(h.container.style.transform, formatCssMatrix(overlayMatrix(h.viewport)));
 
   // Nothing moved: no DOM write, no provider callback.
   const before = h.provider.calls.length;
   h.overlay.syncFrame();
   assertEquals(h.provider.calls.length, before);
+});
+
+Deno.test("overlay: a card zoomed into never renders larger than its own size", () => {
+  // Cards mount well above scale 1 — a node cards when its screen radius
+  // crosses domThreshold — so this is the ordinary case, not a corner of it.
+  const h = harness({ minCardLifetimeMs: 0 });
+  h.viewport = viewportState({ scale: 8 });
+  h.overlay.syncCards([entry(1, 1)]);
+  const container = h.provider.containers.get(1);
+  assert(container !== undefined);
+
+  const { width } = DEFAULT_CARD_SIZE;
+  assertEquals(renderedWidth(container, 8), width);
+  assertEquals(container.style.width, `${width}px`, "laid out at its own size, not 1/8 of it");
+
+  // Keep going in. The ceiling holds, and the card stays centred on its node
+  // while its footprint in graph units shrinks to match.
+  for (const scale of [16, 64, 500]) {
+    h.viewport = viewportState({ scale });
+    h.overlay.syncFrame();
+    assertEquals(renderedWidth(container, scale), width, `still ${width}px at scale ${scale}`);
+    assertEquals(container.style.width, `${width}px`, "and the layout box never moves");
+    const centre = Number.parseFloat(/translate\(([^p]+)px/.exec(container.style.transform)![1]) +
+      width / (2 * scale);
+    assert(Math.abs(centre - h.graph.position(1).x) < 1e-9, "centred on the node throughout");
+  }
+});
+
+Deno.test("overlay: a card zoomed away from shrinks with the camera", () => {
+  // The other half of the swap being jump-free: below the scale it mounted at
+  // the card tracks the sprite it replaced, so handing the pixels back is
+  // continuous in both directions.
+  const h = harness({ minCardLifetimeMs: 0 });
+  h.viewport = viewportState({ scale: 8 });
+  h.overlay.syncCards([entry(1, 1)]);
+  const container = h.provider.containers.get(1);
+  assert(container !== undefined);
+
+  const { width } = DEFAULT_CARD_SIZE;
+  h.viewport = viewportState({ scale: 4 });
+  h.overlay.syncFrame();
+  assertEquals(renderedWidth(container, 4), width / 2);
+  assertEquals(container.style.width, `${width}px`, "by scaling, never by reflowing");
+
+  h.viewport = viewportState({ scale: 1 });
+  h.overlay.syncFrame();
+  assertEquals(renderedWidth(container, 1), width / 8);
 });
 
 Deno.test("overlay: a card whose node was removed is released on the next frame", () => {
@@ -604,9 +663,14 @@ Deno.test("overlay: CardNode is a live view of the graph", () => {
   assertEquals(card.position(), h.graph.position(2));
   assertEquals(card.size(), { width: 400, height: 200 }, "CSS pixels at the zoom it mounted at");
 
-  // The box is fixed in graph units, so halving the zoom halves the card.
+  // Below the scale it mounted at the card tracks the camera, so halving the
+  // zoom halves it — that is what keeps the swap back to a sprite jump-free.
   h.viewport = viewportState({ scale: 2 });
   assertEquals(card.size(), { width: 200, height: 100 });
+
+  // Above it, the card is at its own size and stays there.
+  h.viewport = viewportState({ scale: 64 });
+  assertEquals(card.size(), { width: 400, height: 200 });
 
   h.graph.positions.set(2, { x: 5, y: 6 });
   assertEquals(card.position(), { x: 5, y: 6 });

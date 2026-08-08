@@ -27,8 +27,9 @@ import type { NodeId, Vec2, ViewportState } from "../types.ts";
 import type { IdLike } from "../graph/id_map.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
 import { CardDriver } from "./driver.ts";
+import type { CardPlacement } from "./driver.ts";
 import { CardContainerPool } from "./pool.ts";
-import { cardPlacementAt, formatCssMatrix, overlayMatrix } from "./projection.ts";
+import { cardCounterScale, cardPlacementAt, formatCssMatrix, overlayMatrix } from "./projection.ts";
 import { createDefaultCardProvider } from "./default_card.ts";
 import { DEFAULT_DOM_OVERLAY_CONFIG } from "./types.ts";
 import type {
@@ -103,9 +104,11 @@ export interface CardSyncEntry {
    */
   readonly priority: number;
   /**
-   * Card box in CSS pixels, read once when the card mounts. From then on the
-   * box is held in graph units, so the card scales with the camera exactly
-   * like the sprite it replaced instead of resizing under the user's pointer.
+   * Card box in CSS pixels, read once when the card mounts and fixed from then
+   * on — the card is laid out in it for its whole life, so a provider's content
+   * never reflows under the user's pointer. What changes with the camera is the
+   * size the box is *drawn* at, and only until it reaches this one; see
+   * `cardCounterScale`.
    */
   readonly size?: CardSize;
   /** Crossfade opacity, 0..1. Defaults to fully opaque. */
@@ -204,9 +207,15 @@ interface CardRecord {
   readonly card: CardNode;
   /** Clock value at mount; the minimum-lifetime floor is measured from it. */
   readonly mountedAtMs: number;
-  /** Card box in graph units, fixed for the card's lifetime. */
+  /** Card layout box in CSS pixels, fixed for the card's lifetime. */
   readonly width: number;
   readonly height: number;
+  /**
+   * Camera scale at mount — the scale at which the card is rendered at its
+   * natural size, and the ceiling on how large it is allowed to be drawn. See
+   * {@link cardCounterScale}.
+   */
+  readonly mountScale: number;
   /**
    * Producer identifier the card mounted for.
    *
@@ -428,8 +437,8 @@ export class DomCardOverlay {
     }
 
     // Refresh what a re-sync is allowed to change on a live card. Size is not
-    // in that set: the graph-unit box is fixed at mount so the card tracks the
-    // camera rather than resizing under the user (see CardSyncEntry.size).
+    // in that set: the layout box is fixed at mount so a provider's content
+    // never reflows under the user (see CardSyncEntry.size).
     for (const [node, entry] of requested) {
       const record = this.#cards.get(node);
       if (record === undefined) continue;
@@ -478,6 +487,7 @@ export class DomCardOverlay {
 
     this.#applyTransform();
 
+    const scale = this.#viewport().scale;
     for (const [node, record] of [...this.#cards]) {
       // The slot may have been freed by a mutation since the card mounted;
       // the node it stood for no longer exists, so neither may the card.
@@ -485,8 +495,7 @@ export class DomCardOverlay {
         this.#release(node);
         continue;
       }
-      const anchor = this.#nodes.position(node);
-      driver.place(node, cardPlacementAt(anchor, record.width, record.height, record.opacity));
+      driver.place(node, this.#placementOf(node, record, scale));
     }
   }
 
@@ -698,8 +707,9 @@ export class DomCardOverlay {
     const record: CardRecord = {
       card: this.#viewOf(node),
       mountedAtMs: now,
-      width: size.width / scale,
-      height: size.height / scale,
+      width: size.width,
+      height: size.height,
+      mountScale: scale,
       externalId: this.#nodes.externalId(node),
       opacity: entry.opacity ?? 1,
       priority: entry.priority,
@@ -709,8 +719,18 @@ export class DomCardOverlay {
     this.#cards.set(node, record);
     this.#cardEpoch++;
 
-    const anchor = this.#nodes.position(node);
-    driver.mount(record.card, cardPlacementAt(anchor, record.width, record.height, record.opacity));
+    driver.mount(record.card, this.#placementOf(node, record, scale));
+  }
+
+  /** Where a card sits this frame, from its record and the live camera. */
+  #placementOf(node: NodeId, record: CardRecord, scale: number): CardPlacement {
+    return cardPlacementAt(
+      this.#nodes.position(node),
+      record.width,
+      record.height,
+      cardCounterScale(scale, record.mountScale),
+      record.opacity,
+    );
   }
 
   #release(node: NodeId): void {
@@ -765,10 +785,11 @@ export class DomCardOverlay {
       size: (): CardSize => {
         const record = cards.get(node);
         if (record === undefined) return DEFAULT_CARD_SIZE;
-        // Held in graph units, reported in CSS pixels: the card box is
-        // whatever the current camera makes of it.
-        const { scale } = viewport();
-        return { width: record.width * scale, height: record.height * scale };
+        // The size the card is *drawn* at, which is its layout box only once
+        // the camera has reached the scale it mounted at — from then on the two
+        // agree and stay agreed, however far the camera goes in.
+        const net = viewport().scale * cardCounterScale(viewport().scale, record.mountScale);
+        return { width: record.width * net, height: record.height * net };
       },
       pin: () => nodes.setPinned(node, true),
       unpin: () => nodes.setPinned(node, false),
