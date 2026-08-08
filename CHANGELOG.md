@@ -36,6 +36,19 @@ the `card:error` event and the failure types below are new exports, and
 
 ### Fixed
 
+- **A new minor can be released at all.** `deno task publish` began with a
+  `deno install`, which resolved core's dependency on `@graphmother/wasm` from
+  npm — at the exact version the run existed to put there. Every first release
+  of a minor therefore failed before it built anything. packages/wasm and
+  packages/core are now npm workspace members, so that dependency resolves to
+  the sibling directory. The wasm package publishes from `packages/wasm` with a
+  checked-in manifest rather than from the wasm-pack output directory that
+  `build.sh` used to patch after the fact.
+- **`VERSION` reported 0.3.2 in a 0.4.0 build.** The constant lives in
+  `packages/core/src/api/factory.ts` and the 0.4.0 bump was done by hand, which
+  is exactly how 0.3.0 went wrong. `tests/unit/release_manifest_test.ts` now
+  holds every manifest, the caret range core asks wasm for, the workspace
+  membership above, and the wasm tarball's file list against Cargo.toml.
 - **Bubble mode now separates unrelated subtrees, rather than hoping repulsion
   will.** Three defects stood between the nested-bubble columns and the
   guarantee they exist for. The force passes derived their parent, sibling and

@@ -215,8 +215,8 @@ export async function getSupportInfo(): Promise<{
  */
 export const VERSION = {
   major: 0,
-  minor: 3,
-  patch: 2,
+  minor: 4,
+  patch: 0,
   toString() {
     return `${this.major}.${this.minor}.${this.patch}`;
   },

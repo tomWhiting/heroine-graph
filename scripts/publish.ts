@@ -11,6 +11,12 @@
  * pinned by the lockfile, so the pipeline is reproducible in a clean
  * checkout. No unpinned "latest" downloads.
  *
+ * packages/wasm and packages/core are npm workspace members (root
+ * package.json), so core's dependency on @graphmother/wasm resolves to the
+ * sibling directory rather than to the registry. Without that, no new minor
+ * could ever be released: the install step would demand from npm the exact
+ * version the run exists to put there.
+ *
  * The vue and svelte wrappers are NOT built or published: their builds are
  * broken at the source level (packages/vue needs a .vue-aware bundler +
  * shim for dts emit; packages/svelte needs a tsconfig.json for
@@ -35,7 +41,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
 
 /** Package directories that get published (in dependency order). */
 const PUBLISH_DIRS: ReadonlyArray<readonly [dir: string, name: string]> = [
-  ["packages/wasm/pkg", "@graphmother/wasm"],
+  ["packages/wasm", "@graphmother/wasm"],
   ["packages/core", "@graphmother/core"],
 ];
 
@@ -147,6 +153,16 @@ function setVersions(version: string): void {
   );
   console.log(`    Cargo.toml -> ${version}`);
 
+  // The npm manifest for the wasm package is hand-maintained here rather than
+  // taken from wasm-pack's generated pkg/package.json, because deno.json links
+  // `@graphmother/wasm` to this directory and a link target that only exists
+  // after a build would stop every deno command in the repo dead.
+  const wasmPkgPath = join(ROOT, "packages/wasm/package.json");
+  const wasmPkg = JSON.parse(Deno.readTextFileSync(wasmPkgPath));
+  wasmPkg.version = version;
+  Deno.writeTextFileSync(wasmPkgPath, JSON.stringify(wasmPkg, null, 2) + "\n");
+  console.log(`    wasm/package.json -> ${version}`);
+
   const [major, minor] = version.split(".");
 
   const corePkgPath = join(ROOT, "packages/core/package.json");
@@ -208,17 +224,22 @@ async function buildAll(): Promise<void> {
   console.log("  STEP 1: BUILD");
   console.log("=".repeat(60));
 
-  // Materialize the lockfile-pinned toolchain (typescript, esbuild, tsup,
-  // @webgpu/types, ...) into node_modules. deno.lock pins every version,
-  // so this is reproducible in a clean checkout.
-  await run(["deno", "install"], ROOT, "install");
-
-  // Build WASM
+  // WASM first, and not only for its own sake: core depends on
+  // `@graphmother/wasm` at the version this very run publishes, and the
+  // install below resolves that from the npm workspace member at
+  // packages/wasm — whose built output has to be on disk by then. wasm-pack
+  // and deno are all this step needs; nothing here wants node_modules.
   await run(
     ["bash", "./build.sh", "--release"],
     join(ROOT, "packages/wasm"),
     "wasm",
   );
+
+  // Materialize the lockfile-pinned toolchain (typescript, esbuild,
+  // @webgpu/types, ...) into node_modules. The repo has a root package.json,
+  // so Deno resolves `npm:` specifiers through node_modules rather than its
+  // own cache — the bundle and .d.ts steps below both need this to have run.
+  await run(["deno", "install"], ROOT, "install");
 
   // Type-check core
   await run(

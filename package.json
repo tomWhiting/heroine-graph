@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/wasm",
+    "packages/core"
+  ],
   "scripts": {
     "storybook": "bunx storybook dev -p 6006",
     "build-storybook": "bunx storybook build"

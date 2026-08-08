@@ -1,0 +1,37 @@
+{
+  "name": "@graphmother/wasm",
+  "version": "0.4.0",
+  "type": "module",
+  "description": "WASM module for GraphMother - graph algorithms and data structures",
+  "license": "MIT OR Apache-2.0",
+  "collaborators": [
+    "GraphMother Contributors"
+  ],
+  "main": "pkg/graphmother_wasm.js",
+  "types": "pkg/graphmother_wasm.d.ts",
+  "files": [
+    "pkg/graphmother_wasm_bg.wasm",
+    "pkg/graphmother_wasm.js",
+    "pkg/graphmother_wasm.d.ts",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "./pkg/snippets/*"
+  ],
+  "keywords": [
+    "graph",
+    "visualization",
+    "wasm",
+    "webgpu",
+    "graphmother"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomWhiting/graphmother.git",
+    "directory": "packages/wasm"
+  },
+  "homepage": "https://github.com/tomWhiting/graphmother",
+  "bugs": {
+    "url": "https://github.com/tomWhiting/graphmother/issues"
+  }
+}

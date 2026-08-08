@@ -82,22 +82,9 @@ if [ -f pkg/graphmother_wasm.js ]; then
     echo ""
     echo "Build successful!"
 
-    # Patch wasm-pack generated package.json with correct npm metadata.
-    # wasm-pack regenerates pkg/package.json on every build, overwriting our
-    # scoped name, repository URLs, homepage, bugs, and keywords.
-    echo "Patching pkg/package.json with npm metadata..."
-    deno eval '
-      const pkg = JSON.parse(Deno.readTextFileSync("pkg/package.json"));
-      Object.assign(pkg, {
-        name: "@graphmother/wasm",
-        license: "MIT OR Apache-2.0",
-        repository: { type: "git", url: "git+https://github.com/tomWhiting/graphmother.git", directory: "packages/wasm" },
-        homepage: "https://github.com/tomWhiting/graphmother",
-        bugs: { url: "https://github.com/tomWhiting/graphmother/issues" },
-        keywords: ["graph", "visualization", "wasm", "webgpu", "graphmother"],
-      });
-      Deno.writeTextFileSync("pkg/package.json", JSON.stringify(pkg, null, 2) + "\n");
-    '
+    # The npm manifest for this package is packages/wasm/package.json, which is
+    # checked in and edited by hand. wasm-pack also writes a pkg/package.json;
+    # nothing reads it, and it is not what gets published.
 
     echo "Output files:"
     ls -lh pkg/
