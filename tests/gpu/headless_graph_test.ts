@@ -23,6 +23,7 @@ import {
 } from "../helpers/headless_graph.ts";
 import { GPU_SKIP_MESSAGE } from "../helpers/gpu.ts";
 import type { NodeId } from "../../packages/core/src/types.ts";
+import { HIERARCHY_ROOT } from "../../packages/core/src/graph/hierarchy.ts";
 import type { CardNode, CardProvider } from "../../packages/core/src/overlay/types.ts";
 
 const device = await headlessDevice();
@@ -190,6 +191,106 @@ Deno.test({
         provider.mounts,
         ["src/mod2.ts", String(nowAtSlot)],
         "and the slot re-cards for whoever holds it now, in the same sync",
+      );
+    } finally {
+      harness?.dispose();
+    }
+  },
+});
+
+/**
+ * A chain of `count` nodes with the containment hierarchy supplied rather than
+ * derived. The harness builds GraphMother with `wasmEngine: null`, so nothing
+ * derives a hierarchy from containment edges — and without one the LOD cut has
+ * no tree to walk and folds nothing. Supplying the columns is the shipped path
+ * for exactly that case (a native indexer precomputing them offline), so this
+ * exercises real code rather than working around its absence.
+ */
+function chainWithHierarchy(count: number) {
+  const parent = new Uint32Array(count);
+  const depth = new Uint16Array(count);
+  const subtreeSize = new Uint32Array(count);
+  const wellRadius = new Float32Array(count);
+  const positions = new Float32Array(count * 2);
+  const edgePairs = new Uint32Array((count - 1) * 2);
+  const edgeKinds = new Uint16Array(count - 1);
+
+  parent[0] = HIERARCHY_ROOT;
+  for (let i = 0; i < count; i++) {
+    if (i > 0) {
+      parent[i] = i - 1;
+      edgePairs[(i - 1) * 2] = i - 1;
+      edgePairs[(i - 1) * 2 + 1] = i;
+    }
+    depth[i] = i;
+    subtreeSize[i] = count - i;
+    // Descending with depth, so a shallower node is the wider bubble and the
+    // cut has a reason to prefer folding deeper ones.
+    wellRadius[i] = 10 + (count - i) * 20;
+    positions[i * 2] = i * 60;
+    positions[i * 2 + 1] = 0;
+  }
+
+  return {
+    nodeCount: count,
+    edgeCount: count - 1,
+    positions,
+    edgePairs,
+    edgeKinds,
+    containmentKind: 0,
+    nodeIds: Array.from({ length: count }, (_, i) => `src/mod${i}.ts`),
+    hierarchy: { parent, wellRadius, depth, subtreeSize },
+  };
+}
+
+Deno.test({
+  name: "headless: a mutation pays out the drift a live fold owes its subtree",
+  ignore: device === null,
+  fn: async () => {
+    assert(device !== null, GPU_SKIP_MESSAGE);
+    let harness: HeadlessHarness | undefined;
+    try {
+      harness = await createHeadlessGraph(device);
+      const { graph } = harness;
+      await graph.load(chainWithHierarchy(8));
+
+      graph.setScale(1);
+      graph.setLodConfig({ enabled: true });
+      harness.evaluateLod(0);
+
+      // Fold a subtree. Its descendants are frozen from here on; the proxy is
+      // the only one of them the simulation still moves.
+      const proxy = graph.getNodeId("src/mod2.ts");
+      const descendant = graph.getNodeId("src/mod5.ts");
+      assert(proxy !== undefined && descendant !== undefined);
+      graph.collapseNode(proxy);
+      assert(graph.isCollapsed(proxy), "the subtree must actually be folded");
+
+      const proxyBefore = graph.getNodePosition(proxy);
+      const before = graph.getNodePosition(descendant);
+      assert(proxyBefore !== undefined && before !== undefined);
+
+      // Drift: the proxy goes on simulating while the subtree does not, so it
+      // ends up somewhere its descendants have not followed to.
+      const dx = 137;
+      const dy = -91;
+      graph.setNodePosition(proxy, proxyBefore.x + dx, proxyBefore.y + dy);
+
+      // Any mutation that drops the derived topology ends both the hierarchy
+      // and the slot space the debt is expressible in, so it has to be paid
+      // first. Adding an edge is as ordinary as a mutation gets.
+      await graph.addEdgesBatch([{ source: "src/mod0.ts", target: "src/mod7.ts" }]);
+
+      // The assertion is on the settle's *effect*. Asserting that it was called
+      // passes against a settle that does nothing — which is precisely what the
+      // static oracle in tests/unit/mutation_invalidation_test.ts can see and
+      // this cannot: empty `beginTopologyChange` and only this test goes red.
+      const after = graph.getNodePosition(descendant);
+      assert(after !== undefined);
+      assertEquals(
+        [Math.round(after.x - before.x), Math.round(after.y - before.y)],
+        [dx, dy],
+        "the folded subtree must be carried by the drift its proxy accumulated",
       );
     } finally {
       harness?.dispose();

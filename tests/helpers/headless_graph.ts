@@ -67,6 +67,10 @@ export interface HeadlessGraph {
   setLodConfig(config: Partial<LodConfig>): void;
   isCollapsed(node: NodeId): boolean;
   expandNode(node: NodeId): void;
+  collapseNode(node: NodeId): void;
+  addEdgesBatch(edges: { source: NodeId | string; target: NodeId | string }[]): Promise<unknown>;
+  getNodePosition(node: NodeId): { x: number; y: number } | undefined;
+  setNodePosition(node: NodeId, x: number, y: number): void;
   getVisibleNodes(): NodeId[];
   setDomOverlay(config: Partial<DomOverlayConfig>): void;
   setCardProvider(provider: CardProvider<unknown> | null): void;
@@ -100,6 +104,13 @@ export interface HeadlessHarness {
   readonly graph: HeadlessGraph;
   /** Drives the graph's own simulation seam; see {@link HeadlessSimulation}. */
   readonly simulation: HeadlessSimulation;
+  /**
+   * Runs the LOD evaluation the render loop would have run.
+   *
+   * Returns whether the cut or the card set changed. A no-op when LOD is off
+   * or the graph has no hierarchy to cut.
+   */
+  evaluateLod(nowMs?: number): boolean;
   readonly device: GPUDevice;
   /** The stub canvas, so a test can resize it or read what was written. */
   readonly canvas: HeadlessCanvas;
@@ -199,6 +210,20 @@ export function headlessCanvas(width = 800, height = 600): HeadlessCanvas {
  * hand. Naming them here rather than reaching through `any` keeps the coupling
  * visible — a rename in api/graph.ts becomes a type error in this file.
  */
+/**
+ * The LOD controller, reached the only way a headless test can reach it.
+ *
+ * `tick` is a render-loop step, and a headless graph has no loop: the frame
+ * shim accepts callbacks and never fires them, which is an accurate model of
+ * presenting nothing but leaves the LOD cut permanently un-evaluated. Every
+ * public route into the controller either defers to that loop or is a
+ * side effect of one specific setter, so without this seam a test can enable
+ * LOD, collapse a node and observe neither.
+ */
+interface LodInternals {
+  lodController: { evaluateNow(nowMs: number): boolean } | null;
+}
+
 interface SimulationInternals {
   recordSimulationCommands(encoder: GPUCommandEncoder): void;
   advanceFrameParity(): void;
@@ -289,6 +314,9 @@ export async function createHeadlessGraph(
     graph,
     device,
     canvas,
+    evaluateLod(nowMs = 0): boolean {
+      return (graph as unknown as LodInternals).lodController?.evaluateNow(nowMs) ?? false;
+    },
     simulation: {
       async tick(steps: number): Promise<void> {
         for (let step = 0; step < steps; step++) {

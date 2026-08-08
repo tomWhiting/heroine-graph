@@ -10,13 +10,20 @@
  * which the singular paths — and the plural ones that loop over them — never
  * reach.
  *
- * This is asserted against the source because `GraphMother` cannot be
- * constructed headless (it requires an HTMLCanvasElement), so there is no seam
- * at which to observe the call. The invariant is structural anyway: what makes
- * it hold is that no mutation path exists which skips the call, and that is a
- * statement about the set of entry points, not about one execution. Replace
- * this with a behavioural test the day a GraphMother can be built over the
- * headless device.
+ * This is asserted against the source because the invariant is structural:
+ * what makes it hold is that no entry point exists which reaches the
+ * invalidation without settling first, and that is a statement about the set of
+ * paths rather than about any one execution. No suite of examples can establish
+ * it, because the next unsettled method to be written is the one no example
+ * covers.
+ *
+ * What this oracle CANNOT see is whether the call it finds does anything: empty
+ * `beginTopologyChange`'s body and every assertion here still holds. That half
+ * is covered behaviourally, on a real assembled instance, by "a mutation pays
+ * out the drift a live fold owes its subtree" in
+ * `tests/gpu/headless_graph_test.ts`. The two are complements and neither is
+ * sufficient — this one enumerates the paths, that one proves the call has an
+ * effect. Emptying the method makes exactly that test go red.
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@^1";
