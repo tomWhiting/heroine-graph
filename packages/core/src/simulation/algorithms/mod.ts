@@ -52,6 +52,7 @@ export {
   CSRValidationError,
   RelativityAtlasAlgorithm,
   RelativityAtlasBuffers,
+  uploadRelativityAtlasBubbleRoots,
   uploadRelativityAtlasEdges,
   validateCSRData,
 } from "./relativity-atlas.ts";

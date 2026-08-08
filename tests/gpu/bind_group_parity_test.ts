@@ -43,6 +43,7 @@ import {
 } from "../helpers/gpu.ts";
 import { countNonFinite } from "../helpers/invariants.ts";
 import { type CodeTreeGraph, generateCodeTree } from "../fixtures/code_tree.ts";
+import { validateForceConfig } from "../../packages/core/src/simulation/config.ts";
 
 const adapter = await probeAdapter();
 if (!adapter) {
@@ -411,6 +412,265 @@ gpuTest(
       "barnes-hut passes",
       BARNES_HUT_SLACK,
     );
+  },
+);
+
+gpuTest(
+  "GPU bind group parity: Relativity Atlas in bubble mode matches per-tick rebuilds",
+  async (device) => {
+    // Relativity Atlas binds positions in five passes, and bubble mode adds a
+    // sixth: forest-root separation. Bubble mode is switched on here
+    // specifically so that pass dispatches — with it off the root list is empty
+    // and the pass is skipped, which would leave the new pass out of the run
+    // entirely.
+    //
+    // What this case establishes is that the pass takes part in a parity run
+    // and produces forces the reference agrees with, NOT that its bind group
+    // carries the right orientation: the comparison poisons both arms
+    // identically, so a bind group captured at one orientation and reused at
+    // the other passes it. That defect is the subject of the case below.
+    //
+    // Its widest pass binds 8 storage buffers, the WebGPU default; below that
+    // the pipelines are invalid and every submit is silently discarded.
+    if (device.limits.maxStorageBuffersPerShaderStage < HARNESS_STORAGE_BUFFERS_PER_STAGE) {
+      console.warn(
+        `[gpu] skipping Relativity Atlas parity: device supports only ` +
+          `${device.limits.maxStorageBuffersPerShaderStage} storage buffers per stage ` +
+          `(needs ${HARNESS_STORAGE_BUFFERS_PER_STAGE})`,
+      );
+      return;
+    }
+
+    const graph = fixture();
+    // A forest of singleton roots: the pass needs two or more roots to
+    // dispatch, and it reads only positions, wells, flags and this list, so a
+    // list is all the topology it takes to exercise the bind group.
+    const roots = new Uint32Array(graph.nodeCount);
+    for (let i = 0; i < graph.nodeCount; i++) roots[i] = i;
+
+    const mod = await loadModuleInliningWgsl<
+      {
+        createRelativityAtlasAlgorithm(): HarnessForceAlgorithm;
+        uploadRelativityAtlasBubbleRoots(
+          device: GPUDevice,
+          buffers: { destroy(): void },
+          roots: Uint32Array,
+        ): void;
+      }
+    >(
+      new URL(
+        "../../packages/core/src/simulation/algorithms/relativity-atlas.ts",
+        import.meta.url,
+      ),
+    );
+    const withRoots = (bindGroupMode?: "rebuild-each-tick"): Promise<SimHarness> =>
+      createAlgorithmSimHarness(
+        device,
+        mod.createRelativityAtlasAlgorithm(),
+        graph,
+        { ...CONFIG, relativityBubbleMode: true },
+        undefined,
+        {
+          boundsSyncInterval: BOUNDS_SYNC_INTERVAL,
+          onAlgorithmBuffers: (algoBuffers) =>
+            mod.uploadRelativityAtlasBubbleRoots(device, algoBuffers, roots),
+          ...(bindGroupMode ? { bindGroupMode } : {}),
+        },
+      );
+
+    await assertParityMatchesReference(
+      await withRoots(),
+      await withRoots("rebuild-each-tick"),
+      graph,
+      "relativity-atlas bubble passes",
+      ATOMIC_ORDER_SLACK,
+    );
+  },
+);
+
+/**
+ * One ping-pong orientation: the position/force pair a bind group is built
+ * against.
+ *
+ * The two orientations below hold DIFFERENT positions and separate force
+ * buffers, which is what the parity-versus-reference comparison cannot do —
+ * there both arms see the same positions, so a bind group that reads the wrong
+ * one is invisible.
+ */
+interface Orientation {
+  positions: GPUBuffer;
+  forces: GPUBuffer;
+  readForces(): Promise<Float32Array>;
+  destroy(): void;
+}
+
+/** Allocate an orientation holding `positions` (interleaved x,y) and zero forces. */
+function createOrientation(device: GPUDevice, positions: Float32Array): Orientation {
+  const nodeCount = positions.length / 2;
+  const positionBuffer = device.createBuffer({
+    size: positions.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(positionBuffer, 0, positions);
+  const forces = device.createBuffer({
+    size: nodeCount * 8,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  device.queue.writeBuffer(forces, 0, new Float32Array(nodeCount * 2));
+
+  return {
+    positions: positionBuffer,
+    forces,
+    async readForces(): Promise<Float32Array> {
+      const readback = device.createBuffer({
+        size: nodeCount * 8,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      const encoder = device.createCommandEncoder();
+      encoder.copyBufferToBuffer(forces, 0, readback, 0, nodeCount * 8);
+      device.queue.submit([encoder.finish()]);
+      await readback.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(readback.getMappedRange().slice(0));
+      readback.unmap();
+      readback.destroy();
+      return out;
+    },
+    destroy(): void {
+      positionBuffer.destroy();
+      forces.destroy();
+    },
+  };
+}
+
+gpuTest(
+  "GPU bind group parity: the bubble root pass binds the orientation it was built for",
+  async (device) => {
+    // A bind group captured once and reused at both orientations reads the
+    // buffer the simulation is writing and accumulates into the one it is
+    // reading — a real defect that the parity-versus-reference comparison
+    // cannot see, because it poisons both arms identically. So this case does
+    // not compare two runs: it builds the algorithm's bind groups at two
+    // orientations whose positions DISAGREE, dispatches the second, and checks
+    // that the forces landed in the second orientation's buffer and describe
+    // the second orientation's geometry.
+    if (device.limits.maxStorageBuffersPerShaderStage < HARNESS_STORAGE_BUFFERS_PER_STAGE) {
+      console.warn(
+        `[gpu] skipping bubble root orientation: device supports only ` +
+          `${device.limits.maxStorageBuffersPerShaderStage} storage buffers per stage ` +
+          `(needs ${HARNESS_STORAGE_BUFFERS_PER_STAGE})`,
+      );
+      return;
+    }
+
+    const mod = await loadModuleInliningWgsl<
+      {
+        createRelativityAtlasAlgorithm(): HarnessForceAlgorithm;
+        uploadRelativityAtlasBubbleRoots(
+          device: GPUDevice,
+          buffers: { destroy(): void },
+          roots: Uint32Array,
+        ): void;
+      }
+    >(
+      new URL(
+        "../../packages/core/src/simulation/algorithms/relativity-atlas.ts",
+        import.meta.url,
+      ),
+    );
+
+    const algorithm = mod.createRelativityAtlasAlgorithm();
+    const pipelines = algorithm.createPipelines({ device });
+    const nodeCount = 2;
+    const buffers = algorithm.createBuffers(device, nodeCount);
+    // Two roots with overlapping wells: the only pair the root pass can act on,
+    // and with no edges uploaded the CSR is empty, so no other pass has
+    // anything to contribute. Gravity and the density grid are switched off in
+    // the config below, leaving root separation as the sole force in the run.
+    mod.uploadRelativityAtlasBubbleRoots(device, buffers, Uint32Array.from([0, 1]));
+    device.queue.writeBuffer(
+      (buffers as unknown as { wellRadius: GPUBuffer }).wellRadius,
+      0,
+      new Float32Array([100, 100]),
+    );
+
+    // The pair overlaps along x at one orientation and along y at the other, so
+    // the axis the forces come out on names the positions buffer that was read.
+    const even = createOrientation(device, new Float32Array([-30, 0, 30, 0]));
+    const odd = createOrientation(device, new Float32Array([0, -30, 0, 30]));
+    const edgeStub = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    const forceConfig = validateForceConfig({
+      ...CONFIG,
+      relativityBubbleMode: true,
+      relativityDensityRepulsion: 0,
+      centerStrength: 0,
+    });
+    const contextFor = (orientation: Orientation) => ({
+      device,
+      positions: orientation.positions,
+      forces: orientation.forces,
+      nodeCount,
+      edgeCount: 0,
+      forceConfig,
+      bounds: { minX: -100, minY: -100, maxX: 100, maxY: 100 },
+      edgeSources: edgeStub,
+      edgeTargets: edgeStub,
+    });
+
+    try {
+      // Built in this order so that a cache keyed on nothing — the shape of the
+      // defect — hands the even orientation's group back for the odd one.
+      algorithm.createBindGroups(device, pipelines, contextFor(even), buffers);
+      const oddBindGroups = algorithm.createBindGroups(
+        device,
+        pipelines,
+        contextFor(odd),
+        buffers,
+      );
+
+      // Uniforms are per-frame state written for the orientation about to run,
+      // exactly as graph.ts writes them before recording the tick.
+      algorithm.updateUniforms(device, buffers, contextFor(odd));
+      const encoder = device.createCommandEncoder();
+      algorithm.recordRepulsionPass(encoder, pipelines, oddBindGroups, nodeCount);
+      device.queue.submit([encoder.finish()]);
+
+      const oddForces = await odd.readForces();
+      const evenForces = await even.readForces();
+      console.log(
+        `[gpu] bubble root orientation: odd F0 = (${oddForces[0].toFixed(3)}, ` +
+          `${oddForces[1].toFixed(3)}), even F0 = (${evenForces[0].toFixed(3)}, ` +
+          `${evenForces[1].toFixed(3)})`,
+      );
+
+      // The odd orientation stacks the pair on the y axis, so separation is a
+      // y force. An x force here would mean the pass read the even positions.
+      assert(
+        oddForces[1] < -1 && oddForces[3] > 1,
+        `root pass did not separate the orientation it was dispatched with: ` +
+          `F0 = (${oddForces[0]}, ${oddForces[1]}), F1 = (${oddForces[2]}, ${oddForces[3]})`,
+      );
+      assert(
+        Math.abs(oddForces[0]) < 1e-4 && Math.abs(oddForces[2]) < 1e-4,
+        `root pass produced force on the axis of the OTHER orientation's positions: ` +
+          `F0.x = ${oddForces[0]}, F1.x = ${oddForces[2]}`,
+      );
+      for (let i = 0; i < evenForces.length; i++) {
+        assertEquals(
+          evenForces[i],
+          0,
+          `the orientation that was not dispatched was written to at component ${i}`,
+        );
+      }
+    } finally {
+      even.destroy();
+      odd.destroy();
+      edgeStub.destroy();
+      buffers.destroy();
+    }
   },
 );
 

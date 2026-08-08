@@ -32,8 +32,18 @@
  * @module
  */
 
-import { loadModuleInliningWgsl, probeAdapter, requestHarnessDevice } from "./gpu.ts";
-import type { GraphInput, NodeId, ViewportState } from "../../packages/core/src/types.ts";
+import {
+  loadModuleInliningWgsl,
+  loadPipelineModule,
+  probeAdapter,
+  requestHarnessDevice,
+} from "./gpu.ts";
+import type {
+  GraphInput,
+  GraphTypedInput,
+  NodeId,
+  ViewportState,
+} from "../../packages/core/src/types.ts";
 import type { CardProvider, DomOverlayConfig } from "../../packages/core/src/overlay/types.ts";
 import type { LodConfig } from "../../packages/core/src/lod/config.ts";
 
@@ -45,7 +55,9 @@ import type { LodConfig } from "../../packages/core/src/lod/config.ts";
  * method on the real instance — nothing is reimplemented.
  */
 export interface HeadlessGraph {
-  load(data: GraphInput): Promise<void>;
+  load(data: GraphInput | GraphTypedInput): Promise<void>;
+  setForceAlgorithm(type: string): void;
+  setForceConfig(config: Record<string, unknown>): void;
   removeNodesBatch(
     ids: (NodeId | string)[],
   ): Promise<{ removedCount: number; nodeSlotRemap: Map<number, number> }>;
@@ -61,12 +73,33 @@ export interface HeadlessGraph {
   syncDomCards(entries: readonly { node: NodeId; priority: number }[]): void;
   setScale(scale: number): void;
   getViewport(): ViewportState;
+  startSimulation(): void;
   dispose(): void;
+}
+
+/**
+ * The simulation half of a headless GraphMother: run ticks, read the result.
+ *
+ * A browser drives this from `renderFrame`, which records the compute passes
+ * and then presents — and presenting is the one thing this harness cannot do
+ * (see the context stub above), so a frame would throw before its submit. These
+ * two methods therefore drive the same private seam `renderFrame` drives, in
+ * the same order: record, submit, advance the ping-pong parity. Nothing about
+ * the force path is reimplemented — the algorithm, its uniforms, the bind
+ * groups and the buffer swap are all the shipped ones.
+ */
+export interface HeadlessSimulation {
+  /** Record, submit and advance parity `steps` times. */
+  tick(steps: number): Promise<void>;
+  /** Current positions, de-interleaved, read back from the live position buffer. */
+  readPositions(): Promise<{ x: Float32Array; y: Float32Array }>;
 }
 
 /** A headless GraphMother and the resources it must outlive. */
 export interface HeadlessHarness {
   readonly graph: HeadlessGraph;
+  /** Drives the graph's own simulation seam; see {@link HeadlessSimulation}. */
+  readonly simulation: HeadlessSimulation;
   readonly device: GPUDevice;
   /** The stub canvas, so a test can resize it or read what was written. */
   readonly canvas: HeadlessCanvas;
@@ -158,6 +191,32 @@ export function headlessCanvas(width = 800, height = 600): HeadlessCanvas {
   };
 }
 
+/**
+ * The private members {@link HeadlessSimulation} drives.
+ *
+ * Private in TypeScript is a compile-time contract, and these are deliberately
+ * not on the public API: a host presents frames and never records a tick by
+ * hand. Naming them here rather than reaching through `any` keeps the coupling
+ * visible — a rename in api/graph.ts becomes a type error in this file.
+ */
+interface SimulationInternals {
+  recordSimulationCommands(encoder: GPUCommandEncoder): void;
+  advanceFrameParity(): void;
+  simBuffers: SimulationBufferSet | null;
+  simulationController: { readonly needsCompute: boolean };
+}
+
+/**
+ * The simulation buffer set, as pipeline.ts's readback helpers take it.
+ *
+ * Spelled through the loader's own signature rather than restated, so the two
+ * cannot drift: `gpu.ts` already carries the structural view (pipeline.ts is
+ * unimportable here — see the module doc).
+ */
+type SimulationBufferSet = Parameters<
+  Awaited<ReturnType<typeof loadPipelineModule>>["copyPositionsToReadback"]
+>[1];
+
 let graphModulePromise:
   | Promise<{ GraphMother: new (config: unknown) => HeadlessGraph }>
   | undefined;
@@ -223,10 +282,40 @@ export async function createHeadlessGraph(
     debug: false,
   });
 
+  const internals = graph as unknown as SimulationInternals;
+  const pipelineModule = await loadPipelineModule();
+
   return {
     graph,
     device,
     canvas,
+    simulation: {
+      async tick(steps: number): Promise<void> {
+        for (let step = 0; step < steps; step++) {
+          // Gated on needsCompute and the swap tied to it, exactly as
+          // renderFrame does: once alpha reaches zero nothing is recorded, and
+          // a parity flip with no work behind it would leave the next read
+          // looking at the buffer the last step wrote into.
+          if (!internals.simulationController.needsCompute) break;
+          const encoder = device.createCommandEncoder();
+          internals.recordSimulationCommands(encoder);
+          device.queue.submit([encoder.finish()]);
+          internals.advanceFrameParity();
+        }
+        await device.queue.onSubmittedWorkDone();
+      },
+      async readPositions(): Promise<{ x: Float32Array; y: Float32Array }> {
+        const buffers = internals.simBuffers;
+        if (!buffers) throw new Error("no simulation buffers — load a graph first");
+        const encoder = device.createCommandEncoder();
+        pipelineModule.copyPositionsToReadback(encoder, buffers);
+        device.queue.submit([encoder.finish()]);
+        const x = new Float32Array(buffers.nodeCount);
+        const y = new Float32Array(buffers.nodeCount);
+        await pipelineModule.readbackPositions(buffers, x, y);
+        return { x, y };
+      },
+    },
     dispose(): void {
       graph.dispose();
     },
