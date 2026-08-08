@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/vue",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Vue wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
     "vue": ">=3.5.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.3.2"
+    "@graphmother/core": "^0.4.0"
   },
   "devDependencies": {
     "@vue/tsconfig": "^0.7.0",

@@ -37,7 +37,12 @@ import {
   overlayMatrix,
 } from "../../packages/core/src/overlay/projection.ts";
 import type { CardNode, CardProvider } from "../../packages/core/src/overlay/types.ts";
-import type { NodeId, Vec2, ViewportState } from "../../packages/core/src/types.ts";
+import type {
+  CardProviderHook,
+  NodeId,
+  Vec2,
+  ViewportState,
+} from "../../packages/core/src/types.ts";
 import { resolveLodConfig } from "../../packages/core/src/lod/config.ts";
 
 // -----------------------------------------------------------------------------
@@ -980,4 +985,258 @@ Deno.test("overlay: a card whose slot keeps its node is left alone", () => {
 
   assertEquals(h.provider.count("mount", 2), 1, "a stable card must mount exactly once");
   assertEquals(h.provider.count("release", 2), 0, "and never be released while requested");
+});
+
+// -----------------------------------------------------------------------------
+// Provider failure
+// -----------------------------------------------------------------------------
+
+/** An overlay whose provider throws from one nominated hook, for named nodes. */
+interface FailingHarness {
+  readonly overlay: DomCardOverlay;
+  /** The graph behind the overlay, so a test can reassign a slot's occupant. */
+  readonly graph: Graph;
+  /** Nodes reported through `onCardFailure`, in order. */
+  readonly failures: NodeId[];
+  /** Hooks reported through `onCardFailure`, in the same order. */
+  readonly failedHooks: CardProviderHook[];
+  /** Nodes `mount` was called for, whether or not it completed. */
+  readonly mounts: NodeId[];
+  /** Nodes `prefetch` was offered, whether or not it completed. */
+  readonly prefetches: NodeId[];
+  readonly container: HTMLElement;
+}
+
+/**
+ * Built without the shared harness on purpose: that one is deliberately a
+ * *well-behaved* provider, and what is under test here is what the overlay does
+ * with one that is not.
+ *
+ * The provider is keyed on the *producer id*, as a real one is — its content
+ * belongs to a node, not to a GPU slot — so a slot whose occupant changes stops
+ * being a node this provider fails for, which is what makes the identity of the
+ * quarantine observable at all.
+ *
+ * @param failing - Nodes, by their initial slot, whose producer id the provider
+ *   throws for
+ * @param hook - Which of its four callbacks throws; the other three behave
+ */
+function failingHarness(
+  failing: ReadonlySet<NodeId>,
+  hook: CardProviderHook = "mount",
+): FailingHarness {
+  const dom = createDom();
+  const graph = new Graph([1, 2, 3]);
+  const failingIds = new Set([...failing].map((node) => `src/mod${node}.ts`));
+  const mounts: NodeId[] = [];
+  const prefetches: NodeId[] = [];
+  const failures: NodeId[] = [];
+  const failedHooks: CardProviderHook[] = [];
+  const fail = (which: CardProviderHook, node: CardNode): void => {
+    if (which === hook && failingIds.has(String(node.externalId))) {
+      throw new Error(`provider failed in ${which}`);
+    }
+  };
+
+  const overlay = new DomCardOverlay({
+    canvas: dom.canvas,
+    viewport: () => viewportState(),
+    nodes: graph,
+    maxCards: 16,
+    minCardLifetimeMs: 0,
+    now: () => 0,
+    timers: new FakeTimers(),
+    onCardFailure: (failure) => {
+      failures.push(failure.node.id);
+      failedHooks.push(failure.hook);
+    },
+  });
+  overlay.setProvider({
+    prefetch(node) {
+      prefetches.push(node.id);
+      fail("prefetch", node);
+    },
+    mount(container, node) {
+      mounts.push(node.id);
+      fail("mount", node);
+      container.appendChild(container.ownerDocument.createElement("p"));
+      return { nodeId: node.id };
+    },
+    update(_container, node) {
+      fail("update", node);
+    },
+    release(container, node) {
+      fail("release", node);
+      while (container.firstChild !== null) container.firstChild.remove();
+    },
+  });
+  overlay.setConfig({ enabled: true });
+
+  const container = overlay.element;
+  assert(container !== null, "overlay must have built a container when enabled");
+  return { overlay, graph, failures, failedHooks, mounts, prefetches, container };
+}
+
+Deno.test("overlay: a node whose provider failed is not offered to it again", () => {
+  // Without the quarantine a broken provider costs one throw per node per
+  // evaluation, forever: the caller keeps asking for the same card because by
+  // screen size it still deserves one.
+  const h = failingHarness(new Set([2]));
+
+  h.overlay.syncCards([entry(2, 10)]);
+  h.overlay.syncCards([entry(2, 10)]);
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2], "the provider must be tried exactly once for a node it failed");
+  assertEquals(h.failures, [2], "and the failure reported exactly once");
+  assertEquals([...h.overlay.failedCards], [2]);
+});
+
+Deno.test("overlay: a failed mount leaves no phantom card record", () => {
+  const h = failingHarness(new Set([2]));
+
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.overlay.cardCount, 0, "a card that never mounted must not be recorded as one");
+  assertEquals(h.overlay.hasCard(2), false);
+  assertEquals(h.container.children.length, 0, "and nothing of it may be left in the overlay");
+});
+
+Deno.test("overlay: a failure quarantines one node, not the graph", () => {
+  const h = failingHarness(new Set([2]));
+
+  h.overlay.syncCards([entry(1, 30), entry(2, 20), entry(3, 10)]);
+
+  assertEquals(h.mounts, [1, 2, 3], "every other node in the same sync must still be tried");
+  assertEquals(h.overlay.cardCount, 2);
+  assertEquals(h.overlay.hasCard(1), true);
+  assertEquals(h.overlay.hasCard(3), true);
+});
+
+Deno.test("overlay: registering a new provider lifts the quarantine", () => {
+  const h = failingHarness(new Set([2]));
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.overlay.cardCount, 0);
+
+  const mounted: NodeId[] = [];
+  h.overlay.setProvider({
+    mount(_container, node) {
+      mounted.push(node.id);
+      return { nodeId: node.id };
+    },
+  });
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(mounted, [2], "a replacement provider is the way back from a failure");
+  assertEquals([...h.overlay.failedCards], []);
+  assertEquals(h.overlay.cardCount, 1);
+});
+
+Deno.test("overlay: a prefetch that threw still gets its card when the node is asked for", () => {
+  // Prefetch is advisory and abortable: a speculative fetch that raised — a bad
+  // URL, a cache that throws on a miss — is not evidence that `mount` would
+  // have failed. Quarantining on it costs the node content the provider renders
+  // perfectly, for the life of the graph, over a call the node was free to
+  // ignore in the first place.
+  const h = failingHarness(new Set([2]), "prefetch");
+
+  h.overlay.syncCards([entry(2, 10, { prefetchOnly: true })]);
+  assertEquals(h.prefetches, [2]);
+  assertEquals(h.failedHooks, ["prefetch"], "the failure is still reported");
+
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2], "the node must still be offered the card it never lost");
+  assertEquals(h.overlay.cardCount, 1);
+  assertEquals([...h.overlay.failedCards], [], "and never enter the quarantine at all");
+});
+
+Deno.test("overlay: a release that threw does not cost the node its next card", () => {
+  // The card existed, so the provider has already demonstrated it can build one
+  // for this node; a throw on the way out is a teardown defect. Unlike `update`
+  // — which runs per frame of camera motion — a release runs once per card, so
+  // there is no throw-per-frame loop to prevent either.
+  const h = failingHarness(new Set([2]), "release");
+
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.overlay.cardCount, 1);
+  h.overlay.syncCards([]);
+  assertEquals(h.failedHooks, ["release"]);
+
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2, 2], "the node is carded again the next time it is asked for");
+  assertEquals([...h.overlay.failedCards], []);
+});
+
+Deno.test("overlay: an update that threw does cost the node its card", () => {
+  // The other side of the same rule, so the two cannot be conflated: `place`
+  // calls `update` for every card on every frame of camera motion, so a node
+  // re-offered after an update failure is a throw per frame against a card that
+  // is already wrong on screen.
+  const h = failingHarness(new Set([2]), "update");
+
+  h.overlay.syncCards([entry(2, 10)]);
+  h.overlay.notify(2, { kind: "selection", selected: true });
+  assertEquals(h.failedHooks, ["update"]);
+
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2], "a provider that could not keep the card is not asked to rebuild it");
+  assertEquals([...h.overlay.failedCards], [2]);
+});
+
+Deno.test("overlay: a quarantine does not follow the slot to a different node", () => {
+  // `removeNodesBatch` compacts slots, so the slot a card failed in comes to
+  // hold a survivor an evaluation later. The quarantine is keyed by slot; if it
+  // does not check *whose* slot it is, that survivor is never carded again —
+  // with no event, no diagnostic, and only two global acts (a new provider, a
+  // reload) as a way back that a consumer has no reason to perform.
+  const h = failingHarness(new Set([2]));
+
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.mounts, [2]);
+  assertEquals([...h.overlay.failedCards], [2]);
+
+  // Exactly what compaction does: slot 2 now holds a different producer id.
+  h.graph.identityOverride.set(2, "src/other.ts");
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2, 2], "the slot's new occupant never failed and must be carded");
+  assertEquals(h.overlay.cardCount, 1);
+  assertEquals(
+    [...h.overlay.failedCards],
+    [],
+    "and the predecessor's quarantine must be gone, not merely bypassed",
+  );
+});
+
+Deno.test("overlay: a quarantine survives everything except the slot changing hands", () => {
+  // The complement of the test above, so the lift cannot degenerate into "the
+  // quarantine never holds". Re-syncing, a frame, and a re-entry into the ring
+  // all leave it in place.
+  const h = failingHarness(new Set([2]));
+
+  h.overlay.syncCards([entry(2, 10)]);
+  h.overlay.syncFrame();
+  h.overlay.syncCards([]);
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2], "the same node must be tried exactly once");
+  assertEquals([...h.overlay.failedCards], [2]);
+});
+
+Deno.test("overlay: releasing every card lifts the quarantine", () => {
+  // The path a reload takes: `resetPerGraphState` releases every card because
+  // they are keyed by slot — and so is the quarantine, so carrying it across
+  // would hold a node of the new graph against the old graph's failure.
+  const h = failingHarness(new Set([2]));
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals([...h.overlay.failedCards], [2]);
+
+  h.overlay.releaseAll();
+
+  assertEquals([...h.overlay.failedCards], []);
+  h.overlay.syncCards([entry(2, 10)]);
+  assertEquals(h.mounts, [2, 2], "the node is a candidate again");
 });

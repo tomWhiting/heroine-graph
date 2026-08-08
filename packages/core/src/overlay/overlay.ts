@@ -18,7 +18,10 @@
  * LOD controller (WP-C) becomes the caller of. Every DOM lifecycle call goes
  * through {@link CardDriver}, so the provider contract — mount once, release
  * before detach, never touch card children — is enforced in exactly one place
- * and this file cannot weaken it.
+ * and this file cannot weaken it. That is also where a provider that breaks the
+ * contract is contained; what is left for this layer is to forget the card the
+ * containment took and to stop offering that node to a provider which has
+ * already failed for it.
  *
  * @module
  */
@@ -26,8 +29,8 @@
 import type { NodeId, Vec2, ViewportState } from "../types.ts";
 import type { IdLike } from "../graph/id_map.ts";
 import { ErrorCode, GraphMotherError } from "../errors.ts";
-import { CardDriver } from "./driver.ts";
-import type { CardPlacement } from "./driver.ts";
+import { CardDriver, cardFailureForfeitsCard } from "./driver.ts";
+import type { CardPlacement, CardProviderFailure } from "./driver.ts";
 import { CardContainerPool } from "./pool.ts";
 import { cardCounterScale, cardPlacementAt, formatCssMatrix, overlayMatrix } from "./projection.ts";
 import { createDefaultCardProvider } from "./default_card.ts";
@@ -200,6 +203,11 @@ export interface DomCardOverlayOptions {
   readonly now?: () => number;
   /** Timers, injected so the gesture debounce is drivable without real time. */
   readonly timers?: OverlayTimers;
+  /**
+   * Called once per contained provider failure, after the overlay has dropped
+   * whatever the failure cost. Omit it and {@link CardDriver} logs instead.
+   */
+  readonly onCardFailure?: (failure: CardProviderFailure) => void;
 }
 
 /** One mounted card's core-owned state. */
@@ -262,6 +270,7 @@ export class DomCardOverlay {
   readonly #gestureIdleMs: number;
   readonly #now: () => number;
   readonly #timers: OverlayTimers;
+  readonly #onCardFailure: ((failure: CardProviderFailure) => void) | null;
 
   #config: DomOverlayConfig = { ...DEFAULT_DOM_OVERLAY_CONFIG };
   #provider: CardProvider<unknown> | null = null;
@@ -280,6 +289,23 @@ export class DomCardOverlay {
   readonly #views = new Map<NodeId, CardNode>();
   /** Nodes in the prefetch ring as of the last sync. */
   #ring: ReadonlySet<NodeId> = new Set();
+  /**
+   * Slots whose provider failed, against the producer id each held when it did.
+   *
+   * Without the quarantine the caller's next sync asks for the same card, the
+   * provider throws again, and a broken provider costs one failure per node per
+   * evaluation forever. A card is a piece of consumer code that has just
+   * demonstrated it does not work for this node; retrying it is not resilience.
+   *
+   * The producer id is what makes it a quarantine on a *node* rather than on a
+   * slot. Slots are compacted by a batch removal, so the slot one node's card
+   * failed in comes to hold a different node an evaluation later — and holding
+   * that node against its predecessor's defect is a hole in the graph with no
+   * event, no diagnostic, and no way back short of the two global acts
+   * (`setProvider`, a reload) a consumer has no reason to perform. Checked on
+   * every read, so the lift needs no mutation event to hang off.
+   */
+  readonly #failed = new Map<NodeId, IdLike>();
 
   /** Last transform written, so an unchanged camera costs no DOM write. */
   #transform = "";
@@ -301,6 +327,7 @@ export class DomCardOverlay {
     this.#gestureIdleMs = Math.max(0, options.gestureIdleMs ?? DEFAULT_GESTURE_IDLE_MS);
     this.#now = options.now ?? (() => performance.now());
     this.#timers = options.timers ?? HOST_TIMERS;
+    this.#onCardFailure = options.onCardFailure ?? null;
   }
 
   /** Current settings. */
@@ -326,6 +353,19 @@ export class DomCardOverlay {
   /** Whether a node currently holds a mounted card. */
   hasCard(node: NodeId): boolean {
     return this.#cards.has(node);
+  }
+
+  /**
+   * Nodes the current provider is no longer offered, because it threw for them.
+   *
+   * Read-only, and read by tests and inspectors rather than by the overlay's
+   * own callers: a consumer acts on `card:error`, not on this set. Slots whose
+   * occupant has changed since the failure are already gone from it — the
+   * quarantine follows the node, not the slot index.
+   */
+  get failedCards(): ReadonlySet<NodeId> {
+    this.#sweepQuarantine();
+    return new Set(this.#failed.keys());
   }
 
   /** The node being dragged by its card handle, or `null`. */
@@ -382,9 +422,17 @@ export class DomCardOverlay {
    * Swapping providers releases every mounted card first: the outgoing
    * provider's `release` must run against its own state, and the incoming one
    * cannot adopt DOM it did not create.
+   *
+   * It also lifts the quarantine on nodes the outgoing provider failed for. A
+   * new provider is a new answer to the question the old one got wrong, so it
+   * is the documented way back from a failure — and holding nodes against it
+   * for a predecessor's defect would be the library keeping a grudge.
    */
   setProvider(provider: CardProvider<unknown> | null): void {
     this.#provider = provider;
+    // Also cleared by `releaseAll` below, but that path exists only once the
+    // overlay has been enabled, and a provider may be registered before then.
+    this.#failed.clear();
     const container = this.#container;
     const pool = this.#pool;
     if (container === null || pool === null) return;
@@ -409,9 +457,18 @@ export class DomCardOverlay {
     const now = this.#now();
     const scale = this.#viewport().scale;
 
+    // Ahead of every use of the quarantine below, so a slot that changed hands
+    // since the last sync is a candidate again in the same evaluation its new
+    // occupant is first asked for.
+    this.#sweepQuarantine();
+
     const requested = new Map<NodeId, CardSyncEntry>();
     const ring = new Set<NodeId>();
     for (const entry of entries) {
+      // Quarantined nodes are dropped here rather than at each use, so the
+      // admission pass, the mount pass and the prefetch pass cannot disagree
+      // about which of them a broken provider is still offered.
+      if (this.#failed.has(entry.node)) continue;
       ring.add(entry.node);
       if (entry.prefetchOnly !== true) requested.set(entry.node, entry);
     }
@@ -553,7 +610,14 @@ export class DomCardOverlay {
     this.#ring = new Set();
   }
 
-  /** Release every card and abandon every prefetch, keeping the container. */
+  /**
+   * Release every card and abandon every prefetch, keeping the container.
+   *
+   * The quarantine goes with them. Everything dropped here is keyed by slot,
+   * and so is the quarantine — this is the point a reload passes through, and
+   * carrying a set of slot indices across one would hold nodes of the new graph
+   * against a failure that belonged to the old.
+   */
   releaseAll(): void {
     this.#endDrag();
     this.#driver?.releaseAll();
@@ -561,6 +625,7 @@ export class DomCardOverlay {
     this.#cards.clear();
     this.#views.clear();
     this.#ring = new Set();
+    this.#failed.clear();
   }
 
   /** Release everything and detach the container. */
@@ -626,8 +691,36 @@ export class DomCardOverlay {
       provider: this.#provider ?? createDefaultCardProvider(),
       createContainer: () => pool.acquire(),
       recycleContainer: (element) => pool.recycle(element),
+      onProviderError: (failure) => this.#handleFailure(failure),
       ...(config.className === undefined ? {} : { cardClassName: config.className }),
     });
+  }
+
+  /**
+   * Drop what a contained failure cost, then pass it on.
+   *
+   * The driver has already put the DOM back in order by the time this runs; what
+   * is left is the overlay's own bookkeeping, which the driver cannot see. A
+   * `released` failure took a card the overlay still has a record of, and the
+   * label layer has to be told to re-cull because the node it was suppressing
+   * is a sprite again.
+   */
+  #handleFailure(failure: CardProviderFailure): void {
+    const node = failure.node.id;
+    // Only the hooks a card cannot exist without cost the node the offer; see
+    // `cardFailureForfeitsCard`. An advisory prefetch that threw is already
+    // spent for the epoch inside the driver, and a card is exactly what a
+    // failed `release` proves the provider *can* build.
+    if (cardFailureForfeitsCard(failure.hook)) this.#failed.set(node, this.#identityOf(node));
+    // The handle went with the card, so a gesture on it has no target left;
+    // ending it leaves the node pinned where the drag put it, as a pointer-up
+    // would — the same reasoning as an ordinary release.
+    if (failure.released && this.#drag?.node === node) this.#endDrag();
+    if (failure.released && this.#cards.delete(node)) {
+      this.#cardEpoch++;
+      if (!this.#ring.has(node)) this.#views.delete(node);
+    }
+    this.#onCardFailure?.(failure);
   }
 
   #teardown(): void {
@@ -719,7 +812,33 @@ export class DomCardOverlay {
     this.#cards.set(node, record);
     this.#cardEpoch++;
 
-    driver.mount(record.card, this.#placementOf(node, record, scale));
+    if (driver.mount(record.card, this.#placementOf(node, record, scale))) return;
+    // Which is also why it has to be taken back out again: a mount that never
+    // completed leaves the overlay believing the node is carded, so the node
+    // would never be mounted, never released, and left as neither sprite nor
+    // card for as long as the graph lives.
+    this.#cards.delete(node);
+    this.#cardEpoch++;
+    if (!this.#ring.has(node)) this.#views.delete(node);
+  }
+
+  /**
+   * What a slot is standing for right now, for identity comparisons.
+   *
+   * A slot with no producer mapping answers with its own index, exactly as
+   * `CardNode.externalId` does — so a slot that has gone dead compares unequal
+   * to whatever producer id it last held, which is the answer identity
+   * comparisons want from it.
+   */
+  #identityOf(node: NodeId): IdLike {
+    return this.#nodes.externalId(node) ?? node;
+  }
+
+  /** Drop quarantines whose slot no longer holds the node that earned them. */
+  #sweepQuarantine(): void {
+    for (const [node, failedAs] of [...this.#failed]) {
+      if (this.#identityOf(node) !== failedAs) this.#failed.delete(node);
+    }
   }
 
   /** Where a card sits this frame, from its record and the live camera. */

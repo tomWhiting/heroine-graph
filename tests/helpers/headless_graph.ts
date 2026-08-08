@@ -33,7 +33,13 @@
  */
 
 import { loadModuleInliningWgsl, probeAdapter, requestHarnessDevice } from "./gpu.ts";
-import type { GraphInput, NodeId, ViewportState } from "../../packages/core/src/types.ts";
+import type {
+  EventMap,
+  GraphInput,
+  GraphTypedInput,
+  NodeId,
+  ViewportState,
+} from "../../packages/core/src/types.ts";
 import type { CardProvider, DomOverlayConfig } from "../../packages/core/src/overlay/types.ts";
 import type { LodConfig } from "../../packages/core/src/lod/config.ts";
 
@@ -45,7 +51,7 @@ import type { LodConfig } from "../../packages/core/src/lod/config.ts";
  * method on the real instance — nothing is reimplemented.
  */
 export interface HeadlessGraph {
-  load(data: GraphInput): Promise<void>;
+  load(data: GraphInput | GraphTypedInput): Promise<void>;
   removeNodesBatch(
     ids: (NodeId | string)[],
   ): Promise<{ removedCount: number; nodeSlotRemap: Map<number, number> }>;
@@ -53,6 +59,12 @@ export interface HeadlessGraph {
   getNodeId(externalId: string | number): NodeId | undefined;
   readonly nodeCount: number;
   setLodConfig(config: Partial<LodConfig>): void;
+  /**
+   * Also the only public act that forces an LOD evaluation without a frame,
+   * which is what makes the controller drivable here: the harness never
+   * presents, so `renderFrame`'s tick never runs.
+   */
+  setLodFocus(nodes: Iterable<NodeId>): void;
   isCollapsed(node: NodeId): boolean;
   expandNode(node: NodeId): void;
   getVisibleNodes(): NodeId[];
@@ -61,6 +73,8 @@ export interface HeadlessGraph {
   syncDomCards(entries: readonly { node: NodeId; priority: number }[]): void;
   setScale(scale: number): void;
   getViewport(): ViewportState;
+  on<K extends keyof EventMap>(type: K, handler: (event: EventMap[K]) => void): void;
+  off<K extends keyof EventMap>(type: K, handler: (event: EventMap[K]) => void): void;
   dispose(): void;
 }
 

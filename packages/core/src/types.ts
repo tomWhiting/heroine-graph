@@ -10,6 +10,7 @@
 // =============================================================================
 
 import type { HierarchyColumns } from "./graph/hierarchy.ts";
+import type { GraphMotherError } from "./errors.ts";
 
 /** Stable node identifier (survives graph mutations) */
 export type NodeId = number;
@@ -706,6 +707,39 @@ export interface NodeExpandEvent extends GraphEvent {
   readonly reason: LodTransitionReason;
 }
 
+/** The four callbacks a card provider may implement. */
+export type CardProviderHook = "prefetch" | "mount" | "update" | "release";
+
+/**
+ * A card provider threw, and core contained it.
+ *
+ * The provider contract cannot be enforced by a type, so this is how a broken
+ * one becomes visible rather than becoming a frozen graph: the throw is caught
+ * at the single place the contract is enforced, the card is left in a defined
+ * state, and the failure is announced here.
+ *
+ * The node is named twice on purpose. `nodeId` is the GPU slot, which is what
+ * every other core API takes; `externalId` is the producer's own identifier,
+ * which is what a consumer's records are keyed on and the only one of the two
+ * that survives a batch removal's slot compaction.
+ */
+export interface CardErrorEvent extends GraphEvent {
+  readonly type: "card:error";
+  readonly nodeId: NodeId;
+  readonly externalId: string | number;
+  /** Which provider callback threw. */
+  readonly hook: CardProviderHook;
+  /** The failure, wrapped with the node, the hook and the rules that apply. */
+  readonly error: GraphMotherError;
+  /** Exactly what the provider threw, for a consumer's own telemetry. */
+  readonly cause: unknown;
+  /**
+   * Whether the node lost its card. False for a failure that happened before
+   * one existed — a `mount` that never completed, or an advisory `prefetch`.
+   */
+  readonly released: boolean;
+}
+
 /** Batch mutation summary event */
 export interface GraphMutateEvent extends GraphEvent {
   readonly type: "graph:mutate";
@@ -743,7 +777,8 @@ export type GraphMotherEvent =
   | DeviceLostEvent
   | LodChangeEvent
   | NodeCollapseEvent
-  | NodeExpandEvent;
+  | NodeExpandEvent
+  | CardErrorEvent;
 
 /** Event handler function */
 export type EventHandler<E extends GraphEvent> = (event: E) => void;
@@ -777,4 +812,5 @@ export interface EventMap {
   "lod:change": LodChangeEvent;
   "node:collapse": NodeCollapseEvent;
   "node:expand": NodeExpandEvent;
+  "card:error": CardErrorEvent;
 }

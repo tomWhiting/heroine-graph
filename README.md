@@ -287,6 +287,30 @@ relative to the page. These files ship in the npm package under
 static file setup serves them at `assets/fonts/` next to your page (e.g.
 copy them into your public directory).
 
+## Semantic LOD & DOM cards
+
+Fold subtrees into their ancestors as the camera pulls out, and promote the
+largest nodes to real DOM elements — selectable text, working links,
+find-in-page — as it pushes in.
+
+```typescript
+graph.setLodConfig({ enabled: true });
+graph.setDomOverlay({ enabled: true });
+graph.setCardProvider({
+  mount(container, node) {
+    container.textContent = node.label ?? String(node.externalId);
+    return null;
+  },
+});
+```
+
+Core owns which nodes are carded, where each card sits and how big it is; the
+provider owns everything inside a card. The four thresholds are two independent
+pairs over two different metrics, and consumer records must be keyed on
+`node.externalId` rather than on the recycled GPU slot — both are the sort of
+thing that is cheap to get right and expensive to discover later, so see
+[docs/lod-and-cards.md](docs/lod-and-cards.md) before tuning either.
+
 ## Configuration Options
 
 ```typescript
