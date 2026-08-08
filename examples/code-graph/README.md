@@ -45,18 +45,14 @@ deno task example:code-graph
 ```
 
 Then open the printed URL in a WebGPU-capable browser (Chrome or Edge 113+, or
-Safari 18+). `dist/` is the example's Vite `publicDir`, which is where the MSDF
-font atlas the label layer needs comes from; without it the demo still runs and
-logs that labels are unavailable.
+Safari 18+). The repository's `dist/` is where the MSDF font atlas the label
+layer needs comes from, copied in beside the page by the build; without it the
+demo still runs and logs that labels are unavailable.
 
-To produce a static build:
-
-```bash
-cd examples/code-graph && dx vite build
-```
-
-`dx` is Deno's `npx` equivalent. Vite 8 needs Deno 2.9 or newer; on an older
-Deno it fails to start with a `node:util`/`parseEnv` error.
+That task builds once with esbuild (`deno task example:code-graph:build`, i.e.
+`scripts/build_example.ts`) and then serves `examples/code-graph/dist` as static
+files. **There is no dev server and nothing watches**: after editing a source
+file, run the task again.
 
 ## The five knobs
 
@@ -91,8 +87,11 @@ src/hud.ts           the readout's arithmetic
 src/cards.ts         the card renderer
 src/panel.ts         the controls and the readout, as DOM
 index.html           markup and styles
-vite.config.js       WGSL loader, the wasm alias, dist/ as publicDir
 ```
+
+The build lives at `scripts/build_example.ts`: WGSL as text, the
+`@graphmother/wasm` alias onto the wasm-pack output, the binary and the font
+atlas copied in beside the page.
 
 `repo.ts`, `knobs.ts`, `lod_policy.ts` and `hud.ts` are pure and have unit tests
 under `tests/unit/example_*_test.ts`. They import types from the core modules

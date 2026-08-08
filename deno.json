@@ -24,7 +24,8 @@
     "storybook:clean": "rm -rf node_modules/.cache",
     "publish": "deno run -A scripts/publish.ts",
     "publish:dry": "deno run -A scripts/publish.ts --dry-run",
-    "example:code-graph": "cd examples/code-graph && dx vite --port 1573"
+    "example:code-graph:build": "deno run -A scripts/build_example.ts",
+    "example:code-graph": "deno task example:code-graph:build && deno run --allow-net --allow-read jsr:@std/http/file-server examples/code-graph/dist --port 1573"
   },
   "compilerOptions": {
     "strict": true,
