@@ -4,11 +4,16 @@
 lockstep: core depends on the wasm package at the same minor, and a core
 release that does not name a matching wasm release is a bug (see 0.3.0).
 
-## Unreleased
+## 0.5.0
 
 The card seam finishes: a card can now hold an arbitrary component — an editor, a
 form, anything with its own layout and its own scrolling — rather than a caption.
 Three things stood in the way, and each was fatal on its own.
+
+A minor rather than a patch because every entry below is a new export.
+`@graphmother/wasm` is republished at 0.5.0 with no Rust changes, because the
+lockstep rule at the top of this file is what makes `@graphmother/core@^0.5.0`
+resolvable against a wasm package at the same minor.
 
 ### Added
 

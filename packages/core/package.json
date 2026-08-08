@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "High-performance graph visualization using WebGPU",
   "type": "module",
   "main": "./dist/graphmother.esm.js",
@@ -25,7 +25,7 @@
     "build:types": "deno run -A ../../scripts/build_core_types.ts"
   },
   "dependencies": {
-    "@graphmother/wasm": "^0.4.0",
+    "@graphmother/wasm": "^0.5.0",
     "@webgpu/types": "^0.1.69"
   },
   "devDependencies": {

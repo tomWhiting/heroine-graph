@@ -1,6 +1,6 @@
 {
   "name": "@graphmother/react",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "React wrapper for GraphMother - high-performance graph visualization",
   "type": "module",
   "main": "./dist/index.js",
@@ -43,7 +43,7 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "@graphmother/core": "^0.4.0"
+    "@graphmother/core": "^0.5.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
