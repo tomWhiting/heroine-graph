@@ -35,8 +35,13 @@ const BUBBLE = { baseRadius: 10, padding: 5 } as const;
 /** A WASM engine is process-wide; one instance serves every test. */
 let sharedDeriver: HierarchyDeriver | null = null;
 async function deriver(): Promise<HierarchyDeriver> {
-  if (!sharedDeriver) sharedDeriver = await createWasmEngine();
-  return sharedDeriver;
+  // Through a local, because narrowing on the module-scoped binding does not
+  // survive the await for the checker.
+  const existing = sharedDeriver;
+  if (existing !== null) return existing;
+  const created = await createWasmEngine();
+  sharedDeriver = created;
+  return created;
 }
 
 /**

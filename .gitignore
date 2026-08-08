@@ -5,7 +5,10 @@
 # =============================================================================
 /packages/wasm/target/
 /target/
-/packages/wasm/pkg/
+# Without the trailing slash this also covers a *symlink* named `pkg`, which is
+# not a directory and so slipped past the old rule — one landed in a commit
+# pointing at itself.
+/packages/wasm/pkg
 *.rs.bk
 *.rlib
 
