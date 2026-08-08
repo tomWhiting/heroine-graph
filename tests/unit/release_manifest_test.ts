@@ -76,36 +76,51 @@ Deno.test("the VERSION the bundle reports is the version being shipped", () => {
   assertEquals([match[1], match[2], match[3]], [major, minor, patch]);
 });
 
-Deno.test("core asks for a wasm range this repo's wasm actually satisfies", () => {
-  const core = readJson("packages/core/package.json");
-  const range = core.dependencies?.["@graphmother/wasm"];
-  assert(range, "packages/core/package.json no longer depends on @graphmother/wasm");
+/** What scripts/publish.ts ships, in the order it ships it. */
+const PUBLISHED: ReadonlyArray<readonly [dir: string, name: string]> = [
+  ["packages/wasm", "@graphmother/wasm"],
+  ["packages/core", "@graphmother/core"],
+  ["packages/react", "@graphmother/react"],
+];
 
-  const caret = range.match(/^\^(\d+)\.(\d+)\.\d+$/);
-  assert(caret, `expected a caret range like ^0.4.0, saw ${range}`);
+Deno.test("each package asks the one below it for a version this repo has", () => {
   const [major, minor] = cargoVersion().split(".");
-  assertEquals(
-    [caret[1], caret[2]],
-    [major, minor],
-    `core would resolve ${range} from npm, not the wasm in this repo`,
-  );
+  const names = new Set(PUBLISHED.map(([, name]) => name));
+
+  for (const [dir] of PUBLISHED) {
+    const deps = readJson(`${dir}/package.json`).dependencies ?? {};
+    for (const [name, range] of Object.entries(deps)) {
+      if (!names.has(name)) continue;
+      const caret = range.match(/^\^(\d+)\.(\d+)\.\d+$/);
+      assert(caret, `${dir} asks for ${name} as ${range}; expected a caret range like ^0.4.0`);
+      assertEquals(
+        [caret[1], caret[2]],
+        [major, minor],
+        `${dir} would resolve ${name}@${range} from npm, not from this repo`,
+      );
+    }
+  }
 });
 
-Deno.test("the wasm core depends on is a workspace member, not a registry lookup", () => {
+Deno.test("every published package is a workspace member, not a registry lookup", () => {
   // Without this, `deno install` during a release goes to npm for the very
-  // version the release is publishing, and the build fails before it starts.
-  const root = readJson("package.json");
-  const workspaces = root.workspaces;
+  // versions the release is publishing, and the build fails before it starts.
+  const workspaces = readJson("package.json").workspaces;
   assert(workspaces, "root package.json declares no npm workspaces");
 
-  const wasmName = readJson("packages/wasm/package.json").name;
-  assertEquals(wasmName, "@graphmother/wasm");
-  assert(
-    workspaces.includes("packages/wasm"),
-    `packages/wasm is not an npm workspace member (saw ${JSON.stringify(workspaces)})`,
-  );
+  for (const [dir, name] of PUBLISHED) {
+    assertEquals(readJson(`${dir}/package.json`).name, name);
+    assert(
+      workspaces.includes(dir),
+      `${dir} is not an npm workspace member (saw ${JSON.stringify(workspaces)})`,
+    );
+  }
 });
 
+// Only wasm, because the suite already needs packages/wasm/pkg built to run at
+// all. core's and react's `files` name build output that a plain `deno test`
+// never produces, so the same check there would fail on a fresh clone for a
+// reason that has nothing to do with the manifest.
 Deno.test("the wasm tarball would ship every file it promises", () => {
   const pkg = readJson("packages/wasm/package.json");
   const files = pkg.files!;

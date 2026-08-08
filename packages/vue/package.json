@@ -46,7 +46,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tomWhiting/graphmother.git",
+    "url": "git+https://github.com/tomWhiting/graphmother.git",
     "directory": "packages/vue"
   },
   "homepage": "https://github.com/tomWhiting/graphmother",

@@ -5,17 +5,18 @@
  * Bumps versions, builds packages, and publishes them to npm in dependency order:
  *   1. @graphmother/wasm   (no deps)
  *   2. @graphmother/core   (depends on wasm)
+ *   3. @graphmother/react  (depends on core)
  *
  * The build toolchain (tsc, esbuild, tsup) is resolved from node_modules,
  * which `deno install` materializes from deno.lock — every tool version is
  * pinned by the lockfile, so the pipeline is reproducible in a clean
  * checkout. No unpinned "latest" downloads.
  *
- * packages/wasm and packages/core are npm workspace members (root
- * package.json), so core's dependency on @graphmother/wasm resolves to the
- * sibling directory rather than to the registry. Without that, no new minor
- * could ever be released: the install step would demand from npm the exact
- * version the run exists to put there.
+ * All three are npm workspace members (root package.json), so each one's
+ * dependency on the package below it resolves to the sibling directory rather
+ * than to the registry. Without that, no new minor could ever be released: the
+ * install step would demand from npm the exact version the run exists to put
+ * there.
  *
  * The vue and svelte wrappers are NOT built or published: their builds are
  * broken at the source level (packages/vue needs a .vue-aware bundler +
@@ -43,6 +44,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const PUBLISH_DIRS: ReadonlyArray<readonly [dir: string, name: string]> = [
   ["packages/wasm", "@graphmother/wasm"],
   ["packages/core", "@graphmother/core"],
+  ["packages/react", "@graphmother/react"],
 ];
 
 interface Options {
@@ -283,6 +285,15 @@ async function buildAll(): Promise<void> {
   // Generate .d.ts for core (pinned tsc + @webgpu/types reference injection)
   console.log("\n  [types] deno run -A scripts/build_core_types.ts");
   await buildCoreTypes();
+
+  // The React wrapper, bundle and .d.ts in one tsup pass. It is built last
+  // because its dts step resolves @graphmother/core through the workspace
+  // link, which reads the declarations emitted just above.
+  await run(
+    ["deno", "run", "-A", "npm:tsup@^8.3.0/tsup"],
+    join(ROOT, "packages/react"),
+    "react",
+  );
 }
 
 async function publishPackage(

@@ -29,6 +29,10 @@ the `card:error` event and the failure types below are new exports, and
   `DomCardOverlay.failedCards`, and
   `LODController.suppressCard`/`clearCardSuppressions`. See
   `docs/lod-and-cards.md`.
+- **`@graphmother/react` is published**, from 0.4.0 on. It has existed in the
+  repository for some time and was never in the publish set, so `<GraphMother>`,
+  `<GraphCards>` and the hooks were unreachable from npm — including the React
+  card adapter this release's notes describe.
 - **`createCardStore`**, with `CardStore` and `LiveCard`: the card contract as a
   subscribable list, for declarative frameworks that render cards themselves
   rather than into the element `mount` is handed. `@graphmother/react`'s

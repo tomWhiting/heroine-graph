@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "LICENSE"
   ],
   "scripts": {
     "build": "deno run -A npm:tsup@^8.3.0/tsup",
@@ -63,7 +64,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tomWhiting/graphmother.git",
+    "url": "git+https://github.com/tomWhiting/graphmother.git",
     "directory": "packages/react"
   },
   "homepage": "https://github.com/tomWhiting/graphmother",
