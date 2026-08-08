@@ -8,8 +8,11 @@
 //!   possible and what makes a *forest* representable.
 //! - **depth**: distance from the slot's own root (roots are depth 0).
 //! - **wellRadius** (bubble size): bottom-up from the subtree — leaves get a
-//!   base radius, internal nodes get
-//!   `sqrt(sum_child_areas / (pi * packing_eff)) + padding`.
+//!   base radius, internal nodes get whichever is larger of the summed-area
+//!   estimate `sqrt(sum_child_areas / (pi * density(k)))` and the two widest
+//!   children `r1 + r2`, plus padding. The radius has to be one the children
+//!   can actually fit inside; see [`ENCLOSING_RATIO`] for why a single packing
+//!   constant is not.
 //! - **subtreeSize**: node count of the subtree rooted at the slot, itself
 //!   included. Drives collapse priority and edge-bundle weight.
 //!
@@ -40,8 +43,59 @@ pub struct BubbleConfig {
     pub base_radius: f32,
     /// Padding added to internal node radii (default: 5.0).
     pub padding: f32,
-    /// Packing efficiency for circle packing (default: 0.82).
+    /// Packing efficiency for wide fan-out, where the boundary loss has washed
+    /// out and one constant is a fair estimate (default: 0.82).
+    ///
+    /// Only consulted above [`ENCLOSING_RATIO`]'s last entry. Small fan-out is
+    /// the regime where a single asymptotic constant is not merely imprecise
+    /// but *unsatisfiable*, so it is read from the table instead — see
+    /// [`packing_density`].
     pub packing_efficiency: f32,
+}
+
+/// Radius of the smallest circle enclosing `k` disjoint unit circles, indexed
+/// by `k`. Entry 0 is unused.
+///
+/// This is the classical "circles in a circle" packing problem. Entries 1..=9
+/// are exact closed forms evaluated to `f32`; 10..=12 are the published
+/// numerical optima, which have no closed form.
+///
+/// The table exists because the density it implies — `k / ratio^2` — is *not*
+/// monotonic and does not resemble its own asymptote. It runs 1.0, 0.50, 0.65,
+/// 0.69, 0.69, 0.67, 0.78, 0.73, 0.69, 0.69, 0.71, 0.74 against a large-`k`
+/// limit of ~0.9. Two children pack at density 0.5, not 0.82: a parent sized
+/// from the asymptote is 28% too small to hold them, and no arrangement of the
+/// subtree can fix that, because the radius itself is the thing that is wrong.
+/// A code tree branches two and three ways constantly, so this is the common
+/// case rather than a corner of it.
+const ENCLOSING_RATIO: [f32; 13] = [
+    0.0,         // unused
+    1.0,         // k=1
+    2.0,         // k=2: side by side
+    2.154_700_5, // k=3: 1 + 2/sqrt(3)
+    2.414_213_5, // k=4: 1 + sqrt(2)
+    2.701_302,   // k=5: 1 + sqrt(2 + 2/sqrt(5))
+    3.0,         // k=6: ring of 6, no centre
+    3.0,         // k=7: centre + ring of 6 (hexagonal)
+    3.304_765_6, // k=8: 1 + 1/sin(pi/7)
+    3.613_125_9, // k=9: 1 + sqrt(2 * (2 + sqrt(2)))
+    3.813_026_2, // k=10
+    3.923_804_4, // k=11
+    4.029_309_3, // k=12
+];
+
+/// Achievable packing density for `k` circles: `k / ENCLOSING_RATIO[k]^2` where
+/// the table reaches, and `fallback` beyond it.
+///
+/// Returning a density *below* what is achievable only wastes space. Returning
+/// one above it is unsatisfiable — the caller sizes a circle that its contents
+/// cannot fit inside — so the table is the conservative direction everywhere it
+/// applies.
+fn packing_density(k: u32, fallback: f32) -> f32 {
+    match ENCLOSING_RATIO.get(k as usize) {
+        Some(&ratio) if k > 0 => k as f32 / (ratio * ratio),
+        _ => fallback,
+    }
 }
 
 impl Default for BubbleConfig {
@@ -250,14 +304,24 @@ pub fn compute_bubble_hierarchy(
     let mut subtree_size = vec![1u32; node_count];
     let mut child_area = vec![0f32; node_count];
     let mut child_count = vec![0u32; node_count];
+    // The two widest children, which set a floor the area alone cannot see.
+    let mut widest = vec![0f32; node_count];
+    let mut next_widest = vec![0f32; node_count];
 
     for &node in walk.order.iter().rev() {
         let idx = node as usize;
         let radius = if child_count[idx] == 0 {
             config.base_radius
         } else {
-            let enclosing = (child_area[idx] / (std::f32::consts::PI * packing)).sqrt();
-            enclosing.max(config.base_radius) + config.padding
+            let density = packing_density(child_count[idx], packing);
+            let by_area = (child_area[idx] / (std::f32::consts::PI * density)).sqrt();
+            // Two disjoint circles of radii a and b inside a circle of radius R
+            // put their far points 2R >= (a + b) + |c1 - c2| >= 2(a + b) apart,
+            // so R >= a + b whatever the rest of the subtree looks like. Summed
+            // area cannot express that: one wide child among many narrow ones
+            // contributes little area and still needs the room.
+            let by_pair = widest[idx] + next_widest[idx];
+            by_area.max(by_pair).max(config.base_radius) + config.padding
         };
         well_radius[idx] = radius;
 
@@ -267,6 +331,12 @@ pub fn compute_bubble_hierarchy(
             child_area[parent_idx] += std::f32::consts::PI * radius * radius;
             subtree_size[parent_idx] += subtree_size[idx];
             child_count[parent_idx] += 1;
+            if radius > widest[parent_idx] {
+                next_widest[parent_idx] = widest[parent_idx];
+                widest[parent_idx] = radius;
+            } else if radius > next_widest[parent_idx] {
+                next_widest[parent_idx] = radius;
+            }
         }
     }
 
@@ -803,5 +873,217 @@ mod tests {
             }
         }
         assert_eq!(summed, h.subtree_size);
+    }
+
+    /// Children of `parent` in a derived hierarchy, widest first.
+    fn child_radii(h: &BubbleHierarchy, parent: u32) -> Vec<f32> {
+        let mut radii: Vec<f32> = (0..h.parent.len())
+            .filter(|&slot| h.parent[slot] == parent)
+            .map(|slot| h.well_radius[slot])
+            .collect();
+        radii.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        radii
+    }
+
+    /// A star: slot 0 contains `k` leaves.
+    fn star(k: u32) -> Vec<u32> {
+        (1..=k).flat_map(|child| [0u32, child]).collect()
+    }
+
+    /// A tree of `levels` generations rooted at slot 0, where fan-out varies
+    /// 2..=6 by position so both the small-`k` table and its tail apply.
+    /// Returns the containment edges and the slot count.
+    fn mixed_fan_out_tree(levels: usize) -> (Vec<u32>, usize) {
+        let mut edges = Vec::new();
+        let mut next = 1u32;
+        let mut frontier = vec![0u32];
+        for level in 0..levels {
+            let mut children = Vec::new();
+            for (i, &parent) in frontier.iter().enumerate() {
+                let fan_out = 2 + (i + level) % 5;
+                let first = next;
+                next += fan_out as u32;
+                children.extend(first..next);
+                edges.extend((first..next).flat_map(|child| [parent, child]));
+            }
+            frontier = children;
+        }
+        (edges, next as usize)
+    }
+
+    #[test]
+    fn two_children_need_a_bubble_twice_their_radius() {
+        // The case a single asymptotic constant gets worst, and the one a code
+        // tree hits constantly. Two disjoint circles of radius r inside a
+        // circle of radius R force R >= 2r; sizing from 0.82 yields 1.56r, and
+        // no arrangement of the two children can rescue a radius that small.
+        let config = BubbleConfig {
+            base_radius: 10.0,
+            padding: 0.0,
+            packing_efficiency: 0.82,
+        };
+        let h = compute_bubble_hierarchy(&star(2), 3, None, &config);
+        assert!(
+            h.well_radius[0] >= 20.0,
+            "two radius-10 children need an enclosing radius of at least 20, got {}",
+            h.well_radius[0],
+        );
+    }
+
+    #[test]
+    fn equal_children_get_the_room_their_own_geometry_demands() {
+        // These two bounds are derived here rather than read from
+        // `ENCLOSING_RATIO`, so the table cannot satisfy them by restating
+        // itself. For k equal circles of radius r inside a circle of radius R,
+        // the centres are pairwise at least 2r apart and all lie within R - r
+        // of the middle. So R - r is at least the circumradius of the tightest
+        // arrangement of k points with separation 2r:
+        //
+        //   k=3  equilateral triangle of side 2r  ->  2r/sqrt(3)
+        //   k=6  regular hexagon of side 2r       ->  2r
+        //
+        // Both exceed the two-widest-children bound of 2r, which is what makes
+        // this test bite where that one cannot: the summed-area estimate has to
+        // be right for the fan-out, not merely right in the limit.
+        let config = BubbleConfig {
+            base_radius: 10.0,
+            padding: 0.0,
+            packing_efficiency: 0.82,
+        };
+
+        let three = compute_bubble_hierarchy(&star(3), 4, None, &config);
+        let three_floor = 10.0 + 20.0 / 3.0f32.sqrt();
+        assert!(
+            three.well_radius[0] >= three_floor,
+            "three radius-10 children need at least {three_floor}, got {}",
+            three.well_radius[0],
+        );
+
+        let six = compute_bubble_hierarchy(&star(6), 7, None, &config);
+        assert!(
+            six.well_radius[0] >= 30.0,
+            "six radius-10 children need at least 30, got {}",
+            six.well_radius[0],
+        );
+    }
+
+    #[test]
+    fn two_wide_children_set_a_floor_summed_area_cannot_see() {
+        // A directory holding two large packages and one loose file. The two
+        // packages have to sit side by side whatever else is in there, so the
+        // radius is theirs to set — but they are only two terms in the area sum,
+        // which at this fan-out lands ~10% short of what they need.
+        //
+        // The shape matters: one wide child among many narrow ones does *not*
+        // exercise this, because the narrow ones add enough area to cover the
+        // pair anyway. It takes two.
+        let mut edges = Vec::new();
+        let mut next = 3u32;
+        for package in [1u32, 2u32] {
+            edges.extend([0, package]);
+            for _ in 0..12 {
+                edges.extend([package, next]);
+                next += 1;
+            }
+        }
+        edges.extend([0, next]); // the loose file
+        let n = next as usize + 1;
+
+        let config = BubbleConfig::default();
+        let h = compute_bubble_hierarchy(&edges, n, None, &config);
+
+        let radii = child_radii(&h, 0);
+        assert_eq!(radii.len(), 3);
+        let floor = radii[0] + radii[1];
+        assert!(
+            h.well_radius[0] >= floor + config.padding,
+            "the two widest children ({} + {}) must fit side by side inside {}",
+            radii[0],
+            radii[1],
+            h.well_radius[0],
+        );
+    }
+
+    #[test]
+    fn every_parent_can_hold_its_two_widest_children() {
+        // The invariant behind both tests above, over a shape with mixed fan-out
+        // at every level. Derived from geometry rather than from the packing
+        // table, so it stays a real check even if the table is re-tuned: two
+        // disjoint circles of radii a and b inside a circle of radius R put
+        // their far points (a + b) + |c1 - c2| >= 2(a + b) apart, and no two
+        // points of that circle are more than 2R apart.
+        let (edges, n) = mixed_fan_out_tree(4);
+        let config = BubbleConfig::default();
+        let h = compute_bubble_hierarchy(&edges, n, None, &config);
+
+        let mut checked = 0;
+        for parent in 0..n as u32 {
+            let radii = child_radii(&h, parent);
+            if radii.len() < 2 {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                h.well_radius[parent as usize] >= radii[0] + radii[1],
+                "parent {} has radius {} but its two widest children are {} and {}",
+                parent,
+                h.well_radius[parent as usize],
+                radii[0],
+                radii[1],
+            );
+        }
+        assert!(
+            checked > 30,
+            "expected a broad tree to check, saw {checked} parents"
+        );
+    }
+
+    #[test]
+    fn enclosing_ratios_never_shrink_as_circles_are_added() {
+        // A guard on the table itself: k + 1 circles cannot fit in a smaller
+        // circle than k of them do, so a mistyped entry shows up here.
+        for k in 2..ENCLOSING_RATIO.len() {
+            assert!(
+                ENCLOSING_RATIO[k] >= ENCLOSING_RATIO[k - 1],
+                "ratio for k={k} is below k={}",
+                k - 1,
+            );
+        }
+        // And the densities they imply stay physically possible: no packing of
+        // two or more equal circles beats the hexagonal limit. (One circle in a
+        // circle is the degenerate exception — it is 100% dense.)
+        for k in 2..ENCLOSING_RATIO.len() as u32 {
+            let density = packing_density(k, 0.82);
+            assert!(
+                density <= 0.907,
+                "k={k} implies density {density}, above the hexagonal limit",
+            );
+        }
+    }
+
+    #[test]
+    fn wide_fan_out_still_uses_the_configured_efficiency() {
+        // The table stops at 12 by design; beyond it the boundary loss has
+        // washed out and the configured constant governs, so a caller tuning
+        // `packing_efficiency` still has an effect where it is meaningful.
+        let loose = BubbleConfig {
+            base_radius: 10.0,
+            padding: 0.0,
+            packing_efficiency: 0.5,
+        };
+        let tight = BubbleConfig {
+            base_radius: 10.0,
+            padding: 0.0,
+            packing_efficiency: 0.9,
+        };
+        let edges = star(40);
+        let loose_h = compute_bubble_hierarchy(&edges, 41, None, &loose);
+        let tight_h = compute_bubble_hierarchy(&edges, 41, None, &tight);
+        assert!(
+            loose_h.well_radius[0] > tight_h.well_radius[0],
+            "a lower efficiency must widen a 40-child bubble: {} vs {}",
+            loose_h.well_radius[0],
+            tight_h.well_radius[0],
+        );
     }
 }

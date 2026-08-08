@@ -8,6 +8,29 @@ release that does not name a matching wasm release is a bug (see 0.3.0).
 
 ### Fixed
 
+- **A bubble is now big enough to hold its children.** `wellRadius` sized every
+  parent from a single packing efficiency of 0.82 — the density many equal
+  circles approach in the limit. Small fan-out is nowhere near that limit and is
+  not even monotonic on the way to it: two circles pack at density 0.50, three
+  at 0.65, six at 0.67. A directory with two subdirectories was therefore given
+  a bubble 28% smaller than the one its own contents require, and no arrangement
+  of the subtree could resolve it, because the radius itself was the thing that
+  was wrong. Since a code tree branches two and three ways constantly, this
+  applied to most of the hierarchy, and it compounded: an under-sized bubble
+  under-reports its area to its parent, which is then under-sized in turn.
+  Sibling subtrees visibly interpenetrated as a result.
+
+  Parent radii now come from the known optimal packings for fan-out up to 12,
+  and from a second bound that summed area cannot express: any two disjoint
+  circles of radii `a` and `b` inside a circle of radius `R` force `R >= a + b`,
+  so a parent holding two wide subtrees is sized by that pair however little of
+  its area they account for. `packing_efficiency` still governs wider fan-out,
+  where one constant is a fair estimate.
+
+  Bubbles at low fan-out get wider, so a laid-out graph occupies more space than
+  it did. That is the correction, not a side effect: the previous extent was one
+  the contents never fit inside.
+
 - **A card is now laid out at its own CSS size and never drawn larger than it.**
   The card box was held in graph units and the overlay container carries the
   camera, so a card was laid out at `size / cameraScale` and magnified back up.
