@@ -728,7 +728,7 @@ export interface NodeExpandEvent extends GraphEvent {
 }
 
 /** The four callbacks a card provider may implement. */
-export type CardProviderHook = "prefetch" | "mount" | "update" | "release";
+export type CardProviderHook = "prefetch" | "size" | "mount" | "update" | "release";
 
 /**
  * A card provider threw, and core contained it.

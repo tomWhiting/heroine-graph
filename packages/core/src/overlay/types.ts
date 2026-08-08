@@ -97,6 +97,27 @@ export interface CardProvider<TState = unknown> {
   prefetch?(node: CardNode, signal: AbortSignal): void;
 
   /**
+   * The card box this node needs, in CSS pixels. Return `undefined` to take
+   * {@link DEFAULT_CARD_SIZE}.
+   *
+   * Asked once, immediately before {@link CardProvider.mount}, and fixed for
+   * the card's whole life: the card is laid out in this box from then on, so
+   * content never reflows under the user's pointer, and the box is what the
+   * camera counter-scales *to* — past the scale a card mounted at it renders
+   * at exactly this size, pixel for pixel, however far the camera zooms in.
+   * A card that has to hold a working control, rather than a caption, is the
+   * reason this hook exists: 200x120 is a label, not an editor.
+   *
+   * `node.size()` is not meaningful here. It reads the box this call is
+   * deciding, and answers with the default until the answer exists.
+   *
+   * A throw costs the node the size it asked for, not its card: the default
+   * is a usable answer, and forfeiting the content over a measurement would
+   * cost more than it saved.
+   */
+  size?(node: CardNode): CardSize | undefined;
+
+  /**
    * Called exactly once per card, with an empty container that core has
    * already attached, positioned and sized.
    *

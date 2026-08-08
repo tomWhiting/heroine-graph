@@ -24,6 +24,7 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import { parseHTML } from "https://esm.sh/linkedom@0.18.11/worker";
 import {
+  CARD_SCROLL_ATTRIBUTE,
   type CardNodeSource,
   type CardSyncEntry,
   DEFAULT_CARD_SIZE,
@@ -36,7 +37,7 @@ import {
   formatCssMatrix,
   overlayMatrix,
 } from "../../packages/core/src/overlay/projection.ts";
-import type { CardNode, CardProvider } from "../../packages/core/src/overlay/types.ts";
+import type { CardNode, CardProvider, CardSize } from "../../packages/core/src/overlay/types.ts";
 import type {
   CardProviderHook,
   NodeId,
@@ -639,6 +640,106 @@ Deno.test("overlay: a card zoomed away from shrinks with the camera", () => {
   assertEquals(renderedWidth(container, 1), width / 8);
 });
 
+Deno.test("overlay: a provider that needs a bigger box is laid out in it", () => {
+  // The reason the hook exists: 200x120 is a caption. A card holding a working
+  // control — an editor, a form — has to be able to say how big it is, or its
+  // content lays itself out in a box core picked without knowing what was in it.
+  const h = harness({ minCardLifetimeMs: 0 });
+  h.viewport = viewportState({ scale: 4 });
+
+  const order: CardProviderHook[] = [];
+  let container: HTMLElement | undefined;
+  let sizeInsideMount: CardSize | undefined;
+  h.overlay.setProvider({
+    size(node) {
+      order.push("size");
+      return node.id === 1 ? { width: 480, height: 320 } : undefined;
+    },
+    mount(element, node) {
+      order.push("mount");
+      container = element;
+      sizeInsideMount = node.size();
+      return null;
+    },
+  });
+
+  h.overlay.syncCards([entry(1, 1)]);
+  assert(container !== undefined);
+
+  assertEquals(order, ["size", "mount"], "asked once, and before the box is needed");
+  // Asserted on the container rather than on the hook's return value: a mount
+  // path that called `size` and then ignored the answer would satisfy any test
+  // that only watched the call.
+  assertEquals(container.style.width, "480px");
+  assertEquals(container.style.height, "320px");
+  assertEquals(
+    sizeInsideMount,
+    { width: 480, height: 320 },
+    "and CardNode.size() answers with it inside mount, where content is laid out",
+  );
+
+  // It is also the box the counter-scale clamps to, so the card the provider
+  // asked for is the card on screen however far the camera goes in.
+  assertEquals(renderedWidth(container, 4), 480);
+  h.viewport = viewportState({ scale: 32 });
+  h.overlay.syncFrame();
+  assertEquals(renderedWidth(container, 32), 480);
+  assertEquals(container.style.width, "480px", "by scaling, never by reflowing");
+});
+
+Deno.test("overlay: a provider with no opinion on size takes the default box", () => {
+  const h = harness({ minCardLifetimeMs: 0 });
+  let container: HTMLElement | undefined;
+  h.overlay.setProvider({
+    size() {
+      return undefined;
+    },
+    mount(element) {
+      container = element;
+      return null;
+    },
+  });
+
+  h.overlay.syncCards([entry(1, 1)]);
+  assert(container !== undefined);
+  assertEquals(container.style.width, `${DEFAULT_CARD_SIZE.width}px`);
+  assertEquals(container.style.height, `${DEFAULT_CARD_SIZE.height}px`);
+});
+
+Deno.test("overlay: a placement override moves the card, not the node", () => {
+  // For a card held open over a node the layout has folded away: the node is
+  // frozen where the fold began and the fold has moved on without it, so the
+  // caller supplies the corrected point.
+  const h = harness({ minCardLifetimeMs: 0 });
+  let card: CardNode | undefined;
+  h.overlay.setProvider({
+    mount(_container, node) {
+      card = node;
+      return null;
+    },
+  });
+
+  const { width, height } = DEFAULT_CARD_SIZE;
+  h.overlay.syncCards([entry(1, 1, { at: { x: 500, y: -400 } })]);
+  const container = h.container.children[0] as HTMLElement;
+  const displaced = cardPlacementAt({ x: 500, y: -400 }, width, height, 1, 1);
+  assertEquals(
+    container.style.transform,
+    `translate(${displaced.x}px, ${displaced.y}px) scale(1)`,
+  );
+  assertEquals(
+    card?.position(),
+    h.graph.position(1),
+    "the node itself has not moved, and must not claim to have",
+  );
+
+  // Re-read every sync, so an override cannot outlive the entry that set it.
+  h.overlay.syncCards([entry(1, 1)]);
+  h.overlay.syncFrame();
+  const home = cardPlacementAt(h.graph.position(1), width, height, 1, 1);
+  assertEquals(container.style.transform, `translate(${home.x}px, ${home.y}px) scale(1)`);
+});
+
 Deno.test("overlay: a card whose node was removed is released on the next frame", () => {
   const h = harness({ minCardLifetimeMs: 10_000 });
 
@@ -833,6 +934,47 @@ Deno.test("overlay: forwardWheel off leaves the wheel where it landed", () => {
 
   assertEquals(received.length, 0);
   assertEquals(source.defaultPrevented, false);
+});
+
+Deno.test("overlay: a card region that claims the wheel keeps it", () => {
+  // A card holding a scrollable component — an editor, a log, a long document —
+  // needs the wheel for itself. Forwarding it would zoom the graph instead of
+  // scrolling the content, and `preventDefault` alone would stop the browser
+  // scrolling it at all, so the claim has to be honoured before either.
+  const h = harness({ minCardLifetimeMs: 0 });
+  const received: Event[] = [];
+  h.dom.canvas.addEventListener("wheel", (event) => received.push(event));
+
+  let text: HTMLElement | undefined;
+  let chrome: HTMLElement | undefined;
+  h.overlay.setProvider({
+    mount(container) {
+      const doc = container.ownerDocument;
+      chrome = doc.createElement("header");
+      const scroller = doc.createElement("div");
+      scroller.setAttribute(CARD_SCROLL_ATTRIBUTE, "");
+      // The wheel lands on whatever is under the pointer, which in a scrollable
+      // region is its content and not the region element itself.
+      text = doc.createElement("p");
+      scroller.appendChild(text);
+      container.appendChild(chrome);
+      container.appendChild(scroller);
+      return null;
+    },
+  });
+
+  h.overlay.syncCards([entry(1, 1)]);
+  assert(text !== undefined && chrome !== undefined);
+
+  const inside = wheelOverCard(h, text, 100);
+  assertEquals(received.length, 0, "an editor's own scroll must not zoom the graph");
+  assertEquals(inside.defaultPrevented, false, "and must reach the browser to scroll at all");
+
+  // The claim is per element, not per card: the same card's chrome still zooms,
+  // which is what keeps a card with a scroll region navigable.
+  const onChrome = wheelOverCard(h, chrome, 100);
+  assertEquals(received.length, 1);
+  assertEquals(onChrome.defaultPrevented, true);
 });
 
 // -----------------------------------------------------------------------------
@@ -1056,6 +1198,10 @@ function failingHarness(
       prefetches.push(node.id);
       fail("prefetch", node);
     },
+    size(node) {
+      fail("size", node);
+      return undefined;
+    },
     mount(container, node) {
       mounts.push(node.id);
       fail("mount", node);
@@ -1149,6 +1295,25 @@ Deno.test("overlay: a prefetch that threw still gets its card when the node is a
   assertEquals(h.mounts, [2], "the node must still be offered the card it never lost");
   assertEquals(h.overlay.cardCount, 1);
   assertEquals([...h.overlay.failedCards], [], "and never enter the quarantine at all");
+});
+
+Deno.test("overlay: a size that threw costs the box, not the card", () => {
+  // The default box is a usable answer, so forfeiting the node's content over a
+  // failed measurement would cost more than it saved. The failure is still
+  // reported — containment here is not silence.
+  const h = failingHarness(new Set([2]), "size");
+
+  h.overlay.syncCards([entry(2, 10)]);
+
+  assertEquals(h.mounts, [2], "the provider is still asked to mount it");
+  assertEquals(h.overlay.cardCount, 1);
+  assertEquals([...h.overlay.failedCards], [], "and the node is not quarantined");
+  assertEquals(h.failedHooks, ["size"]);
+  assertEquals(h.failures, [2]);
+
+  const card = h.container.children[0] as HTMLElement;
+  assertEquals(card.style.width, `${DEFAULT_CARD_SIZE.width}px`, "laid out in the default box");
+  assertEquals(card.style.height, `${DEFAULT_CARD_SIZE.height}px`);
 });
 
 Deno.test("overlay: a release that threw does not cost the node its next card", () => {

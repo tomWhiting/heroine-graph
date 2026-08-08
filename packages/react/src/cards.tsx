@@ -22,9 +22,16 @@
  * @module
  */
 
-import { Component, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import {
+  Component,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
-import type { CardProvider, LiveCard } from "@graphmother/core";
+import type { CardNode, CardProvider, CardSize, LiveCard } from "@graphmother/core";
 import { createCardStore } from "@graphmother/core";
 
 /**
@@ -52,8 +59,23 @@ export interface CardProviderHost {
  * budget the overlay exists to protect. Read `card.node.position()` and
  * `card.node.size()` for live geometry.
  */
-export function useGraphCards(graph: CardProviderHost | null | undefined): readonly LiveCard[] {
-  const [store] = useState(createCardStore);
+export function useGraphCards(
+  graph: CardProviderHost | null | undefined,
+  size?: (node: CardNode) => CardSize | undefined,
+): readonly LiveCard[] {
+  // Read through a ref because the store is created once and the box is decided
+  // before any DOM exists: a consumer defining `size` inline would otherwise pin
+  // every card to whatever the first render happened to close over. The ref is
+  // filled by an effect declared ahead of the registration below, so it is
+  // current before the provider is ever reachable.
+  const sizeRef = useRef(size);
+  useEffect(() => {
+    sizeRef.current = size;
+  }, [size]);
+
+  const [store] = useState(() =>
+    createCardStore({ size: (node: CardNode) => sizeRef.current?.(node) })
+  );
 
   useEffect(() => {
     if (!graph) return;
@@ -82,6 +104,18 @@ export interface GraphCardsProps {
   onCardError?: (error: Error, card: LiveCard) => void;
   /** Rendered in place of a card whose content threw. Nothing, by default. */
   fallback?: ReactNode;
+  /**
+   * How big each card needs to be, in CSS pixels; omit for the default box.
+   *
+   * Asked once per card, immediately before it mounts, and fixed for that card's
+   * life — so the content never reflows under the user, and past the mount scale
+   * the card renders at exactly this size however far the camera zooms in. A
+   * component with its own layout needs this: 200x120 is a caption.
+   *
+   * It cannot be derived from the rendered component, because the box is decided
+   * before React has rendered anything into the card.
+   */
+  size?: (node: CardNode) => CardSize | undefined;
 }
 
 /**
@@ -101,7 +135,7 @@ export interface GraphCardsProps {
  * ```
  */
 export function GraphCards(props: GraphCardsProps): ReactNode {
-  const cards = useGraphCards(props.graph);
+  const cards = useGraphCards(props.graph, props.size);
   return cards.map((card) =>
     createPortal(
       <CardBoundary card={card} onCardError={props.onCardError} fallback={props.fallback}>

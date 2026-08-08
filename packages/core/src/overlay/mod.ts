@@ -18,10 +18,11 @@ export { CardDriver, cardFailureForfeitsCard } from "./driver.ts";
 export type { CardDriverOptions, CardPlacement, CardProviderFailure } from "./driver.ts";
 
 export { createCardStore } from "./card_store.ts";
-export type { CardStore, LiveCard } from "./card_store.ts";
+export type { CardStore, CardStoreOptions, LiveCard } from "./card_store.ts";
 
 export {
   CARD_DRAG_HANDLE_ATTRIBUTE,
+  CARD_SCROLL_ATTRIBUTE,
   DEFAULT_CARD_SIZE,
   DEFAULT_GESTURE_IDLE_MS,
   DEFAULT_MAX_CARDS,

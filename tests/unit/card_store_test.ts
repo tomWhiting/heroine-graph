@@ -200,3 +200,30 @@ Deno.test("card store: the host adds no layout box between the container and the
 
   assertEquals(store.getSnapshot()[0].host.style.display, "contents");
 });
+
+Deno.test("card store: the size callback reaches the provider contract", () => {
+  // The box is decided before any DOM exists and before the framework has
+  // rendered anything, so a declarative renderer cannot derive it from the card
+  // it is about to draw. Without this seam every store-backed card — which is
+  // every React card — is stuck at the default box.
+  const asked: string[] = [];
+  const store = createCardStore({
+    size(node) {
+      asked.push(String(node.externalId));
+      return node.id === 1 ? { width: 640, height: 480 } : undefined;
+    },
+  });
+  const host = createHost();
+  const driver = new CardDriver<unknown>({ host, provider: store.provider });
+
+  assertEquals(driver.measure(makeCardNode(1)), { width: 640, height: 480 });
+  assertEquals(driver.measure(makeCardNode(2)), undefined, "no opinion is a valid answer");
+  assertEquals(asked, ["src/mod1.ts", "src/mod2.ts"]);
+});
+
+Deno.test("card store: a store with no size callback declares no opinion", () => {
+  const store = createCardStore();
+  const driver = new CardDriver<unknown>({ host: createHost(), provider: store.provider });
+
+  assertEquals(driver.measure(makeCardNode(1)), undefined);
+});

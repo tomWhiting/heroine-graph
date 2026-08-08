@@ -129,10 +129,17 @@ would have no selectable text, which is most of the reason cards exist.
 Register no provider and a built-in one renders the node's label, tag, weight and
 depth — plain DOM, inline styles, no network access of any kind.
 
+A child carrying `data-graphmother-scroll` claims the wheel for itself: a wheel
+that lands inside it is neither forwarded to the canvas nor `preventDefault`ed,
+so the browser scrolls the region natively instead of the graph zooming. It is
+declared per *element*, not per card, so an editor can hold a scroll region and
+still zoom the graph from its own chrome.
+
 ## How a card is sized
 
-A card is **laid out at its natural CSS size** — `CardSyncEntry.size`, or 200×120
-by default — and given a counter-scale that cancels the camera. The container
+A card is **laid out at its natural CSS size** — whatever `CardProvider.size`
+asks for, else `CardSyncEntry.size`, else 200×120 — and given a counter-scale
+that cancels the camera. The container
 sits inside an overlay element carrying the camera as a CSS transform, so with a
 camera scale `S` and the scale `S₀` the card mounted at, the card renders at
 
@@ -153,6 +160,44 @@ The layout box is fixed at mount and never changes, so a provider's content
 never reflows under the user's pointer. `CardNode.size()` reports the size the
 card is currently *drawn* at, which agrees with the layout box from the mount
 scale upwards.
+
+The provider gets first say. `CardProvider.size` is asked once, immediately
+before `mount`, and its answer is the box for the card's whole life — so past
+the mount scale a card that asked for 480×320 is 480×320 CSS pixels on screen,
+pixel for pixel, however far the camera zooms in. It exists because 200×120 is a
+caption, not an editor, and a component that has to lay itself out cannot do so
+in a box core picked without knowing what was in it. `node.size()` is not
+meaningful inside the hook — it reads the box the call is deciding. A throw
+costs the size, not the card: the default is a usable answer.
+
+## Holding a card open
+
+`graph.holdCard(slot)` keeps a node's card alive until `unholdCard` gives it
+back, and `getHeldCards()` reports the set.
+
+This is not the same as focus. Focus and a policy's `force-card` verdict already
+card a node whatever its screen size, and both outrank the budget — but all
+three tests are only ever consulted for nodes *in the cut*, so zooming out until
+an ancestor folds over the node destroys the card underneath it. For a label
+that is the right answer: the thing it labelled is no longer on screen. For an
+editor the user is typing into it is not, and no threshold setting avoids it,
+because folding is what zooming out is for.
+
+A held card survives the cut. The graph folds normally behind it and the card
+stays open. It does **not** expand the node's ancestors — expanding one gathers
+every child of it, so a single open card would undo the zoom-out for its whole
+directory, and the damage would scale with fan-out.
+
+A folded subtree stops simulating, so a held node's stored position goes stale by
+however far its proxy has drifted since the fold began. The card is offset by
+exactly that delta, which keeps it on the bubble that swallowed its node and
+leaves it in place at the moment the fold ends. `CardNode.position()` still
+reports the node's true graph position: the card is displaced, the node is not.
+
+A hold is worth `LOD_FORCE_CARD_PRIORITY` under the budget, so only more held
+cards than `maxCards` can displace one. It survives a compaction —
+`remapSlots` carries it to wherever the node moved — and is dropped when the node
+is deleted.
 
 ## `externalId` versus the node slot — the one thing to get right
 

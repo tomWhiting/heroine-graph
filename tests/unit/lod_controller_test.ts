@@ -692,6 +692,94 @@ Deno.test("cards: the DOM band has its own hysteresis and a prefetch ring", () =
   );
 });
 
+Deno.test("cards: a held card survives its node being folded away", () => {
+  // The gap a hold exists to close. Focus and force-card already card a node
+  // whatever its screen size, but every one of those tests is only ever
+  // consulted for nodes in the cut — so zooming out until an ancestor folds
+  // over the node destroys the card underneath, which for an open editor is
+  // exactly the wrong answer.
+  const hierarchy = hierarchyOf([-1, 0, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0, minBandCommitFrames: 0 });
+  log.radiusOf = () => 48;
+  log.viewport.scale = 1;
+
+  controller.evaluateNow(0);
+  assertEquals(cardedNodes(log), [0, 1, 2]);
+
+  controller.holdCard(2);
+  assertEquals([...controller.heldCards], [2]);
+
+  // Far enough out that the root stands in for the whole tree.
+  log.viewport.scale = 0.01;
+  controller.evaluateNow(100);
+  assertEquals(
+    Array.from(controller.getVisibleNodes()),
+    [0],
+    "the graph folds exactly as it would with nothing held",
+  );
+  assertEquals(cardedNodes(log), [2], "and the held card is the one thing left");
+  assert(lastCards(log)[0].priority >= LOD_FORCE_CARD_PRIORITY);
+
+  // Held and already carded is a settled state, not one re-entered every
+  // evaluation: a hold that let the cut's own bookkeeping sweep clear it would
+  // re-gain the card each time and re-run the crossfade underneath it forever.
+  const alphaUploads = () => log.accessed.filter((name) => name === "uploadNodeAlpha").length;
+  controller.evaluateNow(1000);
+  const settled = alphaUploads();
+  controller.evaluateNow(1016);
+  assertEquals(cardedNodes(log), [2], "still held");
+  assertEquals(alphaUploads(), settled, "and settled: nothing under it is still moving");
+
+  controller.unholdCard(2);
+  assertEquals(cardedNodes(log), []);
+  assertEquals([...controller.heldCards], []);
+  assertNoReheat(log);
+});
+
+Deno.test("cards: a held card rides the fold that swallowed its node", () => {
+  // A folded subtree stops simulating and is translated back as a rigid body
+  // on expand, so a held node's stored position is stale by however far its
+  // proxy has drifted since. Left uncorrected the card walks away from the
+  // bubble it belongs to, by exactly the distance the expand would pay back.
+  const hierarchy = hierarchyOf([-1, 0, 0], () => 4000);
+  const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 0, minBandCommitFrames: 0 });
+  log.radiusOf = () => 48;
+  log.positions.set(0, { x: 0, y: 0 });
+  log.positions.set(2, { x: 10, y: 5 });
+
+  log.viewport.scale = 1;
+  controller.evaluateNow(0);
+  controller.holdCard(2);
+
+  log.viewport.scale = 0.01;
+  controller.evaluateNow(100);
+  const anchored = lastCards(log).find((entry) => entry.node === 2);
+  assertEquals(anchored?.at, undefined, "a fold that has not moved owes nothing");
+
+  // The proxy goes on simulating while its subtree is frozen.
+  const held = log.positions.get(2) ?? { x: 0, y: 0 };
+  log.positions.set(0, { x: 300, y: -200 });
+  controller.evaluateNow(200);
+  const drifted = lastCards(log).find((entry) => entry.node === 2);
+  assertEquals(drifted?.at, { x: held.x + 300, y: held.y - 200 });
+});
+
+Deno.test("cards: a hold follows its node through a compaction", () => {
+  const hierarchy = hierarchyOf([-1, 0, 0], () => 4000);
+  const { controller } = rig(hierarchy, { minCardLifetimeMs: 0 });
+  controller.evaluateNow(0);
+
+  controller.holdCard(2);
+  // A hold names a slot the host handed over, and a compaction moves the node
+  // that slot named — so an un-remapped hold opens whatever arrives there.
+  controller.remapSlots(new Map([[0, 0], [1, 1], [2, 1]]));
+  assertEquals([...controller.heldCards], [1]);
+
+  // Absent from the remap means the node was deleted, not that it stayed put.
+  controller.remapSlots(new Map([[0, 0]]));
+  assertEquals([...controller.heldCards], []);
+});
+
 Deno.test("cards: the minimum lifetime holds a card that has shrunk away", () => {
   const hierarchy = hierarchyOf([-1, 0], () => 4000);
   const { controller, log } = rig(hierarchy, { minCardLifetimeMs: 400 });

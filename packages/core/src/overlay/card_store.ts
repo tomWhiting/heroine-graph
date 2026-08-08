@@ -29,7 +29,7 @@
  */
 
 import type { IdLike } from "../graph/id_map.ts";
-import type { CardNode, CardProvider } from "./types.ts";
+import type { CardNode, CardProvider, CardSize } from "./types.ts";
 
 /**
  * One mounted card, as a renderer sees it.
@@ -84,6 +84,20 @@ interface StoreCard {
   card: LiveCard;
 }
 
+/** Settings for {@link createCardStore}. */
+export interface CardStoreOptions {
+  /**
+   * How big each card needs to be, in CSS pixels; `undefined` takes the default
+   * box. Forwarded straight to {@link CardProvider.size}, so every rule there
+   * applies — asked once immediately before mount, fixed for the card's life.
+   *
+   * It has to live here rather than in the renderer: the box is decided before
+   * any DOM exists and before the framework has rendered anything, so the only
+   * thing available to decide it with is the node.
+   */
+  size?(node: CardNode): CardSize | undefined;
+}
+
 /**
  * Create a card store.
  *
@@ -91,7 +105,7 @@ interface StoreCard {
  * which cards exist by being registered as the provider, and forgets them the
  * same way.
  */
-export function createCardStore(): CardStore {
+export function createCardStore(options: CardStoreOptions = {}): CardStore {
   const cards = new Map<HTMLElement, StoreCard>();
   const listeners = new Set<() => void>();
   let snapshot: readonly LiveCard[] = [];
@@ -103,6 +117,8 @@ export function createCardStore(): CardStore {
   };
 
   const provider: CardProvider<StoreCard> = {
+    ...(options.size === undefined ? {} : { size: options.size }),
+
     mount(container: HTMLElement, node: CardNode): StoreCard {
       const host = container.ownerDocument.createElement("div");
       // `display: contents` rather than a full-size box: the container is

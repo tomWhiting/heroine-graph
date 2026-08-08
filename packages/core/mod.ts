@@ -608,6 +608,7 @@ export type {
 
 export {
   CARD_DRAG_HANDLE_ATTRIBUTE,
+  CARD_SCROLL_ATTRIBUTE,
   CardContainerPool,
   CardDriver,
   cardFailureForfeitsCard,
@@ -640,6 +641,7 @@ export type {
   CardSize,
   CardStateChange,
   CardStore,
+  CardStoreOptions,
   CardSyncEntry,
   CssMatrix,
   DefaultCardState,

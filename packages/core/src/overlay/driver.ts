@@ -25,7 +25,7 @@
 
 import type { CardProviderHook, NodeId } from "../types.ts";
 import { Errors, type GraphMotherError } from "../errors.ts";
-import type { CardChange, CardNode, CardProvider, CardStateChange } from "./types.ts";
+import type { CardChange, CardNode, CardProvider, CardSize, CardStateChange } from "./types.ts";
 
 /**
  * Whether a throw from this hook is evidence that the provider cannot render
@@ -290,6 +290,29 @@ export class CardDriver<TState = unknown> {
       controller.abort();
     }
     this.prefetchedThisEpoch.clear();
+  }
+
+  /**
+   * Ask the provider how big this card needs to be, contained.
+   *
+   * Separate from {@link CardDriver.mount} because the answer is needed
+   * *before* the container exists — the box is what the container is created
+   * at, and what the card is laid out in for the rest of its life.
+   *
+   * @returns the provider's box, or `undefined` for "no opinion" — which a
+   * provider without the hook, a provider that returned nothing, and a
+   * provider that threw all give alike. A measurement is not evidence the
+   * provider cannot render the node, so unlike `mount` this one does not cost
+   * the card; the caller falls back to the default box and carries on.
+   */
+  measure(node: CardNode): CardSize | undefined {
+    if (this.provider.size === undefined) return undefined;
+    try {
+      return this.provider.size(node);
+    } catch (cause) {
+      this.report(node, "size", cause, false);
+      return undefined;
+    }
   }
 
   /**

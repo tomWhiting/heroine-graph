@@ -241,6 +241,8 @@ export class LODController {
   #config: LodConfig = DEFAULT_LOD_CONFIG;
   #policy: LodPolicy | null = null;
   #focus: ReadonlySet<NodeId> = new Set();
+  /** Nodes whose card the host is holding open; see {@link LODController.holdCard}. */
+  #held = new Set<NodeId>();
 
   /** The hierarchy the per-node state is indexed against; identity-compared. */
   #hierarchy: RetainedHierarchy | null = null;
@@ -497,6 +499,49 @@ export class LODController {
   }
 
   /**
+   * Hold this node's card open until the host gives it back.
+   *
+   * The answer to a card that is a live component rather than a caption. Focus
+   * and `force-card` already card a node whatever its screen size, and both
+   * outrank the budget — but all three are only ever *considered* for nodes in
+   * the cut, so zooming out until an ancestor folds over the node destroys the
+   * card underneath it. For a label that is right: the thing it labelled is no
+   * longer on screen. For an editor the user is typing into it is not, and no
+   * threshold the host can set avoids it, because folding is what zooming out
+   * is for.
+   *
+   * A held node is therefore gathered whether or not it is in the cut, and the
+   * graph folds normally behind its card. It does not expand the node's
+   * ancestors: expanding one un-folds every child of it, so a single open card
+   * would undo the zoom-out for its whole directory, and the damage would scale
+   * with fan-out.
+   *
+   * The hold outlives the camera and survives eviction — it is worth
+   * {@link LOD_FORCE_CARD_PRIORITY} under the budget, so only more held cards
+   * than `maxCards` can displace one. It does not survive the node itself:
+   * {@link LODController.remapSlots} carries it through a compaction and drops
+   * it when the node is deleted.
+   *
+   * @param node - Slot to hold. Out-of-range slots are ignored.
+   */
+  holdCard(node: NodeId): void {
+    if (node < 0 || node >= this.#nodeCount) return;
+    if (!this.#held.add(node)) return;
+    this.#syncCards(this.#lastCardClockMs);
+  }
+
+  /** Release a hold taken by {@link LODController.holdCard}. */
+  unholdCard(node: NodeId): void {
+    if (!this.#held.delete(node)) return;
+    this.#syncCards(this.#lastCardClockMs);
+  }
+
+  /** Nodes whose cards are currently held open. */
+  get heldCards(): ReadonlySet<NodeId> {
+    return this.#held;
+  }
+
+  /**
    * Rewrite the focus set through a slot remap the host has just applied.
    *
    * The focus set is the only slot-indexed state here the host declared rather
@@ -529,6 +574,16 @@ export class LODController {
     }
     this.#focus = survivors;
     this.#context.focus = survivors;
+
+    // Held cards are host declarations for the same reason and carry through
+    // the same way: a hold left pointing at its old slot would keep whichever
+    // node inherited that slot carded, and open the wrong component.
+    const heldSurvivors = new Set<NodeId>();
+    for (const slot of this.#held) {
+      const moved = remap.get(slot);
+      if (moved !== undefined) heldSurvivors.add(moved);
+    }
+    this.#held = heldSurvivors;
     this.#slotSpaceMoved = true;
     this.#forceFull = true;
     this.#bypassCommit = true;
@@ -1735,7 +1790,8 @@ export class LODController {
       const radius = worldRadius * this.#zoom;
       if (radius >= prefetchThreshold) bandActive = true;
 
-      const forced = this.#forceCard[slot] === 1 || this.#focus.has(slot);
+      const forced = this.#forceCard[slot] === 1 || this.#focus.has(slot) ||
+        this.#held.has(slot);
       const wasCarded = this.#cardedMask[slot] === 1;
       const since = this.#cardedSince.get(slot);
       const held = since !== undefined && nowMs - since < config.minCardLifetimeMs;
@@ -1770,6 +1826,23 @@ export class LODController {
     }
     this.#cardBandActive = bandActive;
 
+    // Held cards the cut no longer contains. The loop above only ever sees
+    // nodes in the cut, so this is where a hold earns its keep: the node has
+    // been folded away under an ancestor and its card has to go on existing
+    // anyway. Nothing about the band, the ring or the lifetime floor applies —
+    // a hold is the host saying it wants this card regardless.
+    for (const slot of this.#held) {
+      if (slot >= this.#nodeCount || this.#visibleMask[slot] === 1) continue;
+      if (this.#cardSuppressed.has(slot)) continue;
+      const entry: MutableCardEntry = {
+        node: slot,
+        priority: this.#weight[slot] + LOD_FORCE_CARD_PRIORITY,
+      };
+      const at = this.#foldedPositionOf(slot);
+      if (at !== undefined) entry.at = at;
+      carded.push(entry);
+    }
+
     byPriority(carded);
     const budget = Math.min(carded.length, config.maxCards);
     for (let k = budget; k < carded.length; k++) {
@@ -1787,9 +1860,10 @@ export class LODController {
 
     // Nodes that left the cut cannot hold a card, whatever their lifetime says.
     // They are not faded back in: their sprite is already ramping out with the
-    // transition that dropped them, and a fade-in here would fight it.
+    // transition that dropped them, and a fade-in here would fight it. A held
+    // card is the one exception, and the whole of what a hold buys.
     for (const slot of this.#cardedSince.keys()) {
-      if (this.#visibleMask[slot] === 0) {
+      if (this.#visibleMask[slot] === 0 && !this.#held.has(slot)) {
         this.#cardedSince.delete(slot);
         this.#cardedMask[slot] = 0;
       }
@@ -1811,6 +1885,42 @@ export class LODController {
     this.#host.syncCards(entries);
 
     return gained.length > 0 || dropped.length > 0;
+  }
+
+  /**
+   * Where to draw a held card whose node the layout has folded away.
+   *
+   * A folded subtree stops simulating and is translated back into place as a
+   * rigid body when its proxy expands, so a node inside one stores the position
+   * it had when the fold began while the proxy standing for it has gone on
+   * moving. A card left at the stored position drifts away from the bubble that
+   * swallowed it — by exactly the distance {@link LODController.expandNode}
+   * would later pay out. So the card is offset by that same delta, which puts
+   * it on the fold throughout and leaves it where it already is at the moment
+   * the fold ends.
+   *
+   * Only the lowest visible ancestor's anchor is consulted: a proxy nested
+   * inside another stopped drifting when the outer one closed over it, so its
+   * own outstanding delta is already baked into the stored positions.
+   *
+   * @returns the corrected point, or `undefined` when there is no correction to
+   *   make and the node's own position is the answer
+   */
+  #foldedPositionOf(slot: NodeId): Vec2 | undefined {
+    const proxy = this.getVisibleAncestor(slot);
+    if (proxy < 0 || proxy === slot) return undefined;
+    const anchorX = this.#anchorX[proxy];
+    const anchorY = this.#anchorY[proxy];
+    // NaN means the ancestor is visible without standing in for anything, so
+    // there is no fold above this node and nothing has been withheld from it.
+    if (Number.isNaN(anchorX) || Number.isNaN(anchorY)) return undefined;
+
+    const here = this.#host.getNodePosition(proxy);
+    const dx = here.x - anchorX;
+    const dy = here.y - anchorY;
+    if (dx === 0 && dy === 0) return undefined;
+    const position = this.#host.getNodePosition(slot);
+    return { x: position.x + dx, y: position.y + dy };
   }
 
   /** Whether a slot's centre lies inside the card ring's half-extents. */

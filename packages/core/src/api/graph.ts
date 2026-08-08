@@ -6031,6 +6031,33 @@ export class GraphMother {
     this.ensureLodController().setFocus(nodes);
   }
 
+  /**
+   * Hold a node's card open until {@link GraphMother.unholdCard} gives it back.
+   *
+   * For a card that is a live component rather than a caption: an editor, a
+   * form, anything the user is part way through. Focus already cards a node
+   * regardless of its screen size, but only while the node is in the cut, so
+   * zooming out far enough for an ancestor to fold over it destroys the card
+   * underneath. A held card survives that: the graph folds normally and the
+   * card stays open, riding the fold that swallowed its node.
+   *
+   * It does not expand the node's ancestors — that would un-fold a whole
+   * directory to keep one card, and the damage would scale with fan-out.
+   */
+  holdCard(node: NodeId): void {
+    this.ensureLodController().holdCard(node);
+  }
+
+  /** Release a hold taken by {@link GraphMother.holdCard}. */
+  unholdCard(node: NodeId): void {
+    this.ensureLodController().unholdCard(node);
+  }
+
+  /** Nodes whose cards are currently held open. */
+  getHeldCards(): ReadonlySet<NodeId> {
+    return this.ensureLodController().heldCards;
+  }
+
   /** Expand a node now, whatever its screen size says. */
   expandNode(node: NodeId): void {
     this.ensureLodController().expandNode(node, performance.now());

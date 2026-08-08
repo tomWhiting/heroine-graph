@@ -94,9 +94,10 @@ export interface CardNodeSource {
 /**
  * One node the caller wants carded (or prefetched) this evaluation.
  *
- * Deliberately carries no position: {@link CardNodeSource.position} is the
- * single authority and is re-read every frame, so a sync entry cannot go stale
- * against the simulation between evaluations.
+ * Carries no position in the ordinary case: {@link CardNodeSource.position} is
+ * the single authority and is re-read every frame, so a sync entry cannot go
+ * stale against the simulation between evaluations. The one exception is
+ * {@link CardSyncEntry.at}, for a node the simulation is not moving at all.
  */
 export interface CardSyncEntry {
   /** Node slot to card. */
@@ -117,6 +118,21 @@ export interface CardSyncEntry {
   /** Crossfade opacity, 0..1. Defaults to fully opaque. */
   readonly opacity?: number;
   /**
+   * Where to draw this card, overriding the node's own graph position.
+   *
+   * For a card the caller is holding open over a node the layout has folded
+   * away. Such a node is frozen: its stored position is where it stood when the
+   * fold began, and the fold it is inside has gone on moving without it, so the
+   * card would drift away from the thing that swallowed it. The caller knows
+   * that offset and supplies the corrected point here.
+   *
+   * Re-read on every sync, and the only thing that can move a card between
+   * syncs, so a stale override cannot outlive the entry that set it. It does
+   * not change {@link CardNode.position}, which goes on answering with the
+   * node's true graph position — the card is displaced, the node is not.
+   */
+  readonly at?: Vec2;
+  /**
    * Node is in the prefetch ring but not carded: the provider is offered an
    * advisory, abortable `prefetch` and no DOM is created.
    */
@@ -133,6 +149,28 @@ export interface CardSyncEntry {
  * the node would have no selectable text, which is most of why cards exist.
  */
 export const CARD_DRAG_HANDLE_ATTRIBUTE = "data-graphmother-drag";
+
+/**
+ * Attribute a provider puts on an element that owns its own wheel.
+ *
+ * A wheel over a card is forwarded to the canvas, because a user zooming back
+ * out has the pointer over a card by construction and the canvas is the only
+ * thing listening. That is right for a card the size of a caption and wrong
+ * for one holding a scrollable control: an editor whose every wheel event is
+ * `preventDefault`ed and handed to the camera cannot scroll at all.
+ *
+ * A wheel inside a subtree carrying this attribute is left entirely alone —
+ * not forwarded, not prevented — so the browser scrolls the element natively.
+ * Opt-in per element rather than per card, so a card can hold a scrolling
+ * region and still zoom from its chrome, and read rather than written for the
+ * same reason as {@link CARD_DRAG_HANDLE_ATTRIBUTE}: everything inside a card
+ * container belongs to the provider.
+ *
+ * A region that has scrolled to its own end still keeps the event. Chaining
+ * back to the camera at the boundary is what `overscroll-behavior` is for, and
+ * the provider owns that CSS.
+ */
+export const CARD_SCROLL_ATTRIBUTE = "data-graphmother-scroll";
 
 /**
  * Where a card drag is routed.
@@ -237,6 +275,8 @@ interface CardRecord {
   readonly externalId: IdLike | undefined;
   opacity: number;
   priority: number;
+  /** Placement override from the last sync entry; see {@link CardSyncEntry.at}. */
+  at: Vec2 | undefined;
 }
 
 /** A node competing for a place under the budget. */
@@ -501,6 +541,7 @@ export class DomCardOverlay {
       if (record === undefined) continue;
       record.priority = entry.priority;
       record.opacity = entry.opacity ?? 1;
+      record.at = entry.at;
     }
 
     // Unrequested cards go as soon as the anti-flicker floor allows.
@@ -796,9 +837,14 @@ export class DomCardOverlay {
     const driver = this.#driver;
     if (driver === null) return;
 
-    const size = entry.size ?? DEFAULT_CARD_SIZE;
+    // The provider is asked first and the entry is the fallback, because the
+    // provider is the only party that knows what it is about to render — the
+    // LOD pass that built the entry decided *whether* to card the node, not
+    // what goes in it.
+    const card = this.#viewOf(node);
+    const size = driver.measure(card) ?? entry.size ?? DEFAULT_CARD_SIZE;
     const record: CardRecord = {
-      card: this.#viewOf(node),
+      card,
       mountedAtMs: now,
       width: size.width,
       height: size.height,
@@ -806,6 +852,7 @@ export class DomCardOverlay {
       externalId: this.#nodes.externalId(node),
       opacity: entry.opacity ?? 1,
       priority: entry.priority,
+      at: entry.at,
     };
     // Registered before the provider runs: `CardNode.size()` reads this record
     // and mount() is exactly where a provider lays its content out.
@@ -844,7 +891,7 @@ export class DomCardOverlay {
   /** Where a card sits this frame, from its record and the live camera. */
   #placementOf(node: NodeId, record: CardRecord, scale: number): CardPlacement {
     return cardPlacementAt(
-      this.#nodes.position(node),
+      record.at ?? this.#nodes.position(node),
       record.width,
       record.height,
       cardCounterScale(scale, record.mountScale),
@@ -938,6 +985,9 @@ export class DomCardOverlay {
    */
   readonly #onWheel = (event: Event): void => {
     if (!this.#config.forwardWheel) return;
+    // Asked before anything is prevented: a claimed region has to see the
+    // event untouched, or the browser will not scroll it.
+    if (this.#claimsWheel(event.target)) return;
     const canvas = this.#canvas;
     event.preventDefault();
     canvas.dispatchEvent(cloneWheelEvent(event as WheelEvent, canvas.ownerDocument.defaultView));
@@ -1036,6 +1086,23 @@ export class DomCardOverlay {
    * One walk answers both, and stopping at the container is what keeps a
    * handle inside one card from being seen by another.
    */
+  /**
+   * Whether this event landed inside a region that owns its own wheel.
+   *
+   * Walks to the card container and stops there, so an attribute outside the
+   * overlay cannot claim the camera's gestures.
+   */
+  #claimsWheel(target: EventTarget | null): boolean {
+    const container = this.#container;
+    if (container === null) return false;
+    let element = target as Element | null;
+    while (element !== null && element !== container) {
+      if (element.hasAttribute?.(CARD_SCROLL_ATTRIBUTE) === true) return true;
+      element = element.parentElement;
+    }
+    return false;
+  }
+
   #resolveTarget(
     target: EventTarget | null,
   ): { node: NodeId; element: Element; onHandle: boolean } | null {

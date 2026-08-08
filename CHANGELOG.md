@@ -4,6 +4,56 @@
 lockstep: core depends on the wasm package at the same minor, and a core
 release that does not name a matching wasm release is a bug (see 0.3.0).
 
+## Unreleased
+
+The card seam finishes: a card can now hold an arbitrary component — an editor, a
+form, anything with its own layout and its own scrolling — rather than a caption.
+Three things stood in the way, and each was fatal on its own.
+
+### Added
+
+- **`CardProvider.size`** — the provider says how big its card needs to be.
+  Asked once, immediately before `mount`, and fixed for the card's whole life, so
+  content never reflows under the user's pointer; it is also the box the camera
+  counter-scales *to*, so past the mount scale a card that asked for 480×320 is
+  480×320 CSS pixels on screen, pixel for pixel, however far the camera zooms in.
+  Previously every card was laid out in a box core picked without knowing what
+  was in it — 200×120, which is a caption, not an editor. A throw costs the size
+  and not the card: the default is a usable answer, and `cardFailureForfeitsCard`
+  already answered `false` for anything that is not `mount` or `update`. New:
+  `CardProviderHook` gains `"size"`, and `CardDriver.measure`.
+- **`CARD_SCROLL_ATTRIBUTE`** (`data-graphmother-scroll`) — a card region that
+  claims the wheel. The overlay forwards every wheel over a card to the canvas so
+  that zooming back out from a card works, which meant a scrollable component
+  inside a card could never be scrolled: the gesture zoomed the graph and
+  `preventDefault` stopped the browser scrolling it. A wheel inside a claimed
+  region is now left completely alone — asked before anything is prevented,
+  because a region that never sees the event cannot scroll. Declared per
+  *element*, following `CARD_DRAG_HANDLE_ATTRIBUTE` exactly, so a card can hold a
+  scroll region and still zoom from its own chrome.
+- **`GraphMother.holdCard` / `unholdCard` / `getHeldCards`**, and
+  `LODController.holdCard` / `unholdCard` / `heldCards` — keep a card open across
+  the cut. Focus and `force-card` already card a node whatever its screen size,
+  but all three tests are only consulted for nodes *in* the cut, so zooming out
+  until an ancestor folded over the node destroyed the card underneath it. That
+  is right for a label and wrong for an editor, and no threshold setting avoids
+  it, because folding is what zooming out is for. A held card survives the cut;
+  the graph folds normally behind it. It deliberately does not expand the node's
+  ancestors — that would un-fold a whole directory to keep one card, and the
+  damage would scale with fan-out.
+- **`CardStoreOptions.size`**, and `size` on `useGraphCards` / `<GraphCards>` —
+  the same seam for declarative renderers. It has to be a callback on the store
+  rather than something the renderer decides, because the box is fixed before any
+  DOM exists and before React has rendered anything into the card; without it
+  every store-backed card, which is every React card, was stuck at the default
+  box. `createCardStore()` with no arguments is unchanged.
+- **`CardSyncEntry.at`** — a placement override, for a card held over a node the
+  layout has folded away. Such a node is frozen where the fold began while the
+  proxy standing for it has gone on moving, so an uncorrected card drifts off the
+  bubble that swallowed it by exactly the distance the expand would later pay
+  back. Re-read every sync, and it does not change `CardNode.position`: the card
+  is displaced, the node is not.
+
 ## 0.4.0
 
 A minor rather than a patch because the card surface grows: `createCardStore`,
